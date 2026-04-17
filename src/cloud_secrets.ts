@@ -29,23 +29,66 @@ export interface CloudSecretsConfig {
   /** Azure Key Vault URL, e.g. `https://my-vault.vault.azure.net`. */
   azureVaultUrl?: string;
   /**
-   * Escape hatch — inject a pre-built SDK client (used by tests to bypass
-   * the dynamic `import()` step). Shape depends on `subProvider`.
+   * Enable in-memory caching of `getSecret` results. 0 (default) disables
+   * the cache entirely. Positive values cache hits and misses for that many
+   * milliseconds; thrown errors are not cached.
    */
-  _client?: unknown;
+  cacheTtlMs?: number;
+}
+
+interface CacheEntry {
+  value: string | null;
+  expiresAt: number;
 }
 
 export class CloudSecretsProvider implements CredentialProvider {
   private readonly _config: CloudSecretsConfig;
   private _clientPromise: Promise<unknown> | null = null;
+  private _injectedClient: unknown = undefined;
+  private readonly _cache: Map<string, CacheEntry> = new Map();
 
   constructor(config: CloudSecretsConfig) {
     this._config = config;
   }
 
+  /**
+   * Test-only constructor that injects a pre-built SDK client, bypassing
+   * the dynamic `import()` step. The injected client stays off the public
+   * config surface.
+   */
+  static forTesting(
+    opts: CloudSecretsConfig & { client: unknown },
+  ): CloudSecretsProvider {
+    const { client, ...config } = opts;
+    const instance = new CloudSecretsProvider(config);
+    instance._injectedClient = client;
+    return instance;
+  }
+
   async getSecret(name: string): Promise<string | null> {
+    const ttl = this._config.cacheTtlMs ?? 0;
+    if (ttl > 0) {
+      const cached = this._cache.get(name);
+      if (cached !== undefined && cached.expiresAt > Date.now()) {
+        return cached.value;
+      }
+    }
+
+    const value = await this._fetchSecret(name);
+
+    if (ttl > 0) {
+      this._cache.set(name, { value, expiresAt: Date.now() + ttl });
+    }
+    return value;
+  }
+
+  clearCache(): void {
+    this._cache.clear();
+  }
+
+  private async _fetchSecret(name: string): Promise<string | null> {
     const client = await this._client();
-    const isInjected = this._config._client !== undefined;
+    const isInjected = this._injectedClient !== undefined;
     switch (this._config.subProvider) {
       case "aws":
         return _awsGetSecret(client, name, { skipSdkLoad: isInjected });
@@ -61,8 +104,8 @@ export class CloudSecretsProvider implements CredentialProvider {
   }
 
   private _client(): Promise<unknown> {
-    if (this._config._client !== undefined) {
-      return Promise.resolve(this._config._client);
+    if (this._injectedClient !== undefined) {
+      return Promise.resolve(this._injectedClient);
     }
     if (this._clientPromise !== null) return this._clientPromise;
     this._clientPromise = this._buildClient();
