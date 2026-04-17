@@ -88,6 +88,23 @@ Known prefixes: `env` / `env_var`, `keychain`, `file`, `cloud` / `cloud_secrets`
 
 This lets a transient AWS network blip fall through to keychain without the user seeing an error.
 
+## Redacting secrets from logs
+
+Once a secret is resolved, keep it out of logs and error reports with `redact`:
+
+```ts
+import { resolveSecret, redact } from "@narai/credential-providers";
+
+const token = await resolveSecret("gh-token");
+try { await doWork(); }
+catch (err) {
+  console.error(redact(token!, String(err.stack)));
+  throw err;
+}
+```
+
+Needles shorter than 4 characters are skipped — too likely to collide with common tokens like `api` or `key`. Pass multiple secrets at once with `redactAll(iterable, haystack)`.
+
 ## Writing a custom provider
 
 Implement the two-method interface:

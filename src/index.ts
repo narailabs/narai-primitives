@@ -131,3 +131,5 @@ export type {
   CredentialRef,
   ParseCredentialRefOptions,
 } from "./parse_ref.js";
+
+export { redact, redactAll } from "./redact.js";
