@@ -25,8 +25,8 @@ export interface KeychainProviderOptions {
   account?: string;
   /**
    * macOS Keychain "service" prefix. If set, the lookup name is
-   * `<servicePrefix>.<name>` so wiki_db secrets can be grouped under a
-   * single service name (e.g. `com.doc-wiki`).
+   * `<servicePrefix>.<name>` so an application's secrets can be grouped
+   * under a single service name (e.g. `com.example.myapp`).
    */
   servicePrefix?: string;
 }
@@ -43,10 +43,6 @@ export class KeychainProvider implements CredentialProvider {
   }
 
   async getSecret(name: string): Promise<string | null> {
-    return this.getSecretSync(name);
-  }
-
-  getSecretSync(name: string): string | null {
     const service = this._servicePrefix
       ? `${this._servicePrefix}.${name}`
       : name;

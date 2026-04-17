@@ -42,10 +42,6 @@ export class FileProvider implements CredentialProvider {
     this._allowLoosePermissions = opts.allowLoosePermissions ?? false;
   }
 
-  async getSecret(name: string): Promise<string | null> {
-    return this.getSecretSync(name);
-  }
-
   /**
    * Return the value for `name`. Two lookup strategies, in order:
    *   1. Literal top-level key — preserves the original flat
@@ -55,10 +51,9 @@ export class FileProvider implements CredentialProvider {
    *      string, treat `name` as a path (e.g. `db-prod.username`) and
    *      walk the nested JSON. Returns null if any segment is missing
    *      or the leaf is not a string. Lets nested credential layouts
-   *      (used by wiki_db's `db-<env>.username` shape) reuse the same
-   *      file/mode/warning machinery.
+   *      reuse the same file/mode/warning machinery.
    */
-  getSecretSync(name: string): string | null {
+  async getSecret(name: string): Promise<string | null> {
     this._warnOnce();
     const data = this._load();
     if (data === null) return null;
@@ -110,9 +105,9 @@ export class FileProvider implements CredentialProvider {
 
   /**
    * Parse the credentials JSON. Stores the raw nested structure so
-   * dot-path traversal can find values inside subobjects (the wiki_db
+   * dot-path traversal can find values inside subobjects (e.g. a
    * `db-<env>: {username, password}` layout); literal-key lookups still
-   * filter to strings in `getSecretSync`.
+   * filter to strings in `getSecret`.
    */
   private _load(): Record<string, unknown> | null {
     if (this._cache !== null) return this._cache;

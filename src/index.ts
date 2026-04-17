@@ -1,48 +1,20 @@
 /**
  * credential_providers — pluggable secret-backend layer.
  *
- * Each provider implements {@link CredentialProvider}. The registry keyed by
- * provider-name lets the config layer (Phase H `wiki.config.yaml` →
- * `credentials.provider`) pick a provider by string.
+ * Each provider implements {@link CredentialProvider}. A {@link CredentialResolver}
+ * instance keeps a named registry of providers and exposes `resolveSecret`,
+ * which chains providers in the given fallback order and returns the first
+ * non-null hit.
  *
- * The `resolveSecret(name, options)` helper chains providers in the given
- * fallback order, returning the first non-null hit.
+ * A module-level {@link defaultResolver} plus thin delegators
+ * (`registerProvider`, `resolveSecret`, …) are provided so callers that only
+ * need a single global registry can keep their imports flat.
  */
 
 /** Minimal interface every secret backend satisfies. */
 export interface CredentialProvider {
   /** Look up a secret by logical name. Returns `null` on miss. */
   getSecret(name: string): Promise<string | null>;
-  /**
-   * Optional synchronous variant. Providers that hit the network (cloud
-   * secret managers) omit this. Used by call sites that cannot await.
-   */
-  getSecretSync?(name: string): string | null;
-}
-
-const _registry: Map<string, CredentialProvider> = new Map();
-
-/** Register a provider under a short name (`keychain`, `env_var`, …). */
-export function registerProvider(
-  name: string,
-  provider: CredentialProvider,
-): void {
-  _registry.set(name, provider);
-}
-
-/** Look up a provider previously registered via {@link registerProvider}. */
-export function getProvider(name: string): CredentialProvider | undefined {
-  return _registry.get(name);
-}
-
-/** Test helper — drop all registered providers. */
-export function clearProviders(): void {
-  _registry.clear();
-}
-
-/** Return the list of currently registered provider names. */
-export function listProviders(): string[] {
-  return [..._registry.keys()];
 }
 
 export interface ResolveSecretOptions {
@@ -56,42 +28,92 @@ export interface ResolveSecretOptions {
 }
 
 /**
- * Resolve a secret through a primary provider and optional fallback chain.
- *
- * Returns `null` if no provider produces a value. If every provider throws,
- * the last error is surfaced so the caller can inspect it.
+ * A named registry of {@link CredentialProvider} instances plus the
+ * `resolveSecret` chain. Instantiate your own resolver for test isolation,
+ * multi-tenant setups, or any case where the module-level {@link defaultResolver}
+ * is too coarse.
  */
-export async function resolveSecret(
-  name: string,
-  options: ResolveSecretOptions = {},
-): Promise<string | null> {
-  const order: string[] = [];
-  if (options.provider) order.push(options.provider);
-  if (options.fallback) order.push(...options.fallback);
-  if (order.length === 0) {
-    // Default: iterate whatever is in the registry, insertion order.
-    order.push(..._registry.keys());
+export class CredentialResolver {
+  private readonly _registry = new Map<string, CredentialProvider>();
+
+  /** Register a provider under a short name (`keychain`, `env_var`, …). */
+  register(name: string, provider: CredentialProvider): void {
+    this._registry.set(name, provider);
   }
 
-  let lastError: unknown = null;
-  let anySuccess = false;
-  for (const providerName of order) {
-    const provider = _registry.get(providerName);
-    if (!provider) continue;
-    try {
-      const value = await provider.getSecret(name);
-      anySuccess = true;
-      if (value !== null) return value;
-    } catch (err) {
-      lastError = err;
+  /** Look up a provider previously registered via {@link register}. */
+  get(name: string): CredentialProvider | undefined {
+    return this._registry.get(name);
+  }
+
+  /** Drop all registered providers. */
+  clear(): void {
+    this._registry.clear();
+  }
+
+  /** Return the list of currently registered provider names. */
+  list(): string[] {
+    return [...this._registry.keys()];
+  }
+
+  /**
+   * Resolve a secret through a primary provider and optional fallback chain.
+   *
+   * Returns `null` if no provider produces a value while at least one
+   * provider runs to completion (hit or miss). If *every* provider throws,
+   * an `AggregateError` is raised whose `.errors` array preserves each
+   * original error in the order providers were tried.
+   */
+  async resolveSecret(
+    name: string,
+    options: ResolveSecretOptions = {},
+  ): Promise<string | null> {
+    const order: string[] = [];
+    if (options.provider) order.push(options.provider);
+    if (options.fallback) order.push(...options.fallback);
+    if (order.length === 0) {
+      // Default: iterate whatever is in the registry, insertion order.
+      order.push(...this._registry.keys());
     }
-  }
 
-  if (!anySuccess && lastError !== null) {
-    throw lastError;
+    const errors: unknown[] = [];
+    let anySuccess = false;
+    for (const providerName of order) {
+      const provider = this._registry.get(providerName);
+      if (!provider) continue;
+      try {
+        const value = await provider.getSecret(name);
+        anySuccess = true;
+        if (value !== null) return value;
+      } catch (err) {
+        errors.push(err);
+      }
+    }
+
+    if (!anySuccess && errors.length > 0) {
+      throw new AggregateError(
+        errors,
+        `resolveSecret('${name}') failed: all ${errors.length} provider(s) threw`,
+      );
+    }
+    return null;
   }
-  return null;
 }
+
+/** Shared resolver used by the module-level delegators below. */
+export const defaultResolver = new CredentialResolver();
+
+/** Register a provider on the {@link defaultResolver}. */
+export const registerProvider = defaultResolver.register.bind(defaultResolver);
+/** Look up a provider on the {@link defaultResolver}. */
+export const getProvider = defaultResolver.get.bind(defaultResolver);
+/** Drop all providers from the {@link defaultResolver} (test helper). */
+export const clearProviders = defaultResolver.clear.bind(defaultResolver);
+/** List provider names registered on the {@link defaultResolver}. */
+export const listProviders = defaultResolver.list.bind(defaultResolver);
+/** Resolve a secret via the {@link defaultResolver}. */
+export const resolveSecret =
+  defaultResolver.resolveSecret.bind(defaultResolver);
 
 // Re-export provider implementations so callers can import everything from
 // `@narai/credential-providers` directly.
@@ -104,5 +126,8 @@ export type { CloudSecretsConfig, CloudSubProvider } from "./cloud_secrets.js";
 // Reference-string grammar. Config consumers call `parseCredentialRef` on
 // each string value to decide whether it's a literal or a reference into
 // one of the registered providers. See `parse_ref.ts` for the grammar.
-export { parseCredentialRef, KNOWN_PROVIDERS } from "./parse_ref.js";
-export type { CredentialRef } from "./parse_ref.js";
+export { parseCredentialRef } from "./parse_ref.js";
+export type {
+  CredentialRef,
+  ParseCredentialRefOptions,
+} from "./parse_ref.js";

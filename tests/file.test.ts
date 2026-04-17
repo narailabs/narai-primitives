@@ -90,15 +90,6 @@ describe("credential_providers/file", () => {
     },
   );
 
-  it("getSecretSync mirrors getSecret", () => {
-    const p = path.join(tmpDir, "secrets.json");
-    fs.writeFileSync(p, JSON.stringify({ sync_key: "sync_val" }));
-    if (process.platform !== "win32") fs.chmodSync(p, 0o600);
-    const provider = new FileProvider({ path: p, suppressWarning: true });
-    expect(provider.getSecretSync("sync_key")).toBe("sync_val");
-    expect(provider.getSecretSync("missing")).toBeNull();
-  });
-
   it("ignores non-string values", async () => {
     const p = path.join(tmpDir, "secrets.json");
     fs.writeFileSync(

@@ -52,15 +52,8 @@ describe("credential_providers/env_var", () => {
   });
 
   it("honors prefix when provided", async () => {
-    setEnv("WIKI_DB_DEV_USER", "admin");
-    const p = new EnvVarProvider({ prefix: "WIKI_DB_" });
+    setEnv("MYAPP_DEV_USER", "admin");
+    const p = new EnvVarProvider({ prefix: "MYAPP_" });
     expect(await p.getSecret("dev_user")).toBe("admin");
-  });
-
-  it("getSecretSync returns without await", () => {
-    setEnv("PLAIN", "v");
-    const p = new EnvVarProvider();
-    expect(p.getSecretSync("plain")).toBe("v");
-    expect(p.getSecretSync("absent")).toBeNull();
   });
 });

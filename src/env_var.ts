@@ -6,9 +6,8 @@
  *  2. If that misses, normalize: uppercase and replace every non-[A-Za-z0-9]
  *     run with a single underscore (e.g. `github.token` → `GITHUB_TOKEN`).
  *
- * The optional `prefix` lets callers scope a family of secrets (wiki_db's
- * existing `WIKI_DB_` + `<ENV>_USER/_PASSWORD` pattern is implemented on
- * top of this class in `wiki_db/credentials.ts`).
+ * The optional `prefix` lets callers scope a family of secrets (e.g. an
+ * application that wants all its env-var credentials under `MYAPP_`).
  */
 import type { CredentialProvider } from "./index.js";
 
@@ -25,10 +24,6 @@ export class EnvVarProvider implements CredentialProvider {
   }
 
   async getSecret(name: string): Promise<string | null> {
-    return this.getSecretSync(name);
-  }
-
-  getSecretSync(name: string): string | null {
     const literal = process.env[name];
     if (literal !== undefined && literal !== "") return literal;
 

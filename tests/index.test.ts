@@ -3,6 +3,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  CredentialResolver,
   clearProviders,
   getProvider,
   listProviders,
@@ -83,12 +84,35 @@ describe("credential_providers/index", () => {
     expect(value).toBe("value");
   });
 
-  it("resolveSecret surfaces the last error if every provider throws", async () => {
+  it("resolveSecret throws AggregateError when every provider throws", async () => {
     registerProvider("a", makeProvider({}, "foo"));
     registerProvider("b", makeProvider({}, "foo"));
-    await expect(
-      resolveSecret("foo", { provider: "a", fallback: ["b"] }),
-    ).rejects.toThrow(/boom/);
+    const promise = resolveSecret("foo", {
+      provider: "a",
+      fallback: ["b"],
+    });
+    await expect(promise).rejects.toBeInstanceOf(AggregateError);
+    try {
+      await promise;
+    } catch (err) {
+      const agg = err as AggregateError;
+      expect(agg.errors).toHaveLength(2);
+      expect((agg.errors[0] as Error).message).toMatch(/boom/);
+      expect((agg.errors[1] as Error).message).toMatch(/boom/);
+    }
+  });
+
+  it("resolveSecret suppresses errors if at least one provider returns", async () => {
+    registerProvider("broken", makeProvider({}, "foo"));
+    registerProvider("good", makeProvider({}));
+    // `good` runs to completion (returns null), so the thrown error from
+    // `broken` is swallowed and we get null.
+    expect(
+      await resolveSecret("foo", {
+        provider: "broken",
+        fallback: ["good"],
+      }),
+    ).toBeNull();
   });
 
   it("resolveSecret with no provider specified iterates the registry", async () => {
@@ -104,5 +128,32 @@ describe("credential_providers/index", () => {
       fallback: ["good"],
     });
     expect(value).toBe("v");
+  });
+});
+
+describe("CredentialResolver", () => {
+  it("two instances do not share registry state", () => {
+    const a = new CredentialResolver();
+    const b = new CredentialResolver();
+    const pA = { async getSecret() { return "from-a"; } };
+    const pB = { async getSecret() { return "from-b"; } };
+    a.register("stub", pA);
+    b.register("stub", pB);
+    expect(a.list()).toEqual(["stub"]);
+    expect(b.list()).toEqual(["stub"]);
+    expect(a.get("stub")).toBe(pA);
+    expect(b.get("stub")).toBe(pB);
+    a.clear();
+    expect(a.list()).toEqual([]);
+    expect(b.list()).toEqual(["stub"]);
+  });
+
+  it("resolveSecret runs against only its own registry", async () => {
+    const a = new CredentialResolver();
+    const b = new CredentialResolver();
+    a.register("x", { async getSecret() { return "a-val"; } });
+    b.register("x", { async getSecret() { return "b-val"; } });
+    expect(await a.resolveSecret("anything")).toBe("a-val");
+    expect(await b.resolveSecret("anything")).toBe("b-val");
   });
 });
