@@ -77,7 +77,7 @@ describe("parseCredentialRef", () => {
   });
 
   it("returns null for leading-colon strings", () => {
-    // ":foo" has colon at index 0 — no provider to parse.
+    // ":foo" has colon at index 0 - no provider to parse.
     expect(parseCredentialRef(":foo")).toBeNull();
   });
 
@@ -121,7 +121,109 @@ describe("parseCredentialRef", () => {
     expect(
       parseCredentialRef("customx:k", { resolver: custom }),
     ).toEqual({ provider: "customx", key: "k" });
-    // And the default resolver has no "customx" → null.
+    // And the default resolver has no "customx" -> null.
     expect(parseCredentialRef("customx:k")).toBeNull();
+  });
+
+  // URI-form references - `scheme://rest`. Detection is syntactic
+  // (presence of `://`). Non-file schemes take everything after `://`
+  // verbatim; `file:` goes through `new URL` and folds the fragment
+  // back into FileProvider's `path:dotted.key` convention.
+  describe("URI form", () => {
+    it("parses env:// URI", () => {
+      expect(parseCredentialRef("env://DB_PASSWORD")).toEqual({
+        provider: "env_var",
+        key: "DB_PASSWORD",
+      });
+    });
+
+    it("parses keychain:// URI", () => {
+      expect(parseCredentialRef("keychain://prod-db")).toEqual({
+        provider: "keychain",
+        key: "prod-db",
+      });
+    });
+
+    it("parses cloud:// URI", () => {
+      expect(parseCredentialRef("cloud://my-secret")).toEqual({
+        provider: "cloud_secrets",
+        key: "my-secret",
+      });
+    });
+
+    it("parses file:// URI with fragment into path:dotted.key", () => {
+      expect(
+        parseCredentialRef("file:///etc/creds.json#staging.password"),
+      ).toEqual({
+        provider: "file",
+        key: "/etc/creds.json:staging.password",
+      });
+    });
+
+    it("parses Windows file:// URI keeping the drive colon", () => {
+      // Design call: keep the leading slash as URL produces it. The
+      // FileProvider opens the absolute path `/C:/creds.json` fine on
+      // Windows (Node normalizes it); the embedded `:user` carries the
+      // dotted key exactly like the bare `file:...:key` form.
+      expect(parseCredentialRef("file:///C:/creds.json#user")).toEqual({
+        provider: "file",
+        key: "/C:/creds.json:user",
+      });
+    });
+
+    it("parses env_var:// verbatim (no alias expansion needed)", () => {
+      expect(parseCredentialRef("env_var://DB_PASSWORD")).toEqual({
+        provider: "env_var",
+        key: "DB_PASSWORD",
+      });
+    });
+
+    it("parses cloud_secrets:// verbatim", () => {
+      expect(parseCredentialRef("cloud_secrets://my-secret")).toEqual({
+        provider: "cloud_secrets",
+        key: "my-secret",
+      });
+    });
+
+    it("returns null for env:// with no key", () => {
+      expect(parseCredentialRef("env://")).toBeNull();
+    });
+
+    it("supports custom registered providers via URI form", () => {
+      registerProvider("vault", stubProvider);
+      expect(parseCredentialRef("vault://app/db")).toEqual({
+        provider: "vault",
+        key: "app/db",
+      });
+    });
+
+    it("returns null for unknown scheme (non-strict)", () => {
+      // Typo-like: `envvar://` - close to a real scheme but not registered.
+      expect(parseCredentialRef("envvar://X")).toBeNull();
+    });
+
+    it("throws for unknown scheme in strict mode", () => {
+      expect(() =>
+        parseCredentialRef("envvar://X", { strict: true }),
+      ).toThrow(/unknown credential provider 'envvar'/);
+    });
+
+    it("treats the full post-:// string as the key for env://A/B", () => {
+      // Design call: no special authority/path split. Everything after
+      // `://` is the key verbatim. Harmless for env_var lookup (simply
+      // misses) and useful for backends that accept slashes in names
+      // (cloud paths, vault mounts, etc.).
+      expect(parseCredentialRef("env://A/B")).toEqual({
+        provider: "env_var",
+        key: "A/B",
+      });
+    });
+
+    it("still parses legacy bare env:DB_PASSWORD alongside URI form", () => {
+      expect(parseCredentialRef("env:DB_PASSWORD")).toEqual({
+        provider: "env_var",
+        key: "DB_PASSWORD",
+      });
+    });
   });
 });

@@ -77,6 +77,21 @@ return await resolveSecret(ref.key, { provider: ref.provider });
 
 Known prefixes: `env` / `env_var`, `keychain`, `file`, `cloud` / `cloud_secrets`. Unknown prefixes pass through as literals.
 
+#### URI-form references
+
+`parseCredentialRef` also accepts the familiar `scheme://…` URI form, which some config tools quote or escape more cleanly than bare `provider:key`:
+
+```yaml
+password: env://PGPASSWORD
+token:    keychain://github
+aws_key:  cloud://prod-api-key
+pg_cert:  file:///etc/creds.json#prod.sslcert
+```
+
+Both forms are interchangeable — `env:PGPASSWORD` and `env://PGPASSWORD` parse to the same `{provider: "env_var", key: "PGPASSWORD"}`. For `file://` URIs, the fragment after `#` carries the dotted key inside the JSON and is folded back into the FileProvider's native `path:dotted.key` shape. Windows drive paths (`file:///C:/creds.json#user`) are preserved verbatim.
+
+Unknown schemes behave exactly like unknown bare prefixes — `null` by default, or `throw` when called with `{ strict: true }`.
+
 ## Chain semantics
 
 `resolveSecret(name, {provider, fallback})` tries each backend in order. Behaviour:
