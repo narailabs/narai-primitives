@@ -1,7 +1,27 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parseCredentialRef } from "../src/parse_ref.js";
+import {
+  CredentialResolver,
+  clearProviders,
+  registerProvider,
+  type CredentialProvider,
+} from "../src/index.js";
+
+const stubProvider: CredentialProvider = {
+  async getSecret() {
+    return null;
+  },
+};
 
 describe("parseCredentialRef", () => {
+  beforeEach(() => {
+    clearProviders();
+  });
+
+  afterEach(() => {
+    clearProviders();
+  });
+
   it("parses env references", () => {
     expect(parseCredentialRef("env:DB_PASSWORD")).toEqual({
       provider: "env_var",
@@ -59,5 +79,49 @@ describe("parseCredentialRef", () => {
   it("returns null for leading-colon strings", () => {
     // ":foo" has colon at index 0 — no provider to parse.
     expect(parseCredentialRef(":foo")).toBeNull();
+  });
+
+  it("recognizes custom providers registered on the default resolver", () => {
+    registerProvider("vault", stubProvider);
+    expect(parseCredentialRef("vault:app/db")).toEqual({
+      provider: "vault",
+      key: "app/db",
+    });
+  });
+
+  it("returns null for custom provider when not registered (non-strict)", () => {
+    expect(parseCredentialRef("vault:app/db")).toBeNull();
+  });
+
+  it("throws for unknown provider in strict mode", () => {
+    expect(() =>
+      parseCredentialRef("vault:app/db", { strict: true }),
+    ).toThrow(/unknown credential provider 'vault'/);
+  });
+
+  it("does not throw in strict mode when provider is registered", () => {
+    registerProvider("vault", stubProvider);
+    expect(parseCredentialRef("vault:app/db", { strict: true })).toEqual({
+      provider: "vault",
+      key: "app/db",
+    });
+  });
+
+  it("does not throw in strict mode for built-in prefixes", () => {
+    expect(parseCredentialRef("env:HOME", { strict: true })).toEqual({
+      provider: "env_var",
+      key: "HOME",
+    });
+  });
+
+  it("uses a caller-supplied resolver when given", () => {
+    const custom = new CredentialResolver();
+    custom.register("customx", stubProvider);
+    // Default resolver has nothing registered, but custom does.
+    expect(
+      parseCredentialRef("customx:k", { resolver: custom }),
+    ).toEqual({ provider: "customx", key: "k" });
+    // And the default resolver has no "customx" → null.
+    expect(parseCredentialRef("customx:k")).toBeNull();
   });
 });

@@ -11,7 +11,7 @@
  * error instructing the user to `npm install` the matching package.
  *
  * All calls are read-only (`getSecret`). Write/rotate flows are
- * intentionally out of scope for wiki_db (design §4 — read-only access).
+ * intentionally out of scope for this package.
  */
 import type { CredentialProvider } from "./index.js";
 
