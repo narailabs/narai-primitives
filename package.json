@@ -12,7 +12,7 @@
     }
   },
   "engines": {
-    "node": ">=20.0.0 <21.0.0"
+    "node": ">=20.0.0"
   },
   "files": [
     "dist/",
@@ -30,7 +30,14 @@
     "vitest": "^3.0.0"
   },
   "license": "MIT",
-  "repository": "https://github.com/narailabs/db-agent-connector",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/narailabs/credential-providers.git"
+  },
+  "bugs": {
+    "url": "https://github.com/narailabs/credential-providers/issues"
+  },
+  "homepage": "https://github.com/narailabs/credential-providers#readme",
   "keywords": [
     "credentials",
     "secrets",
