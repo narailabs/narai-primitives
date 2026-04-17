@@ -3,7 +3,7 @@
 Pluggable secret-resolution for Node apps. Four built-in backends, one interface, no lock-in.
 
 - **`EnvVarProvider`** — `process.env` lookup with verbatim-then-normalized matching (`DB_PASSWORD` → `env:db-password`).
-- **`FileProvider`** — JSON file with flat keys or dotted paths; refuses group/world-readable files (POSIX `0o077` check).
+- **`FileProvider`** — JSON file with flat keys or dotted paths; refuses group/world-readable files (POSIX `0o077` check). Optional `cacheTtlMs` refreshes the parsed JSON after the TTL elapses; `clearCache()` invalidates it on demand.
 - **`KeychainProvider`** — macOS (`security`) and Linux (`secret-tool`). Windows intentionally unsupported.
 - **`CloudSecretsProvider`** — dispatcher over AWS Secrets Manager, GCP Secret Manager, Azure Key Vault. Each SDK loaded lazily via dynamic `import()` so you only pay for the one you use.
 

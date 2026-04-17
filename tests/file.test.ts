@@ -130,4 +130,102 @@ describe("credential_providers/file", () => {
       expect(await provider.getSecret("token")).toBe("ghp_w");
     },
   );
+
+  describe("cache TTL", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("caches indefinitely by default (no TTL)", async () => {
+      const p = path.join(tmpDir, "secrets.json");
+      fs.writeFileSync(p, JSON.stringify({ k: "v1" }));
+      if (process.platform !== "win32") fs.chmodSync(p, 0o600);
+      const provider = new FileProvider({ path: p, suppressWarning: true });
+      expect(await provider.getSecret("k")).toBe("v1");
+      // Rewrite the file; without TTL the provider should keep serving the cached value
+      // (rather than re-reading from disk).
+      fs.writeFileSync(p, JSON.stringify({ k: "v2" }));
+      if (process.platform !== "win32") fs.chmodSync(p, 0o600);
+      vi.advanceTimersByTime(60_000);
+      expect(await provider.getSecret("k")).toBe("v1");
+      expect(await provider.getSecret("k")).toBe("v1");
+    });
+
+    it("re-reads after TTL elapses", async () => {
+      const p = path.join(tmpDir, "secrets.json");
+      fs.writeFileSync(p, JSON.stringify({ k: "v1" }));
+      if (process.platform !== "win32") fs.chmodSync(p, 0o600);
+      const provider = new FileProvider({
+        path: p,
+        suppressWarning: true,
+        cacheTtlMs: 1000,
+      });
+      expect(await provider.getSecret("k")).toBe("v1");
+      fs.writeFileSync(p, JSON.stringify({ k: "v2" }));
+      if (process.platform !== "win32") fs.chmodSync(p, 0o600);
+      // Still within TTL → cached value.
+      vi.advanceTimersByTime(500);
+      expect(await provider.getSecret("k")).toBe("v1");
+      // Past TTL → refreshed value.
+      vi.advanceTimersByTime(1000);
+      expect(await provider.getSecret("k")).toBe("v2");
+    });
+
+    it("clearCache() forces the next call to re-read", async () => {
+      const p = path.join(tmpDir, "secrets.json");
+      fs.writeFileSync(p, JSON.stringify({ k: "v1" }));
+      if (process.platform !== "win32") fs.chmodSync(p, 0o600);
+      const provider = new FileProvider({ path: p, suppressWarning: true });
+      expect(await provider.getSecret("k")).toBe("v1");
+      fs.writeFileSync(p, JSON.stringify({ k: "v2" }));
+      if (process.platform !== "win32") fs.chmodSync(p, 0o600);
+      provider.clearCache();
+      expect(await provider.getSecret("k")).toBe("v2");
+    });
+
+    it("parse error on re-read invalidates the cache", async () => {
+      const p = path.join(tmpDir, "secrets.json");
+      fs.writeFileSync(p, JSON.stringify({ k: "v1" }));
+      if (process.platform !== "win32") fs.chmodSync(p, 0o600);
+      const provider = new FileProvider({
+        path: p,
+        suppressWarning: true,
+        cacheTtlMs: 1000,
+      });
+      expect(await provider.getSecret("k")).toBe("v1");
+      fs.writeFileSync(p, "not-valid-json{");
+      if (process.platform !== "win32") fs.chmodSync(p, 0o600);
+      vi.advanceTimersByTime(1500);
+      await expect(provider.getSecret("k")).rejects.toThrow();
+      // After the throw the cache must be gone — fix the file and confirm the next
+      // call picks up the new content instead of serving a stale v1.
+      fs.writeFileSync(p, JSON.stringify({ k: "v2" }));
+      if (process.platform !== "win32") fs.chmodSync(p, 0o600);
+      expect(await provider.getSecret("k")).toBe("v2");
+    });
+
+    it.skipIf(process.platform === "win32")(
+      "re-runs mode check on refresh",
+      async () => {
+        const p = path.join(tmpDir, "secrets.json");
+        fs.writeFileSync(p, JSON.stringify({ k: "v1" }));
+        fs.chmodSync(p, 0o600);
+        const provider = new FileProvider({
+          path: p,
+          suppressWarning: true,
+          cacheTtlMs: 1000,
+        });
+        expect(await provider.getSecret("k")).toBe("v1");
+        fs.chmodSync(p, 0o644);
+        vi.advanceTimersByTime(1500);
+        await expect(provider.getSecret("k")).rejects.toThrow(
+          /file mode 644 is group- or world-accessible/,
+        );
+      },
+    );
+  });
 });
