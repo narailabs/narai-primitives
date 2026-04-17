@@ -27,19 +27,38 @@ export interface FileProviderOptions {
    * (shared CI runners with permissive umask, etc.) and you accept the exposure risk.
    */
   allowLoosePermissions?: boolean;
+  /**
+   * Time-to-live for the parsed JSON cache, in milliseconds.
+   * Default: Infinity (cache is held for the lifetime of the provider instance).
+   * When finite, the file is re-stat'd and re-read after the TTL elapses.
+   */
+  cacheTtlMs?: number;
 }
 
 export class FileProvider implements CredentialProvider {
   private readonly _path: string;
   private readonly _suppressWarning: boolean;
   private readonly _allowLoosePermissions: boolean;
+  private readonly _cacheTtlMs: number;
   private _warned = false;
   private _cache: Record<string, unknown> | null = null;
+  private _cacheExpiresAt: number | null = null;
 
   constructor(opts: FileProviderOptions) {
     this._path = opts.path;
     this._suppressWarning = opts.suppressWarning ?? false;
     this._allowLoosePermissions = opts.allowLoosePermissions ?? false;
+    this._cacheTtlMs = opts.cacheTtlMs ?? Infinity;
+  }
+
+  /**
+   * Discard the cached JSON so the next `getSecret` re-reads from disk.
+   * Useful when callers want to invalidate the cache on demand — e.g. after
+   * rotating the file — independent of the configured TTL.
+   */
+  clearCache(): void {
+    this._cache = null;
+    this._cacheExpiresAt = null;
   }
 
   /**
@@ -108,23 +127,47 @@ export class FileProvider implements CredentialProvider {
    * dot-path traversal can find values inside subobjects (e.g. a
    * `db-<env>: {username, password}` layout); literal-key lookups still
    * filter to strings in `getSecret`.
+   *
+   * Cache lifecycle: by default held forever (fast path). When `cacheTtlMs`
+   * is finite, the mode check and file read re-run after the TTL elapses —
+   * that way rotated files with new bad permissions still get caught.
    */
   private _load(): Record<string, unknown> | null {
-    if (this._cache !== null) return this._cache;
+    if (this._cache !== null) {
+      if (this._cacheTtlMs === Infinity) return this._cache;
+      if (
+        this._cacheExpiresAt !== null &&
+        Date.now() < this._cacheExpiresAt
+      ) {
+        return this._cache;
+      }
+    }
     if (!fs.existsSync(this._path)) return null;
     this._checkFileMode();
     const raw = fs.readFileSync(this._path, "utf-8");
-    const parsed = JSON.parse(raw) as unknown;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (err) {
+      this._cache = null;
+      this._cacheExpiresAt = null;
+      throw err;
+    }
     if (
       parsed === null ||
       typeof parsed !== "object" ||
       Array.isArray(parsed)
     ) {
+      this._cache = null;
+      this._cacheExpiresAt = null;
       throw new Error(
         `file provider: ${this._path} did not contain a JSON object`,
       );
     }
     this._cache = parsed as Record<string, unknown>;
+    if (this._cacheTtlMs !== Infinity) {
+      this._cacheExpiresAt = Date.now() + this._cacheTtlMs;
+    }
     return this._cache;
   }
 }
