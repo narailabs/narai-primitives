@@ -1,0 +1,43 @@
+{
+  "name": "@narai/credential-providers",
+  "version": "0.1.0",
+  "description": "Pluggable secret-resolution providers for Node: env vars, JSON file, macOS/Linux keychain, and AWS / GCP / Azure cloud secret managers. Used by the db-agent-connector family of coding-agent plugins but usable standalone in any Node app.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=20.0.0 <21.0.0"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.39",
+    "typescript": "^5.9.3",
+    "vitest": "^3.0.0"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/narailabs/db-agent-connector",
+  "keywords": [
+    "credentials",
+    "secrets",
+    "keychain",
+    "env",
+    "aws-secrets-manager",
+    "gcp-secret-manager",
+    "azure-key-vault"
+  ]
+}
