@@ -20,17 +20,26 @@ export interface FileProviderOptions {
    * leave this at its default.
    */
   suppressWarning?: boolean;
+  /**
+   * Permit group- or world-accessible permission bits on the secrets file.
+   * Default: false — the provider refuses to read a file with mode & 0o077 != 0.
+   * Override only when running in an environment where the POSIX check cannot apply
+   * (shared CI runners with permissive umask, etc.) and you accept the exposure risk.
+   */
+  allowLoosePermissions?: boolean;
 }
 
 export class FileProvider implements CredentialProvider {
   private readonly _path: string;
   private readonly _suppressWarning: boolean;
+  private readonly _allowLoosePermissions: boolean;
   private _warned = false;
   private _cache: Record<string, unknown> | null = null;
 
   constructor(opts: FileProviderOptions) {
     this._path = opts.path;
     this._suppressWarning = opts.suppressWarning ?? false;
+    this._allowLoosePermissions = opts.allowLoosePermissions ?? false;
   }
 
   async getSecret(name: string): Promise<string | null> {
@@ -86,7 +95,7 @@ export class FileProvider implements CredentialProvider {
    */
   private _checkFileMode(): void {
     if (process.platform === "win32") return;
-    if (this._suppressWarning) return;
+    if (this._allowLoosePermissions) return;
     const st = fs.statSync(this._path);
     const insecureBits = st.mode & 0o077;
     if (insecureBits !== 0) {
