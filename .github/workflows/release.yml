@@ -4,12 +4,10 @@ name: Release
 # pushed. The package.json version is cross-checked against the tag so we
 # never publish a mismatched version.
 #
-# Setup required ONCE per repo:
-#   1. Create an npm access token at https://www.npmjs.com/settings/<user>/tokens
-#      (type: "Automation" or "Publish"). Grant it publish access to the
-#      @narai scope.
-#   2. Add it as a GitHub Actions secret named NPM_TOKEN:
-#        gh secret set NPM_TOKEN --repo narailabs/credential-providers
+# Setup required ONCE per package on npmjs.com:
+#   Configure a Trusted Publisher pointing at this repo + workflow.
+#   No stored token — GitHub Actions authenticates to npm via OIDC per publish,
+#   gated by the `id-token: write` permission below.
 #
 # Release workflow:
 #   - bump version in package.json (e.g. npm version patch)
@@ -53,8 +51,6 @@ jobs:
 
       - name: Publish to npm
         run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
