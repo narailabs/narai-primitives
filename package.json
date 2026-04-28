@@ -1,6 +1,6 @@
 {
   "name": "narai-primitives",
-  "version": "2.0.0-rc.1",
+  "version": "2.0.0",
   "description": "Read-only connectors + planning hub + connector framework, in one package. Bundles what was @narai/connector-toolkit, @narai/connector-config, @narai/connector-hub, and the seven @narai/<svc>-agent-connector packages.",
   "type": "module",
   "main": "./dist/hub/index.js",
