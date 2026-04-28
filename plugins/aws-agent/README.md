@@ -1,6 +1,6 @@
 # aws-agent-plugin
 
-Claude Code plugin that wraps [`@narai/aws-agent-connector`](https://www.npmjs.com/package/@narai/aws-agent-connector) as a read-only AWS skill and slash command.
+Claude Code plugin that wraps [`narai-primitives/aws`](https://www.npmjs.com/package/narai-primitives) as a read-only AWS skill and slash command.
 
 ## What it adds
 
@@ -21,7 +21,7 @@ hook in `hooks/hooks.json`:
    next session.
 
 After a successful install,
-`${CLAUDE_PLUGIN_DATA}/node_modules/@narai/aws-agent-connector/dist/cli.js`
+`${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/dist/connectors/aws/cli.js`
 exists and `bin/aws-agent` can exec it.
 
 ## Usage

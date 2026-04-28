@@ -10,7 +10,7 @@ context: fork
 # GCP Agent
 
 Answer the user's question by invoking the `gcp-agent` binary exposed by
-this plugin. It delegates to `@narai/gcp-agent-connector`, which speaks to
+this plugin. It delegates to `narai-primitives/gcp`, which speaks to
 GCP by shelling out to `gcloud` / `bq` with Application Default Credentials.
 
 ## Invocation

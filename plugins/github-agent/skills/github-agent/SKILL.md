@@ -11,7 +11,7 @@ context: fork
 
 Answer the user's question by invoking the `github-agent` binary
 exposed by this plugin. It delegates to
-`@narai/github-agent-connector` via GitHub's REST v3 + GraphQL APIs.
+`narai-primitives/github` via GitHub's REST v3 + GraphQL APIs.
 
 ## Invocation
 

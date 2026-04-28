@@ -1,6 +1,6 @@
 # confluence-agent-plugin
 
-Claude Code plugin that wraps `@narai/confluence-agent-connector` as a read-only Confluence skill and slash command. Same layout as aws/gcp/notion-agent-plugin.
+Claude Code plugin that wraps `narai-primitives/confluence` as a read-only Confluence skill and slash command. Same layout as aws/gcp/notion-agent-plugin.
 
 ## Credentials
 

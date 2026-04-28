@@ -1,6 +1,6 @@
 {
   "name": "gcp-agent-plugin",
-  "version": "1.0.0",
-  "description": "Read-only GCP connector for Claude Code. Wraps @narai/gcp-agent-connector. Cloud Run, Cloud SQL, Pub/Sub, Cloud Logging.",
+  "version": "1.1.0",
+  "description": "Read-only GCP connector for Claude Code. Built on narai-primitives (subpath ./gcp). Cloud Run, Cloud SQL, Pub/Sub, Cloud Logging.",
   "author": "narai"
 }

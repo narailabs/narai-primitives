@@ -11,7 +11,7 @@ context: fork
 # AWS Agent
 
 Answer the user's question by invoking the `aws-agent` binary exposed by
-this plugin. It delegates to `@narai/aws-agent-connector`, which speaks to
+this plugin. It delegates to `narai-primitives/aws`, which speaks to
 AWS via the read-only SDK v3 surface.
 
 ## Invocation

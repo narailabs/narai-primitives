@@ -4,6 +4,6 @@
   "private": true,
   "description": "Runtime manifest for gcp-agent-plugin. The SessionStart hook runs `npm install` on this manifest into ${CLAUDE_PLUGIN_DATA}.",
   "dependencies": {
-    "@narai/gcp-agent-connector": "file:.."
+    "narai-primitives": "^2.0.0"
   }
 }

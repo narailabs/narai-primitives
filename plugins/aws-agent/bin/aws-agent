@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aws-agent — thin shim over @narai/aws-agent-connector.
+# aws-agent — thin shim over narai-primitives (CLI at dist/connectors/aws).
 #
 # The SessionStart hook in hooks/hooks.json installs the npm package into
 # ${CLAUDE_PLUGIN_DATA}/node_modules on first session. This shim exec's
@@ -11,7 +11,7 @@ if [ -z "${CLAUDE_PLUGIN_DATA:-}" ]; then
   exit 2
 fi
 
-CLI="${CLAUDE_PLUGIN_DATA}/node_modules/@narai/aws-agent-connector/dist/cli.js"
+CLI="${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/dist/connectors/aws/cli.js"
 
 if [ ! -f "$CLI" ]; then
   echo "aws-agent: connector CLI not found at $CLI" >&2
