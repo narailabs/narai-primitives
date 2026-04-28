@@ -1,0 +1,81 @@
+/**
+ * Per-method tests for {{ServicePascal}}Client. Mock the fetch implementation,
+ * assert that the client emits the right URL/method/body and parses the
+ * response correctly into the Result envelope.
+ */
+import { describe, expect, it } from "vitest";
+import {
+  {{ServicePascal}}Client,
+  type {{ServicePascal}}ClientOptions,
+} from "../../src/lib/{{SERVICE_SLUG}}_client.js";
+
+function jsonResponse(
+  body: unknown,
+  init: { status?: number; headers?: Record<string, string> } = {},
+): Response {
+  return new Response(JSON.stringify(body), {
+    status: init.status ?? 200,
+    headers: {
+      "Content-Type": "application/json",
+      ...(init.headers ?? {}),
+    },
+  });
+}
+
+function makeClient(
+  overrides: Partial<{{ServicePascal}}ClientOptions>,
+  fetchMock: (url: string, init?: RequestInit) => Promise<Response>,
+): {{ServicePascal}}Client {
+  return new {{ServicePascal}}Client({
+{{TEST_CLIENT_CREDS}}
+    rateLimitPerMin: 100,
+    connectTimeoutMs: 50,
+    readTimeoutMs: 50,
+    fetchImpl: async (url, init) => fetchMock(String(url), init),
+    sleepImpl: async () => {},
+    ...overrides,
+  });
+}
+
+describe("{{ServicePascal}}Client", () => {
+  // {{CLIENT_METHOD_TESTS}}
+  // (The scaffolder generates one test per public client method, e.g.:
+  //   it("getCustomer hits /v1/customers/:id with auth header", async () => {
+  //     let calledUrl = "";
+  //     let calledHeaders: Record<string, string> = {};
+  //     const client = makeClient({}, async (url, init) => {
+  //       calledUrl = url;
+  //       calledHeaders = (init?.headers as Record<string, string>) ?? {};
+  //       return jsonResponse({ id: "cus_1", email: "a@b.c" });
+  //     });
+  //     const r = await client.getCustomer("cus_1");
+  //     expect(r.ok).toBe(true);
+  //     expect(calledUrl).toContain("/v1/customers/cus_1");
+  //     expect(calledHeaders["Authorization"]).toMatch(/^Bearer /);
+  //   });
+  // )
+
+  it("classifies HTTP 401 as UNAUTHORIZED, non-retriable", async () => {
+    const client = makeClient({}, async () =>
+      jsonResponse({ error: "unauthorized" }, { status: 401 }),
+    );
+    const r = await client.request("GET", "/healthz");
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe("UNAUTHORIZED");
+      expect(r.retriable).toBe(false);
+    }
+  });
+
+  it("retries on HTTP 500 then succeeds", async () => {
+    let calls = 0;
+    const client = makeClient({}, async () => {
+      calls += 1;
+      if (calls < 2) return jsonResponse({}, { status: 500 });
+      return jsonResponse({ ok: true });
+    });
+    const r = await client.request("GET", "/healthz");
+    expect(r.ok).toBe(true);
+    expect(calls).toBe(2);
+  });
+});

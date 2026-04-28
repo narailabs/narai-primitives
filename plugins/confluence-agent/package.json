@@ -1,0 +1,8 @@
+{
+  "name": "confluence-agent-plugin-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@narai/confluence-agent-connector": "file:.."
+  }
+}

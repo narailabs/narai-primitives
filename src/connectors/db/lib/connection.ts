@@ -1,0 +1,414 @@
+/**
+ * connection.ts — Connection-pool registry keyed by environment name.
+ *
+ * Wraps driver-native connection pools behind a uniform acquire/release
+ * API. For Phase F the only shipped driver is `SQLiteDriver` (no native
+ * pool; each `getConnection()` opens a fresh handle and `release` closes
+ * it). Phase E drivers (pg, mysql, mssql, mongo, dynamo) will register
+ * themselves with pool-aware factories via {@link registerDriverFactory}.
+ *
+ * Shutdown:
+ *  - `shutdownAll()` closes every driver in the registry.
+ *  - We register `SIGINT`, `SIGTERM`, and `exit` handlers the first time
+ *    `getConnection()` is called, so long-running scripts release their
+ *    pools on process teardown.
+ */
+import { getEnvironment } from "./environments.js";
+import { DatabaseDriver } from "./drivers/base.js";
+import { logEvent } from "./audit.js";
+import { parseCredentialRef, resolveSecret } from "@narai/credential-providers";
+
+// ---------------------------------------------------------------------------
+// Driver factory registry
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns a concrete `DatabaseDriver` for a given environment's config.
+ *
+ * For pool-aware drivers (Phase E: pg, mysql, mssql, mongo, dynamo) the
+ * factory is expected to return a driver that wraps a connection pool
+ * internally — one driver instance per environment, reused across calls.
+ */
+export type DriverFactory = (
+  envConfig: Record<string, unknown>,
+) => DatabaseDriver;
+
+const _driverFactories: Map<string, DriverFactory> = new Map();
+
+/** Register a factory under a driver name (e.g. "sqlite", "postgresql"). */
+export function registerDriverFactory(
+  name: string,
+  factory: DriverFactory,
+): void {
+  _driverFactories.set(name, factory);
+}
+
+/** Remove all registered factories (test helper). */
+export function clearDriverFactories(): void {
+  _driverFactories.clear();
+}
+
+/** Return registered driver names (test helper). */
+export function listDriverFactories(): string[] {
+  return [..._driverFactories.keys()];
+}
+
+// Drivers are no longer eagerly registered here — `ensureDriver(name)`
+// (in `./drivers/register.ts`) dynamic-imports each driver on first use,
+// keeping optional deps (`pg`, `mysql2`, `mssql`, `mongodb`, DynamoDB)
+// out of memory unless a config references them.
+
+// ---------------------------------------------------------------------------
+// Pool entry — one per environment
+// ---------------------------------------------------------------------------
+
+/** A handle returned by {@link getConnection}. */
+export interface Connection {
+  /** The environment name this handle was opened for. */
+  envName: string;
+  /** Driver-native connection object (opaque). */
+  native: unknown;
+  /** Driver used to create this connection (used by release/healthCheck). */
+  driver: DatabaseDriver;
+}
+
+interface PoolEntry {
+  envName: string;
+  driver: DatabaseDriver;
+  /** Open native handles owned by this pool (so we can close them all). */
+  openConnections: Set<unknown>;
+}
+
+const _pools: Map<string, PoolEntry> = new Map();
+
+// ---------------------------------------------------------------------------
+// Lifecycle handlers
+// ---------------------------------------------------------------------------
+
+let _handlersInstalled = false;
+
+function _installShutdownHandlers(): void {
+  if (_handlersInstalled) return;
+  _handlersInstalled = true;
+
+  // `exit` fires once per process; make the cleanup best-effort and
+  // synchronous where possible so pools are released before Node exits.
+  process.on("exit", () => {
+    try {
+      _shutdownAllSync();
+    } catch {
+      /* best-effort */
+    }
+  });
+
+  // Signals: flush pools so native connections release promptly, then
+  // leave the exit decision to the host. Calling `process.exit()` here
+  // would clobber any user-installed SIGINT/SIGTERM handler in an
+  // application that embeds wiki_db, so we deliberately do not do that.
+  // Node's default behavior (exit with 128+signum when no other listener
+  // calls `preventDefault`-equivalent) still applies when no handler
+  // keeps the process alive.
+  for (const sig of ["SIGINT", "SIGTERM"] as const) {
+    process.on(sig, () => {
+      try {
+        _shutdownAllSync();
+      } catch {
+        /* best-effort */
+      }
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pool operations
+// ---------------------------------------------------------------------------
+
+/**
+ * Obtain a connection for the named environment. Creates the driver and
+ * pool lazily on first call. Returns a handle that must be passed to
+ * {@link releaseConnection} when done.
+ *
+ * G-CONN-AWAIT: async drivers (pg, mysql, mssql, mongo, dynamo) return
+ * a Promise from `connect()`. We await the resolved handle before
+ * registering it in `openConnections` so identity-based lookups in
+ * `releaseConnection`/`shutdownAll` match the same object the caller
+ * holds. `Promise.resolve(x)` no-ops on the sync SQLite path.
+ */
+export async function getConnection(envName: string): Promise<Connection> {
+  _installShutdownHandlers();
+
+  let entry = _pools.get(envName);
+  if (entry === undefined) {
+    entry = await _buildPoolAsync(envName);
+    _pools.set(envName, entry);
+  }
+
+  const envCfg = _resolveEnvConfig(envName);
+  const resolvedCfg = await _resolveCredentials(envCfg);
+  const native = await Promise.resolve(entry.driver.connect(resolvedCfg));
+  entry.openConnections.add(native);
+  return { envName, native, driver: entry.driver };
+}
+
+/** Release a connection back to its pool (closes native handle). */
+export function releaseConnection(envName: string, conn: Connection): void {
+  const entry = _pools.get(envName);
+  if (entry === undefined) return;
+  if (!entry.openConnections.has(conn.native)) return;
+  entry.openConnections.delete(conn.native);
+  try {
+    entry.driver.close(conn.native);
+  } catch {
+    /* best-effort */
+  }
+  // A5 (G-DB-AUDIT extension): emit `connection_released` so the audit
+  // trail of a schema or query call has a clean lifecycle marker —
+  // `[pool_created, schema_inspect, connection_released]` rather than
+  // just `[pool_created]`. logEvent is best-effort and silently no-ops
+  // when audit isn't enabled, so the new emit is safe in every code
+  // path that releases a pooled connection.
+  logEvent({
+    event_type: "connection_released",
+    details: { env: envName },
+  });
+}
+
+/** Optional async execute hook exposed by Phase E drivers. */
+interface AsyncExecuteDriver {
+  executeReadAsync?(
+    conn: unknown,
+    query: string,
+    params?: unknown[] | null,
+    maxRows?: number,
+    timeoutMs?: number,
+  ): Promise<{ status: "success" | "error" }>;
+}
+
+/** Optional liveness hook exposed by Phase E drivers. */
+interface HealthCheckDriver {
+  healthCheck?(conn: unknown): Promise<boolean> | boolean;
+}
+
+/** Optional pool-drain hook exposed by Phase E drivers. */
+interface ShutdownDriver {
+  shutdown?(): Promise<void> | void;
+}
+
+/**
+ * Cheap liveness check. Returns `true` on success, `false` on any error.
+ *
+ * Preference order:
+ *  1. `driver.healthCheck(native)` — Phase E drivers use engine-appropriate
+ *     probes (Mongo `ping`, DynamoDB `ListTables`, etc.) that `SELECT 1`
+ *     cannot express.
+ *  2. `driver.executeReadAsync(..., "SELECT 1", ...)` — SQL drivers.
+ *  3. `driver.executeRead(..., "SELECT 1", ...)` — legacy sync path
+ *     (SQLite, mocked test drivers).
+ */
+export async function healthCheck(envName: string): Promise<boolean> {
+  let conn: Connection | null = null;
+  try {
+    conn = await getConnection(envName);
+    const driverHealthCheck = (conn.driver as HealthCheckDriver).healthCheck;
+    if (typeof driverHealthCheck === "function") {
+      return Boolean(await driverHealthCheck.call(conn.driver, conn.native));
+    }
+    const asyncHook = (conn.driver as AsyncExecuteDriver).executeReadAsync;
+    if (typeof asyncHook === "function") {
+      const result = await asyncHook.call(
+        conn.driver,
+        conn.native,
+        "SELECT 1",
+        [],
+        1,
+        5000,
+      );
+      return result.status === "success";
+    }
+    const result = conn.driver.executeRead(conn.native, "SELECT 1", [], 1, 5000);
+    return result.status === "success";
+  } catch {
+    return false;
+  } finally {
+    if (conn !== null) releaseConnection(envName, conn);
+  }
+}
+
+/**
+ * Close every pool and drop the registry. Awaits each driver's
+ * `shutdown()` so native connection pools (pg.Pool, mysql2 pool,
+ * mssql.ConnectionPool, MongoClient) are fully drained before we return.
+ */
+export async function shutdownAll(): Promise<void> {
+  const drains: Promise<unknown>[] = [];
+  for (const entry of _pools.values()) {
+    for (const native of [...entry.openConnections]) {
+      try {
+        entry.driver.close(native);
+      } catch {
+        /* best-effort */
+      }
+    }
+    entry.openConnections.clear();
+    const shutdownFn = (entry.driver as ShutdownDriver).shutdown;
+    if (typeof shutdownFn === "function") {
+      try {
+        const result = shutdownFn.call(entry.driver);
+        if (result instanceof Promise) {
+          drains.push(result.catch(() => undefined));
+        }
+      } catch {
+        /* best-effort */
+      }
+    }
+  }
+  _pools.clear();
+  await Promise.all(drains);
+}
+
+/**
+ * Synchronous variant used from the `exit` handler (Node's `exit` event
+ * is strictly synchronous — we cannot await there). We still call each
+ * driver's `shutdown()` fire-and-forget so pool teardown starts; any
+ * rejected promises get an empty catch handler attached so they do not
+ * crash the exiting process.
+ */
+function _shutdownAllSync(): void {
+  for (const entry of _pools.values()) {
+    for (const native of [...entry.openConnections]) {
+      try {
+        entry.driver.close(native);
+      } catch {
+        /* best-effort */
+      }
+    }
+    entry.openConnections.clear();
+    const shutdownFn = (entry.driver as ShutdownDriver).shutdown;
+    if (typeof shutdownFn === "function") {
+      try {
+        const result = shutdownFn.call(entry.driver);
+        if (result instanceof Promise) {
+          result.catch(() => undefined);
+        }
+      } catch {
+        /* best-effort */
+      }
+    }
+  }
+  _pools.clear();
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+async function _buildPoolAsync(envName: string): Promise<PoolEntry> {
+  const envCfg = _resolveEnvConfig(envName);
+  const driverName = _driverName(envCfg);
+  // Lazy-load the driver module (and its optional heavy dep) on first use.
+  // Imported here to avoid a static dependency cycle between connection.ts
+  // and drivers/register.ts (register.ts imports `registerDriverFactory`
+  // from this module).
+  const { ensureDriver } = await import("./drivers/register.js");
+  await ensureDriver(driverName);
+  const factory = _driverFactories.get(driverName);
+  if (factory === undefined) {
+    throw new Error(
+      `connection: no driver factory registered for '${driverName}'. ` +
+        `Registered: [${[..._driverFactories.keys()].join(", ") || "none"}]`,
+    );
+  }
+  const driver = factory(envCfg);
+  // G-DB-AUDIT: emit `pool_created` once per environment (this function is
+  // only invoked on the first getConnection() for a given envName).
+  logEvent({
+    event_type: "pool_created",
+    details: { env: envName, driver: driverName },
+  });
+  return { envName, driver, openConnections: new Set() };
+}
+
+/**
+ * Resolve an environment's config. If the env is registered via
+ * `environments.registerEnvironment`, we return that; otherwise we throw
+ * a clear error.
+ *
+ * Returned shape is a plain record so driver factories can consume it
+ * without importing `EnvironmentConfig` directly. Any `extras` stored on
+ * the env record (plugin-config path: user, password, ssl, region,
+ * endpoint, url, pool, ...) are spread on top of the legacy named fields
+ * so driver-specific knobs flow through to `driver.connect()`.
+ */
+function _resolveEnvConfig(envName: string): Record<string, unknown> {
+  const env = getEnvironment(envName);
+  const base: Record<string, unknown> = {
+    host: env.host,
+    port: env.port,
+    database: env.database,
+    schema: env.schema,
+    approval_mode: env.approval_mode,
+    driver: env.driver,
+  };
+  if (env.extras !== undefined) {
+    for (const [k, v] of Object.entries(env.extras)) {
+      base[k] = v;
+    }
+  }
+  return base;
+}
+
+function _driverName(envCfg: Record<string, unknown>): string {
+  const d = envCfg["driver"];
+  return typeof d === "string" ? d : "postgresql";
+}
+
+/**
+ * Walk a resolved env config and expand credential references of the form
+ * `provider:key` into their resolved secret value. Currently handles the
+ * `env_var` provider inline (common case) and defers to `resolveSecret` for
+ * others. Plain strings with no recognized prefix pass through unchanged.
+ */
+async function _resolveCredentials(
+  envCfg: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(envCfg)) {
+    if (typeof v !== "string") {
+      out[k] = v;
+      continue;
+    }
+    const ref = parseCredentialRef(v);
+    if (ref === null) {
+      out[k] = v;
+      continue;
+    }
+    if (ref.provider === "env_var") {
+      const resolved = process.env[ref.key];
+      out[k] = resolved ?? v;
+      continue;
+    }
+    try {
+      const resolved = await resolveSecret(ref.key, { provider: ref.provider });
+      out[k] = resolved ?? v;
+    } catch {
+      // Secret backend threw — keep the literal reference so the driver's
+      // connect() surfaces an auth error instead of silently mis-configuring.
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Introspection helpers (tests)
+// ---------------------------------------------------------------------------
+
+/** Return whether a pool exists for the given env (test helper). */
+export function _hasPool(envName: string): boolean {
+  return _pools.has(envName);
+}
+
+/** Return the number of open connections in a pool (test helper). */
+export function _openCount(envName: string): number {
+  return _pools.get(envName)?.openConnections.size ?? 0;
+}

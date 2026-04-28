@@ -1,0 +1,24 @@
+#!/usr/bin/env node
+/**
+ * Thin bin entry. Library code lives in index.ts.
+ *
+ * Reads `~/.connectors/config.yaml` (or `NARAI_CONFIG_BLOB`, when injected
+ * by `@narai/connector-hub`) before `main()` runs and applies any configured
+ * credentials to `process.env`. Existing exports win — the bootstrap only
+ * fills in undefined entries.
+ */
+import { loadConnectorEnvironment } from "@narai/connector-config";
+import connector from "./index.js";
+
+const {{SERVICE_SLUG_UPPER}}_ENV_MAPPING: Record<string, string> = {
+{{ENV_MAPPING_BODY}}
+};
+
+async function run(): Promise<number> {
+  await loadConnectorEnvironment("{{SERVICE_SLUG}}", { envMapping: {{SERVICE_SLUG_UPPER}}_ENV_MAPPING });
+  return connector.main(process.argv.slice(2));
+}
+
+void run().then((code) => {
+  process.exit(code);
+});

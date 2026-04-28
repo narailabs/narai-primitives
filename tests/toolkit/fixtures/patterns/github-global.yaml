@@ -1,0 +1,12 @@
+version: 1
+last_updated: 2026-04-22T10:00:00Z
+patterns:
+  - pattern_id: gh-asset-302
+    status: active
+    confidence: 1.0
+    kind: connection_error
+    actions: [get_release_asset]
+    matcher:
+      context_regex: "302|redirect"
+    advice: |
+      Release asset downloads 302 to S3 — fetchImpl must follow redirects.

@@ -1,0 +1,82 @@
+# Release pipeline: tag -> npm publish + GitHub Release.
+#
+# Trigger:  push a tag matching v*.*.* (e.g. `git tag v1.0.0 && git push --tags`).
+# Requires: repo secret NPM_TOKEN with publish permission on the @narai scope.
+#
+# The job fails closed if the tag version doesn't match package.json,
+# so `npm version <bump>` + tag push keeps the two in sync.
+#
+# Pre-release tags (v1.2.3-rc.1) publish under the `next` npm dist-tag and
+# are marked as pre-releases on GitHub; plain semver tags go to `latest`.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write   # create GitHub Release
+  id-token: write   # npm provenance (SLSA)
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Verify tag matches package.json version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag v$TAG_VERSION does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+          echo "Releasing $PKG_VERSION"
+
+      - name: Determine npm dist-tag
+        id: disttag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "$VERSION" == *-* ]]; then
+            echo "tag=next" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Tests + coverage (with thresholds)
+        run: npm run coverage
+
+      - name: Publish to npm
+        run: npm publish --provenance --tag "${{ steps.disttag.outputs.tag }}"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          FLAGS=(--generate-notes --verify-tag)
+          if [ "${{ steps.disttag.outputs.prerelease }}" = "true" ]; then
+            FLAGS+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" "${FLAGS[@]}"

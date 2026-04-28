@@ -1,0 +1,38 @@
+---
+name: {{SERVICE_SLUG}}-agent
+description: |
+  {{SKILL_DESCRIPTION}}
+context: fork
+---
+
+# {{ServicePascal}} Agent
+
+Answer the user's question by invoking the `{{SERVICE_SLUG}}-agent` binary exposed
+by this plugin. It delegates to `@narai/{{SERVICE_SLUG}}-agent-connector`, which
+speaks to {{API_DESCRIPTION}}.
+
+## Invocation
+
+```
+{{SERVICE_SLUG}}-agent --action <action> --params '<json>'
+```
+
+Return the JSON envelope from the CLI verbatim.
+
+## Supported actions
+
+{{ACTIONS_TABLE}}
+
+Example:
+
+```bash
+{{SERVICE_SLUG}}-agent --action {{FIRST_ACTION}} --params '{{FIRST_ACTION_EXAMPLE_PARAMS}}'
+```
+
+## Credentials
+
+{{CREDENTIAL_INSTRUCTIONS}}
+
+## Safety
+
+{{SAFETY_NOTE}}

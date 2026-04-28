@@ -1,0 +1,172 @@
+{
+  "skill_name": "create-connector",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I want to wrap Stripe's API as a Claude Code connector. Just read-only — list customers, get a customer by ID, list charges. The API takes a Bearer token via STRIPE_API_KEY. Base URL https://api.stripe.com.",
+      "expected_output": "A working stripe-agent-connector scaffold at /Users/narayan/src/connectors/stripe-agent-connector/. All 19 canonical files present (package.json, tsconfig.json, vitest.config.ts, README.md, LICENSE, .npmignore, .gitignore, src/cli.ts, src/index.ts, src/lib/stripe_client.ts, src/lib/stripe_error.ts, tests/unit/cli.test.ts, tests/unit/stripe_client_extras.test.ts, tests/integration/framework.test.ts, plugin/.claude-plugin/plugin.json, plugin/hooks/hooks.json, plugin/hooks/reminder.mjs, plugin/bin/stripe-agent (executable), plugin/skills/stripe-agent/SKILL.md, plugin/commands/stripe-agent.md). Bearer auth in client. Three read-classified actions. npm run build + typecheck + test all green. Smoke envelope is valid JSON with status:error and error_code:CONFIG_ERROR.",
+      "files": [],
+      "expectations": [
+        "Directory exists at /Users/narayan/src/connectors/stripe-agent-connector/",
+        "package.json declares name '@narai/stripe-agent-connector'",
+        "package.json depends on '@narai/connector-toolkit' at '^3.1.0', '@narai/credential-providers' at '^0.2.1', '@narai/connector-config' at '^1.1.0', and 'zod' at '^3.23.0'",
+        "package.json exposes a bin entry 'stripe-agent-connector' pointing at './dist/cli.js'",
+        "src/cli.ts imports loadConnectorEnvironment from '@narai/connector-config' and declares a STRIPE_ENV_MAPPING with token mapped to 'STRIPE_API_KEY'",
+        "src/lib/stripe_client.ts has a class StripeClient with a Result-envelope contract (returns StripeResult<T> from request methods)",
+        "src/lib/stripe_client.ts builds the Authorization header as `Bearer ${this._token}` (not X-API-Key, not Basic)",
+        "src/index.ts uses createConnector from '@narai/connector-toolkit' and registers exactly three actions: get_customer, list_customers, list_charges",
+        "All three actions in src/index.ts carry classify: { kind: 'read' }",
+        "src/index.ts exports a default connector and re-exports main, fetch, validActions",
+        "plugin/hooks/hooks.json declares all four canonical hook arrays: SessionStart (with three commands: npm install diff/install, reminder.mjs, stale-summarize.mjs), PostToolUse (with usage-record.mjs), and SessionEnd (with session-summary.mjs)",
+        "plugin/bin/stripe-agent is a bash shim that execs '${CLAUDE_PLUGIN_DATA}/node_modules/@narai/stripe-agent-connector/dist/cli.js' and is marked executable",
+        "plugin/skills/stripe-agent/SKILL.md has frontmatter with name 'stripe-agent' and context 'fork', plus an actions table covering the three Stripe actions",
+        ".npmignore excludes src/, tests/, plugin/, evals/",
+        "Running `npm run build` in the new directory exits 0 and produces dist/cli.js plus dist/index.js",
+        "Running `npm run typecheck` in the new directory exits 0 silently",
+        "Running `npm test` in the new directory passes all tests (no failures)",
+        "Running `node dist/cli.js --action list_customers --params '{}'` (without STRIPE_API_KEY set) emits a JSON object on stdout with status='error' and error_code='CONFIG_ERROR'"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "We have an internal REST API at https://api.acme.internal exposing GET /v1/orders/:id and GET /v1/orders?customer=X. Auth is X-API-Key header set from ACME_API_KEY. Two actions: get_order and list_orders. Pagination uses limit + offset query params, default limit 25, max 100.",
+      "expected_output": "An acme-agent-connector scaffold using X-API-Key (not Bearer) auth, custom base URL https://api.acme.internal, two read-classified actions, and standard verification passing.",
+      "files": [],
+      "expectations": [
+        "Directory exists at /Users/narayan/src/connectors/acme-agent-connector/",
+        "src/cli.ts maps the auth env var name to ACME_API_KEY",
+        "src/lib/acme_client.ts builds the auth header as 'X-API-Key: ${this._token}' (NOT Authorization: Bearer)",
+        "src/lib/acme_client.ts uses base URL constant 'https://api.acme.internal'",
+        "src/index.ts registers exactly two actions: get_order (params include id) and list_orders (params include limit with default 25 and max 100, plus optional customer)",
+        "Both actions classified as read",
+        "list_orders Zod schema uses .max(100) on the limit field",
+        "Running `npm run build` exits 0",
+        "Running `npm test` passes all tests",
+        "Smoke envelope from `node dist/cli.js --action get_order --params '{\"id\":\"x\"}'` (no creds) returns valid JSON with error_code CONFIG_ERROR"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "We have a GraphQL endpoint at https://api.linear.app/graphql. I want to expose two read-only queries: get_issue (takes issue id, returns id, title, state) and search_issues (takes query string and optional limit, returns matching issues). Auth is Bearer LINEAR_API_KEY.",
+      "expected_output": "A linear-agent-connector scaffold whose client methods do POST /graphql with a query string + variables, two read-classified actions matching the GraphQL queries, and standard verification passing.",
+      "files": [],
+      "expectations": [
+        "Directory exists at /Users/narayan/src/connectors/linear-agent-connector/",
+        "src/lib/linear_client.ts contains methods that POST to '/graphql' (the single GraphQL endpoint pattern)",
+        "Each public client method constructs a GraphQL query string with variables and posts it as JSON",
+        "src/index.ts registers exactly two actions: get_issue and search_issues, both classified as read",
+        "src/cli.ts maps the auth env var to LINEAR_API_KEY",
+        "Authorization header is 'Bearer ${this._token}'",
+        "Running `npm run build` exits 0 and produces dist/",
+        "Running `npm test` passes all tests"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "I want to wrap our internal Slack-like messaging API. Two actions: list_channels (read) and post_message (sends a message — definitely a write). API at https://api.acme-msg.internal, auth Bearer ACME_MSG_TOKEN. The message body should support text + optional thread_ts.",
+      "expected_output": "An acme-msg-agent-connector scaffold where post_message is correctly classified as write, the skill explained the approval-mode implications during interview, and the post-scaffold next-steps mention that the policy gate engages on post_message at runtime.",
+      "files": [],
+      "expectations": [
+        "Directory exists at /Users/narayan/src/connectors/acme-msg-agent-connector/",
+        "src/index.ts registers list_channels with classify: { kind: 'read' }",
+        "src/index.ts registers post_message with classify: { kind: 'write' } (NOT read)",
+        "post_message Zod schema requires text (string) and accepts optional thread_ts",
+        "src/lib/acme-msg_client.ts (or acme_msg_client.ts depending on slug-handling) has a postMessage public method using HTTP POST",
+        "During the conversation, the skill explicitly explains approval-mode implications for the write action (transcript should mention 'confirm_once' or 'approval mode' or the toolkit's policy gate)",
+        "The skill's post-scaffold message tells the user that post_message will engage the policy gate at runtime",
+        "Running `npm run build` exits 0",
+        "Running `npm test` passes all tests"
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "I want to query my company's Postgres database from Claude — specifically a few tables in the orders schema for analytics work.",
+      "expected_output": "The skill recognizes that db-agent-connector already supports Postgres and redirects the user to install/configure it instead of scaffolding a new connector. No new connector files are created. The response walks through the canonical db-agent setup: which CLAUDE.md to read, how ~/.connectors/db-agent/config.yaml is structured, what policy rules to set, and a smoke command.",
+      "files": [],
+      "expectations": [
+        "No new directory is created under /Users/narayan/src/connectors/ (no postgres-agent-connector/, no orders-agent-connector/)",
+        "The skill's response mentions db-agent-connector by name",
+        "The skill's response references /Users/narayan/src/connectors/db-agent-connector/CLAUDE.md as authoritative documentation",
+        "The skill's response mentions ~/.connectors/db-agent/config.yaml as the configuration location",
+        "The skill's response explains the policy rules (read/dml/ddl/privilege) at least in summary",
+        "The skill's response provides a smoke-test command using db-agent-connector",
+        "The skill explains why db-agent is the right choice (multi-backend, present_only state, policy-gated) rather than just deflecting",
+        "The skill does NOT scaffold any new connector files"
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "I want to wrap an existing MCP server my team built (it's a wrapper around our incident-response tooling) so other engineers can use it via Claude.",
+      "expected_output": "The skill recognizes that MCP servers are a different abstraction in Claude Code and points the user at the MCP server config docs. No new connector is scaffolded.",
+      "files": [],
+      "expectations": [
+        "No new directory is created under /Users/narayan/src/connectors/",
+        "The skill's response mentions MCP servers as a different abstraction from connectors",
+        "The skill's response points the user at Claude Code's MCP server config (e.g., .mcp.json or the MCP docs)",
+        "The skill explicitly does NOT scaffold a new connector",
+        "The skill's response gives the user a clear next step (configure MCP server in Claude Code settings, not build a connector)"
+      ]
+    },
+    {
+      "id": 7,
+      "prompt": "I need a connector for our private GitHub Enterprise instance at https://github.acme-corp.internal. Read-only: list_repos for an org, get_repo by name, list_pull_requests for a repo. Auth needs both a personal access token (env: ACME_GH_TOKEN) and a default org name (env: ACME_GH_ORG) — the org gets used in URL paths so it has to be threaded through the client.",
+      "expected_output": "An acme-gh-agent-connector scaffold using multi-secret auth (token + org), with the org plumbed through the client constructor and used in URL construction for actions that need it.",
+      "files": [],
+      "expectations": [
+        "Directory exists at /Users/narayan/src/connectors/acme-gh-agent-connector/",
+        "src/cli.ts declares an ENV_MAPPING with two entries (token → ACME_GH_TOKEN, org → ACME_GH_ORG)",
+        "src/lib/acme-gh_client.ts (or equivalent) has a ClientOptions interface with both token and org as required fields",
+        "The Client constructor stores both as private fields (private readonly _token AND private readonly _org)",
+        "loadCredentials returns null when either env var is missing",
+        "At least one client method uses this._org in the URL path (e.g., for list_repos)",
+        "Three actions registered: list_repos, get_repo, list_pull_requests (all classified as read)",
+        "Running `npm run build` exits 0",
+        "Running `npm test` passes all tests"
+      ]
+    },
+    {
+      "id": 8,
+      "prompt": "Wrap Salesforce REST API as a connector. Auth is OAuth 2.0 with refresh tokens — we have a client_id, client_secret, and refresh_token, exchanged at /services/oauth2/token for an access token. I want list_accounts and get_account actions to start.",
+      "expected_output": "A salesforce-agent-connector scaffold that explicitly flags OAuth as not-templated, leaves a placeholder loadSalesforceCredentials with a TODO for the OAuth flow, and the skill's post-scaffold next-steps tell the user they have to implement the refresh-token exchange before the connector will work against the live API.",
+      "files": [],
+      "expectations": [
+        "Directory exists at /Users/narayan/src/connectors/salesforce-agent-connector/",
+        "src/lib/salesforce_client.ts has a loadSalesforceCredentials function with a TODO comment indicating OAuth flow needs implementation",
+        "The TODO comment mentions: reading a refresh token, exchanging at the token endpoint, caching the access token until expiry",
+        "The skill's response to the user includes an explicit warning that OAuth is not templated and requires manual implementation",
+        "Two actions registered: list_accounts and get_account, both classified as read",
+        "src/lib/salesforce_client.ts builds requests with an Authorization header of the form 'Bearer ${this._access_token}' (using a placeholder access_token field that the OAuth flow would populate)",
+        "The post-scaffold next-steps explicitly tell the user the OAuth flow must be filled in before live use"
+      ]
+    },
+    {
+      "id": 9,
+      "prompt": "I have a CLI tool called 'incident-cli' installed system-wide. It supports `incident-cli list --service=<name>` and `incident-cli show <id>`. I want a connector that wraps these as actions called list_incidents and get_incident.",
+      "expected_output": "An incident-cli-agent-connector scaffold whose client methods shell out to the incident-cli binary via child_process (instead of HTTP fetch), with two read-classified actions.",
+      "files": [],
+      "expectations": [
+        "Directory exists at /Users/narayan/src/connectors/incident-cli-agent-connector/ (or similar slug)",
+        "src/lib/<slug>_client.ts uses node:child_process (execFile or spawn) instead of HTTP fetch for at least the action methods",
+        "list_incidents method invokes 'incident-cli list --service=<name>' style command",
+        "get_incident method invokes 'incident-cli show <id>' style command",
+        "Both actions classified as read",
+        "stdout from the CLI is parsed into the Result envelope shape",
+        "Errors from the CLI (non-zero exit, stderr) are translated into the error envelope with retriable: false",
+        "Running `npm run build` exits 0"
+      ]
+    },
+    {
+      "id": 10,
+      "prompt": "I'm working on the existing notion-agent-connector and want to add a new action called search_blocks that takes a block_id and returns the block's children. Can you help?",
+      "expected_output": "The skill correctly identifies this as a modification to an EXISTING connector, not a new scaffolding job. The skill declines to scaffold and points the user at the existing notion-agent-connector source files (specifically src/index.ts and src/lib/notion_client.ts) where the new action should be added.",
+      "files": [],
+      "expectations": [
+        "No new directory is created (no search-blocks-agent-connector/, no notion-blocks-agent-connector/, etc.)",
+        "The skill's response makes clear this is a modification to the existing connector, not a new scaffold",
+        "The skill points the user at the actual files to edit: notion-agent-connector/src/index.ts (for the action definition) and notion-agent-connector/src/lib/notion_client.ts (for the client method)",
+        "The skill does NOT walk through the standard interview (slug, auth, base URL, etc.) since none of that applies",
+        "The skill does NOT invoke the create-connector scaffolding path"
+      ]
+    }
+  ]
+}

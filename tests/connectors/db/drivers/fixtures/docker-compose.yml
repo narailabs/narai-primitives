@@ -1,0 +1,128 @@
+# docker-compose.yml — live-integration fixture for Phase E drivers.
+#
+# Invoked by `scripts/test-integration.sh` (and the `integration` CI job),
+# which brings everything up with `--wait`, runs `tests/drivers/live_*.test.ts`
+# with TEST_LIVE_* set, and tears down on exit.
+#
+# Local quick-start (single service):
+#   docker compose -f tests/drivers/fixtures/docker-compose.yml up -d --wait postgres
+#   TEST_LIVE_PG=1 npx vitest run tests/drivers/live_postgresql.test.ts
+#
+# Local full run (all services, recommended):
+#   npm run test:integration
+#
+# Ports are chosen to match each engine's default so env-var overrides are
+# usually unnecessary. Data is in-memory (tmpfs) because these containers
+# are disposable.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: wikidb-postgres
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+    ports:
+      # Host 5433 → container 5432 to avoid clashing with a developer's
+      # local Postgres (or Postgres container from another project) on the
+      # standard 5432. Matches the TEST_PG_PORT default in the live test.
+      - "5433:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mysql:
+    image: mysql:8.4
+    container_name: wikidb-mysql
+    # Shrink MySQL's RAM footprint so all five DB services fit comfortably
+    # in a default 2GB Colima VM. InnoDB's buffer pool defaults to 128MB;
+    # 64MB is more than enough for the tiny `users` fixture.
+    command: >-
+      --innodb-buffer-pool-size=64M
+      --performance-schema=OFF
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: mysql
+    ports:
+      - "3306:3306"
+    tmpfs:
+      - /var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  sqlserver:
+    # azure-sql-edge is Microsoft's multi-arch (linux/amd64 + linux/arm64)
+    # SQL Server variant for local dev — required on Apple Silicon since
+    # mcr.microsoft.com/mssql/server:2022-latest is amd64-only. Wire protocol
+    # is identical to SQL Server 2022, so the `mssql` npm driver is exercised
+    # through the same code path. CI (Ubuntu x86_64) is equally happy with
+    # this image.
+    image: mcr.microsoft.com/azure-sql-edge:latest
+    container_name: wikidb-mssql
+    environment:
+      ACCEPT_EULA: "1"
+      MSSQL_SA_PASSWORD: "YourStrong@Pass1"
+      # Cap SQL Edge RAM so it fits alongside the other four DBs in a
+      # default 2GB Colima VM. Plenty for the tiny `users` fixture.
+      MSSQL_MEMORY_LIMIT_MB: "512"
+    ports:
+      - "1433:1433"
+    # azure-sql-edge ships no sqlcmd, so do a TCP-port healthcheck via
+    # bash's /dev/tcp feature (the image has bash). Login readiness is
+    # further verified in each live test's `beforeAll` via a retry loop on
+    # the real mssql client, because SQL can accept TCP before it will
+    # accept logins.
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/1433"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+      start_period: 20s
+
+  mongodb:
+    image: mongo:7
+    container_name: wikidb-mongo
+    ports:
+      - "27017:27017"
+    tmpfs:
+      - /data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.runCommand({ ping: 1 })"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    container_name: wikidb-dynamo
+    command: ["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb"]
+    ports:
+      - "8000:8000"
+    working_dir: /home/dynamodblocal
+
+  oracle:
+    # gvenzl/oracle-free — community-maintained Oracle Database 23ai Free.
+    # Multi-arch (linux/amd64 + linux/arm64/v8), ~60-90s cold start.
+    # FREEPDB1 is the default pluggable database; system user is the sole
+    # pre-created account, gated by ORACLE_PASSWORD. The `-faststart` tag
+    # ships a pre-warmed DBF so subsequent starts are ~10s.
+    image: gvenzl/oracle-free:23-slim-faststart
+    container_name: wikidb-oracle
+    environment:
+      ORACLE_PASSWORD: oracle
+    ports:
+      - "1521:1521"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s

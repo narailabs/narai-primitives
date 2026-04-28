@@ -1,0 +1,6 @@
+{
+  "name": "github-agent-plugin",
+  "version": "1.0.0",
+  "description": "Read-only GitHub connector for Claude Code. Wraps @narai/github-agent-connector.",
+  "author": "narai"
+}

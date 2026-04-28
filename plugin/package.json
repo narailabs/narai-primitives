@@ -1,0 +1,8 @@
+{
+  "name": "connector-hub-plugin-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@narai/connector-hub": "file:.."
+  }
+}

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ -z "${CLAUDE_PLUGIN_DATA:-}" ]; then
+  echo "jira-agent: CLAUDE_PLUGIN_DATA is not set (run from inside Claude Code)" >&2
+  exit 2
+fi
+
+CLI="${CLAUDE_PLUGIN_DATA}/node_modules/@narai/jira-agent-connector/dist/cli.js"
+
+if [ ! -f "$CLI" ]; then
+  echo "jira-agent: connector CLI not found at $CLI" >&2
+  echo "Restart your Claude Code session to re-run the SessionStart install hook." >&2
+  exit 2
+fi
+
+exec node "$CLI" "$@"

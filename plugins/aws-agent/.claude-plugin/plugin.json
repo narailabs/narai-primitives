@@ -1,0 +1,6 @@
+{
+  "name": "aws-agent-plugin",
+  "version": "1.0.0",
+  "description": "Read-only AWS connector for Claude Code. Wraps @narai/aws-agent-connector. Lambda, RDS, S3, CloudWatch.",
+  "author": "narai"
+}

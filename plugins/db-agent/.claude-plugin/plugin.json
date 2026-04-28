@@ -1,0 +1,20 @@
+{
+  "name": "db-agent-plugin",
+  "version": "1.0.0",
+  "description": "Safe, read-only database query agent for Claude Code. Wraps @narai/db-agent-connector. Every statement passes the policy gate before any driver loads or any connection is opened.",
+  "author": {
+    "name": "Narai Labs",
+    "url": "https://github.com/narailabs"
+  },
+  "homepage": "https://github.com/narailabs/db-agent-connector",
+  "repository": "https://github.com/narailabs/db-agent-connector",
+  "license": "MIT",
+  "keywords": ["database", "sql", "postgresql", "mysql", "sqlite", "policy-gate"],
+  "userConfig": {
+    "install_guardrails": {
+      "description": "Block direct DB-client invocations (psql, mysql, sqlite3, mongosh, pg_dump, aws dynamodb, ...) from Bash so all database access is routed through the db-agent CLI. Strongly recommended. Set to 'off' to disable.",
+      "sensitive": false
+    }
+  },
+  "hooks": "./hooks/hooks.json"
+}

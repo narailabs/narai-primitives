@@ -1,0 +1,6 @@
+{
+  "name": "jira-agent-plugin",
+  "version": "1.0.0",
+  "description": "Read-only Jira connector for Claude Code. Wraps @narai/jira-agent-connector.",
+  "author": "narai"
+}

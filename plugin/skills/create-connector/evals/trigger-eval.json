@@ -1,0 +1,82 @@
+[
+  {
+    "query": "we use stripe at work and i'd love to be able to ask claude things like 'how many customers signed up last week' or 'show me the top 10 charges from yesterday' — can you set that up? auth is via STRIPE_API_KEY env var, base URL is api.stripe.com",
+    "should_trigger": true
+  },
+  {
+    "query": "ok so my team has this internal orders service at https://orders.acme-corp.internal that exposes /v1/orders/:id and /v1/orders?customer=X, auth is X-API-Key. need a way for claude to read orders. follow the same shape as the other connectors in /Users/narayan/src/connectors please",
+    "should_trigger": true
+  },
+  {
+    "query": "Wrap the Linear GraphQL API as an agent connector. Two queries to start: get_issue (by id) and search_issues (by query string). Bearer auth via LINEAR_API_KEY.",
+    "should_trigger": true
+  },
+  {
+    "query": "I want claude to be able to send slack messages and list channels for us. Slack-compatible API at https://api.acme-msg.internal, bearer ACME_MSG_TOKEN. Two actions: list_channels (read) and post_message (yeah it's a write i know).",
+    "should_trigger": true
+  },
+  {
+    "query": "make me a github enterprise connector for our internal instance at github.acme-corp.internal. needs ACME_GH_TOKEN + ACME_GH_ORG (org goes in url paths). read-only: list_repos, get_repo, list_pull_requests",
+    "should_trigger": true
+  },
+  {
+    "query": "Hey Claude, I'd like to add Salesforce to our agent stack. We've got OAuth credentials (client_id, client_secret, refresh_token). Just list_accounts and get_account for now.",
+    "should_trigger": true
+  },
+  {
+    "query": "got an internal CLI tool called incident-cli installed system-wide. wraps our pagerduty-style incident system. want claude to invoke `incident-cli list --service=foo` and `incident-cli show <id>` as actions. wrap it in our standard connector shape.",
+    "should_trigger": true
+  },
+  {
+    "query": "we have a vendor partner that exposes a REST API at https://api.partner.com/v2 — read-only, need to expose 4 actions for our agents (list_orgs, get_org, list_users, get_user). auth via PARTNER_API_KEY in an Authorization: Bearer header. follow the @narai connector pattern",
+    "should_trigger": true
+  },
+  {
+    "query": "i need to create a new agent connector — we use pipedrive crm and i want claude to be able to query deals and contacts. read only for now. their api is at api.pipedrive.com and uses an api_token query param (different from the bearer pattern most use)",
+    "should_trigger": true
+  },
+  {
+    "query": "Add Confluence Cloud read access to our connector workspace. Get a page by id, search pages by query. Basic auth (email + API token) via CONFLUENCE_USER + CONFLUENCE_TOKEN. Base URL is configurable per tenant.",
+    "should_trigger": true
+  },
+  {
+    "query": "the notion-agent-connector is missing a search_blocks action — can you add it? takes a block_id and returns the block's children",
+    "should_trigger": false
+  },
+  {
+    "query": "i want to query my company's postgres analytics db from claude. just a few read-only queries on the orders schema for ad-hoc analysis",
+    "should_trigger": false
+  },
+  {
+    "query": "we have an MCP server my team wrote that wraps our incident response tooling. how do i make it available to other engineers using claude code?",
+    "should_trigger": false
+  },
+  {
+    "query": "the github-agent-connector is failing in CI with 'AUTH_ERROR' on every action — i set GITHUB_TOKEN, what else am i missing?",
+    "should_trigger": false
+  },
+  {
+    "query": "can you help me write a skill that turns markdown notes into a styled HTML preview? i want to invoke it via /preview <file>",
+    "should_trigger": false
+  },
+  {
+    "query": "what's the right way to authenticate to stripe's api in node — bearer token in headers, or query param?",
+    "should_trigger": false
+  },
+  {
+    "query": "i'm working on the connector-toolkit itself — adding a new approval mode called 'silent' that auto-allows but logs. any thoughts on how the existing checkPolicy implementation should change?",
+    "should_trigger": false
+  },
+  {
+    "query": "the notion-agent slash command is showing up but when i run /notion-agent search query=hello nothing happens — hooks not firing? i ran a fresh session and the SessionStart npm install didn't seem to run",
+    "should_trigger": false
+  },
+  {
+    "query": "we have credentials stored in 1password and i want them surfaced via @narai/credential-providers — is there a 1password backend already or do i need to write one?",
+    "should_trigger": false
+  },
+  {
+    "query": "i need a CLI that batch-renames files from snake_case to kebab-case in a directory. write me a node script for this please.",
+    "should_trigger": false
+  }
+]
