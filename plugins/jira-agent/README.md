@@ -1,6 +1,6 @@
 # jira-agent-plugin
 
-Claude Code plugin wrapping `@narai/jira-agent-connector`. Same layout as the other platform plugins.
+Claude Code plugin wrapping `narai-primitives/jira`. Same layout as the other platform plugins.
 
 ## Credentials
 

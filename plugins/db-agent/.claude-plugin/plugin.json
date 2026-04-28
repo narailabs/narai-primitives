@@ -1,13 +1,13 @@
 {
   "name": "db-agent-plugin",
-  "version": "1.0.0",
-  "description": "Safe, read-only database query agent for Claude Code. Wraps @narai/db-agent-connector. Every statement passes the policy gate before any driver loads or any connection is opened.",
+  "version": "1.1.0",
+  "description": "Safe, read-only database query agent for Claude Code. Built on narai-primitives (subpath ./db). Every statement passes the policy gate before any driver loads or any connection is opened.",
   "author": {
     "name": "Narai Labs",
     "url": "https://github.com/narailabs"
   },
-  "homepage": "https://github.com/narailabs/db-agent-connector",
-  "repository": "https://github.com/narailabs/db-agent-connector",
+  "homepage": "https://github.com/narailabs/narai-primitives/tree/main/plugins/db-agent",
+  "repository": "https://github.com/narailabs/narai-primitives",
   "license": "MIT",
   "keywords": ["database", "sql", "postgresql", "mysql", "sqlite", "policy-gate"],
   "userConfig": {

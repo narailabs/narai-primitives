@@ -11,7 +11,7 @@ context: fork
 
 Answer the user's question by invoking the `confluence-agent` binary
 exposed by this plugin. It delegates to
-`@narai/confluence-agent-connector` via Atlassian's Confluence REST v1.
+`narai-primitives/confluence` via Atlassian's Confluence REST v1.
 
 ## Invocation
 

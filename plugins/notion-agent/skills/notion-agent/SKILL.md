@@ -9,7 +9,7 @@ context: fork
 # Notion Agent
 
 Answer the user's question by invoking the `notion-agent` binary exposed
-by this plugin. It delegates to `@narai/notion-agent-connector`, which
+by this plugin. It delegates to `narai-primitives/notion`, which
 speaks to the Notion Public API with a `NOTION_TOKEN` integration secret.
 
 ## Invocation

@@ -9,11 +9,11 @@
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/plugin/hooks/reminder.mjs\" 2>/dev/null || true"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/reminder.mjs\" 2>/dev/null || true"
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_DATA}/node_modules/@narai/connector-toolkit/plugin-hooks/stale-summarize.mjs\" 2>/dev/null || true",
+            "command": "node \"${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/plugin-hooks/stale-summarize.mjs\" 2>/dev/null || true",
             "env": { "USAGE_CONNECTOR_NAME": "gcp" }
           }
         ]
@@ -25,10 +25,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_DATA}/node_modules/@narai/connector-toolkit/plugin-hooks/usage-record.mjs\" 2>/dev/null || true",
+            "command": "node \"${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/plugin-hooks/usage-record.mjs\" 2>/dev/null || true",
             "env": {
               "USAGE_CONNECTOR_NAME": "gcp",
-              "USAGE_BIN_HINT": "@narai/gcp-agent-connector"
+              "USAGE_BIN_HINT": "narai-primitives/dist/connectors/gcp"
             }
           }
         ]
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_DATA}/node_modules/@narai/connector-toolkit/plugin-hooks/session-summary.mjs\" 2>/dev/null || true",
+            "command": "node \"${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/plugin-hooks/session-summary.mjs\" 2>/dev/null || true",
             "env": { "USAGE_CONNECTOR_NAME": "gcp" }
           }
         ]

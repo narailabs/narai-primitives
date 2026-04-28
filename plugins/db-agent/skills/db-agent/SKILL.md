@@ -14,7 +14,7 @@ context: fork
 # Database Agent
 
 Answer the user's question by invoking the `db-agent` binary exposed by this
-plugin. It delegates to `@narai/db-agent-connector`, which enforces the
+plugin. It delegates to `narai-primitives/db`, which enforces the
 policy gate before any backend is touched.
 
 ## Invocation

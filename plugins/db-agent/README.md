@@ -1,6 +1,6 @@
 # db-agent-plugin
 
-Claude Code plugin that wraps [`@narai/db-agent-connector`](https://www.npmjs.com/package/@narai/db-agent-connector).
+Claude Code plugin that wraps [`narai-primitives/db`](https://www.npmjs.com/package/narai-primitives).
 
 Exposes the `db-agent` skill. Every query passes through the policy gate before any driver loads or any connection opens. V2.0 vocab and defaults:
 
@@ -10,4 +10,4 @@ Exposes the `db-agent` skill. Every query passes through the policy gate before 
 - `admin` (CREATE/DROP/ALTER/RENAME) → returned as formatted SQL, never executed
 - `privilege` (GRANT/REVOKE) → hard-denied
 
-Install via Claude Code's plugin marketplace. The `SessionStart` hook installs `@narai/db-agent-connector` into the plugin's data directory on first use.
+Install via Claude Code's plugin marketplace. The `SessionStart` hook installs `narai-primitives` into the plugin's data directory on first use.

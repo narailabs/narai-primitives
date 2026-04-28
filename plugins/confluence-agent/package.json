@@ -3,6 +3,6 @@
   "version": "1.0.0",
   "private": true,
   "dependencies": {
-    "@narai/confluence-agent-connector": "file:.."
+    "narai-primitives": "^2.0.0"
   }
 }

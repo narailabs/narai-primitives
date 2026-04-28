@@ -6,7 +6,7 @@ if [ -z "${CLAUDE_PLUGIN_DATA:-}" ]; then
   exit 2
 fi
 
-CLI="${CLAUDE_PLUGIN_DATA}/node_modules/@narai/confluence-agent-connector/dist/cli.js"
+CLI="${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/dist/connectors/confluence/cli.js"
 
 if [ ! -f "$CLI" ]; then
   echo "confluence-agent: connector CLI not found at $CLI" >&2
