@@ -6,7 +6,7 @@ if [ -z "${CLAUDE_PLUGIN_DATA:-}" ]; then
   exit 2
 fi
 
-CLI="${CLAUDE_PLUGIN_DATA}/node_modules/@narai/jira-agent-connector/dist/cli.js"
+CLI="${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/dist/connectors/jira/cli.js"
 
 if [ ! -f "$CLI" ]; then
   echo "jira-agent: connector CLI not found at $CLI" >&2

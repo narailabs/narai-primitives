@@ -9,7 +9,7 @@ context: fork
 # Jira Agent
 
 Answer the user's question by invoking the `jira-agent` binary exposed
-by this plugin. It delegates to `@narai/jira-agent-connector` via
+by this plugin. It delegates to `narai-primitives/jira` via
 Atlassian's Jira REST v3.
 
 ## Invocation

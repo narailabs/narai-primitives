@@ -1,6 +1,6 @@
 # notion-agent-plugin
 
-Claude Code plugin that wraps `@narai/notion-agent-connector` as a read-only Notion skill and slash command.
+Claude Code plugin that wraps `narai-primitives/notion` as a read-only Notion skill and slash command.
 
 - Skill `notion-agent` — automatic invocation for Notion workspace questions.
 - Slash command `/notion-agent <action> <params-json>`.
@@ -10,7 +10,7 @@ Claude Code plugin that wraps `@narai/notion-agent-connector` as a read-only Not
 
 On first `SessionStart` the hook copies `package.json` into
 `${CLAUDE_PLUGIN_DATA}` and runs `npm install --no-audit --no-fund` there
-once. After that, `${CLAUDE_PLUGIN_DATA}/node_modules/@narai/notion-agent-connector/dist/cli.js`
+once. After that, `${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/dist/connectors/notion/cli.js`
 exists and `bin/notion-agent` exec's it.
 
 ## Credentials

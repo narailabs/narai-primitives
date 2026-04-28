@@ -1,6 +1,6 @@
 # github-agent-plugin
 
-Claude Code plugin wrapping `@narai/github-agent-connector`. Same layout as the other platform plugins.
+Claude Code plugin wrapping `narai-primitives/github`. Same layout as the other platform plugins.
 
 ## Credentials
 

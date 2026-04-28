@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# gcp-agent — thin shim over @narai/gcp-agent-connector.
+# gcp-agent — thin shim over narai-primitives (CLI at dist/connectors/gcp).
 set -euo pipefail
 
 if [ -z "${CLAUDE_PLUGIN_DATA:-}" ]; then
@@ -7,7 +7,7 @@ if [ -z "${CLAUDE_PLUGIN_DATA:-}" ]; then
   exit 2
 fi
 
-CLI="${CLAUDE_PLUGIN_DATA}/node_modules/@narai/gcp-agent-connector/dist/cli.js"
+CLI="${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/dist/connectors/gcp/cli.js"
 
 if [ ! -f "$CLI" ]; then
   echo "gcp-agent: connector CLI not found at $CLI" >&2

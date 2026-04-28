@@ -14,7 +14,7 @@
 try {
   const data = process.env.CLAUDE_PLUGIN_DATA;
   if (!data) process.exit(0);
-  const toolkitEntry = `${data}/node_modules/@narai/connector-toolkit/dist/plugin/reminder.js`;
+  const toolkitEntry = `${data}/node_modules/narai-primitives/dist/toolkit/plugin/reminder.js`;
   const mod = await import(toolkitEntry);
   const decision = mod.evaluateNudge({ connectors: ["confluence"] });
   if (decision.nudge) {

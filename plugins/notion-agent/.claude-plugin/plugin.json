@@ -1,6 +1,6 @@
 {
   "name": "notion-agent-plugin",
-  "version": "1.0.0",
-  "description": "Read-only Notion connector for Claude Code. Wraps @narai/notion-agent-connector.",
+  "version": "1.1.0",
+  "description": "Read-only Notion connector for Claude Code. Built on narai-primitives (subpath ./notion).",
   "author": "narai"
 }
