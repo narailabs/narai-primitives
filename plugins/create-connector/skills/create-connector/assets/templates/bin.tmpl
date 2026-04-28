@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# {{SLUG}} connector bin shim — exec the index.mjs in this connector dir.
+# Forward all args + stdin verbatim.
+set -e
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+exec node "$HERE/index.mjs" "$@"

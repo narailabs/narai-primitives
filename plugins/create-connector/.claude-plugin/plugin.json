@@ -1,0 +1,8 @@
+{
+  "name": "create-connector",
+  "version": "1.0.0",
+  "description": "Scaffold a custom connector for narai-primitives' gather() — wraps a SaaS API, REST/GraphQL endpoint, SDK, or CLI tool. Project- or user-scoped. No git init, no npm publish, no marketplace.",
+  "author": {
+    "name": "NarAI Labs"
+  }
+}

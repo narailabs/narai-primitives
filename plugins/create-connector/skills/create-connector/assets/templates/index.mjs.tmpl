@@ -1,0 +1,80 @@
+#!/usr/bin/env node
+/**
+ * {{ServicePascal}} connector — {{DESCRIPTION}}
+ *
+ * Local custom connector loaded by `gather()` from `narai-primitives` via
+ * the `connectors.{{SLUG}}` entry in your `.connectors/config.yaml`.
+ *
+ * Run via the bin shim:  ./bin/{{SLUG}} --action <name> --params '<json>'
+ */
+import { createConnector } from "narai-primitives/toolkit";
+import { z } from "zod";
+
+const API_BASE = "{{API_BASE}}";
+const RATE_LIMIT_PER_MIN = {{RATE_LIMIT_PER_MIN}};
+
+// ── Credentials ──────────────────────────────────────────────────────
+//
+// `loadCredentials` runs once per spawn before any handler. Throwing here
+// produces a {status: "error", error_code: "CONFIG_ERROR", …} envelope
+// without touching the API.
+
+async function loadCredentials() {
+  const token = process.env["{{CREDENTIAL_ENV_VAR}}"];
+  if (!token) {
+    throw new Error(
+      `Missing {{CREDENTIAL_ENV_VAR}}. Export it before running this connector.`,
+    );
+  }
+  return { token };
+}
+
+// ── HTTP client ──────────────────────────────────────────────────────
+
+async function request(creds, method, path, body) {
+  const url = new URL(path, API_BASE);
+  const res = await fetch(url, {
+    method,
+    headers: {
+      {{AUTH_HEADER_ENTRY}}
+      "Content-Type": "application/json",
+      "User-Agent": "narai-custom-{{SLUG}}",
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw Object.assign(new Error(`{{ServicePascal}} ${method} ${path} → ${res.status}: ${text.slice(0, 200)}`), {
+      code: res.status === 401 || res.status === 403 ? "AUTH_ERROR" : "UPSTREAM_ERROR",
+    });
+  }
+  return await res.json();
+}
+
+// ── Action surface ───────────────────────────────────────────────────
+//
+// Each entry is { description, params (Zod), classify, handler }.
+// `handler` receives validated params and the loaded credentials; the
+// envelope (success / error / denied / escalate) is wrapped by createConnector.
+
+const connector = createConnector({
+  name: "{{SLUG}}",
+  version: "0.1.0",
+  credentials: loadCredentials,
+
+  actions: {
+    {{ACTIONS_DICTIONARY}}
+  },
+
+  // Optional: if you need rate-limit wrapping, plug in a token-bucket here.
+  // The toolkit doesn't enforce limits by itself.
+  // rateLimit: { perMinute: RATE_LIMIT_PER_MIN },
+});
+
+connector.main(process.argv.slice(2)).then(
+  (code) => process.exit(code),
+  (err) => {
+    process.stderr.write(`Unhandled: ${err?.stack ?? err}\n`);
+    process.exit(1);
+  },
+);

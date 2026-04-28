@@ -1,0 +1,45 @@
+/**
+ * Smoke test for the {{SLUG}} connector.
+ *
+ * Runs the bin in a subprocess with no credentials set — should produce a
+ * CONFIG_ERROR envelope (not a thrown exception). That confirms the
+ * dispatch plumbing is sound; live API behavior is out of scope here.
+ *
+ * Run with:  npx vitest run  (vitest must be installed somewhere)
+ *  -- or --  node --test tests/example.test.mjs  (Node's built-in runner)
+ */
+import { describe, it, expect } from "vitest";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const BIN = join(HERE, "..", "bin", "{{SLUG}}");
+
+function run(args, env = {}) {
+  // Strip the credential env var so we get the deterministic CONFIG_ERROR.
+  const cleanEnv = { ...process.env, ...env };
+  delete cleanEnv["{{CREDENTIAL_ENV_VAR}}"];
+  return spawnSync(BIN, args, { encoding: "utf-8", env: cleanEnv });
+}
+
+describe("{{SLUG}} connector", () => {
+  it("emits a JSON envelope on stdout for {{FIRST_ACTION}}", () => {
+    const r = run(["--action", "{{FIRST_ACTION}}", "--params", "{}"]);
+    expect(r.status).toBe(0);
+    const env = JSON.parse(r.stdout.trim());
+    expect(env.action).toBe("{{FIRST_ACTION}}");
+    // No creds → CONFIG_ERROR. Status is 'error' but the envelope is well-formed.
+    expect(env.status).toBe("error");
+    expect(env.error_code).toBe("CONFIG_ERROR");
+  });
+
+  it("rejects an unknown action with a structured error", () => {
+    const r = run(["--action", "nope_does_not_exist", "--params", "{}"]);
+    const env = JSON.parse(r.stdout.trim());
+    expect(env.status).toBe("error");
+    // The toolkit emits VALIDATION_ERROR or ACTION_NOT_FOUND depending on
+    // version — we only assert it's NOT a thrown exception.
+    expect(typeof env.error_code).toBe("string");
+  });
+});
