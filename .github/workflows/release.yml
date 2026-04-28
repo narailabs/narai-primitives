@@ -33,7 +33,8 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           cache: npm
 
-      - run: npm ci
+      # See ci.yml — zod@^3 vs claude-agent-sdk peer-dep on zod@^4.
+      - run: npm ci --legacy-peer-deps
 
       - name: Verify tag matches package.json version
         run: |
