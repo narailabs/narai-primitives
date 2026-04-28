@@ -1,0 +1,49 @@
+---
+name: {{SLUG}}-connector
+description: {{DESCRIPTION}}
+---
+
+# {{ServicePascal}} connector
+
+{{DESCRIPTION}}
+
+Loaded by `gather()` from `narai-primitives` via the `connectors.{{SLUG}}` entry in your `.connectors/config.yaml`. Spawn-isolated: each invocation runs in its own Node subprocess.
+
+## Invocation
+
+```sh
+./bin/{{SLUG}} --action <action> --params '<json>'
+```
+
+The CLI prints a single JSON envelope on stdout:
+
+```json
+{ "status": "success", "action": "<name>", "data": { ... } }
+```
+
+Status can be `success`, `error`, `denied`, or `escalate`. Errors carry an `error_code` (`CONFIG_ERROR`, `AUTH_ERROR`, `UPSTREAM_ERROR`, …).
+
+## Actions
+
+{{ACTIONS_TABLE_MD}}
+
+## Credentials
+
+This connector reads `{{CREDENTIAL_ENV_VAR}}` from the environment.
+
+```sh
+export {{CREDENTIAL_ENV_VAR}}="…"
+```
+
+If unset, every action returns `{ "status": "error", "error_code": "CONFIG_ERROR", … }` without touching the API.
+
+## Hub usage
+
+The hub plans actions automatically based on the user's natural-language prompt:
+
+```ts
+import { gather } from "narai-primitives";
+const out = await gather({ prompt: "{{FIRST_ACTION_PROMPT_EXAMPLE}}" });
+```
+
+The planner reads this SKILL.md to decide when to call which action.
