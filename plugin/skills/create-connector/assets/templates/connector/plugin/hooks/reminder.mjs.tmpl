@@ -1,0 +1,17 @@
+#!/usr/bin/env node
+/**
+ * SessionStart curation reminder for the {{SERVICE_SLUG}} connector.
+ * Best-effort: never blocks startup if the toolkit nudge module is unavailable.
+ */
+try {
+  const data = process.env.CLAUDE_PLUGIN_DATA;
+  if (!data) process.exit(0);
+  const toolkitEntry = `${data}/node_modules/@narai/connector-toolkit/dist/plugin/reminder.js`;
+  const mod = await import(toolkitEntry);
+  const decision = mod.evaluateNudge({ connectors: ["{{SERVICE_SLUG}}"] });
+  if (decision.nudge) {
+    process.stdout.write(decision.banner + "\n");
+  }
+} catch {
+  // best-effort — reminder never blocks startup
+}

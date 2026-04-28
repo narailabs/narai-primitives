@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "name": "db-agent-connector",
+  "rules": [
+    {
+      "block_first_token_basename": [
+        "psql",
+        "mysql",
+        "mariadb",
+        "sqlite3",
+        "mongosh",
+        "mongo",
+        "mongodump",
+        "mongorestore",
+        "pg_dump",
+        "pg_restore",
+        "mysqldump",
+        "sqlcmd",
+        "mssql-cli",
+        "duckdb"
+      ],
+      "block_two_token_command": ["aws dynamodb"],
+      "redirect": "Route database access through the db-agent CLI: `db-agent --action query --params '{\"env\":\"<name>\",\"sql\":\"...\"}'` or use sqlite_path. Do NOT bypass — reformulate the intent."
+    }
+  ]
+}

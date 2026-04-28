@@ -1,0 +1,142 @@
+/**
+ * @narai/{{SERVICE_SLUG}}-agent-connector — {{DESCRIPTION_SHORT}}
+ *
+ * Built on @narai/connector-toolkit. The default export is a ready-to-use
+ * `Connector` instance; `build{{ServicePascal}}Connector(overrides?)` is exposed
+ * for tests that want to inject a fake client.
+ */
+import {
+  createConnector,
+  type Connector,
+  type ErrorCode,
+} from "@narai/connector-toolkit";
+import { z } from "zod";
+import {
+  {{ServicePascal}}Client,
+  load{{ServicePascal}}Credentials,
+  type {{ServicePascal}}Result,
+} from "./lib/{{SERVICE_SLUG}}_client.js";
+import { {{ServicePascal}}Error } from "./lib/{{SERVICE_SLUG}}_error.js";
+
+// ───────────────────────────────────────────────────────────────────────────
+// Param schemas — one per action.
+// ───────────────────────────────────────────────────────────────────────────
+// {{PARAM_SCHEMAS}}
+// (The scaffolder generates one Zod schema per action, e.g.:
+//   const getCustomerParams = z.object({ id: z.string().min(1) });
+//   const listChargesParams = z.object({ customer_id: z.string().optional(), limit: z.number().int().positive().max(100).default(25) });
+// )
+
+// ───────────────────────────────────────────────────────────────────────────
+// Error-code translation: client codes → toolkit canonical codes
+// ───────────────────────────────────────────────────────────────────────────
+
+const CODE_MAP: Record<string, ErrorCode> = {
+  UNAUTHORIZED: "AUTH_ERROR",
+  FORBIDDEN: "AUTH_ERROR",
+  NOT_FOUND: "NOT_FOUND",
+  RATE_LIMITED: "RATE_LIMITED",
+  TIMEOUT: "TIMEOUT",
+  NETWORK_ERROR: "CONNECTION_ERROR",
+  SERVER_ERROR: "CONNECTION_ERROR",
+  BAD_REQUEST: "VALIDATION_ERROR",
+  UNPROCESSABLE: "VALIDATION_ERROR",
+  INVALID_URL: "VALIDATION_ERROR",
+  METHOD_NOT_ALLOWED: "VALIDATION_ERROR",
+  HTTP_ERROR: "CONNECTION_ERROR",
+  CONFIG_ERROR: "CONFIG_ERROR",
+};
+
+/**
+ * Throw a {{ServicePascal}}Error from a `{ ok: false, ... }` Result so the
+ * factory's `mapError` callback can convert it to a canonical envelope.
+ */
+function throwIfError<T>(
+  result: {{ServicePascal}}Result<T>,
+): asserts result is Extract<{{ServicePascal}}Result<T>, { ok: true }> {
+  if (!result.ok) {
+    throw new {{ServicePascal}}Error(
+      result.code,
+      result.message,
+      result.retriable,
+      result.status,
+    );
+  }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Connector factory
+// ───────────────────────────────────────────────────────────────────────────
+
+export interface BuildOptions {
+  sdk?: () => Promise<{{ServicePascal}}Client>;
+  credentials?: () => Promise<Record<string, unknown>>;
+}
+
+export function build{{ServicePascal}}Connector(
+  overrides: BuildOptions = {},
+): Connector {
+  const defaultCredentials = async (): Promise<Record<string, unknown>> => {
+    const creds = await load{{ServicePascal}}Credentials();
+    return (creds as unknown as Record<string, unknown> | null) ?? {};
+  };
+
+  const defaultSdk = async (): Promise<{{ServicePascal}}Client> => {
+    const creds = await load{{ServicePascal}}Credentials();
+    if (!creds) {
+      throw new {{ServicePascal}}Error(
+        "CONFIG_ERROR",
+        "{{ServicePascal}} credentials not configured. Set {{CREDENTIAL_ENV_VAR}} " +
+          "or register a credential provider via @narai/credential-providers.",
+        false,
+      );
+    }
+    return new {{ServicePascal}}Client(creds);
+  };
+
+  return createConnector<{{ServicePascal}}Client>({
+    name: "{{SERVICE_SLUG}}",
+    version: "0.1.0",
+    credentials: overrides.credentials ?? defaultCredentials,
+    sdk: overrides.sdk ?? defaultSdk,
+    actions: {
+      // {{ACTIONS_DICTIONARY}}
+      // (The scaffolder generates one entry per action, e.g.:
+      //   get_customer: {
+      //     description: "Fetch a customer by ID",
+      //     params: getCustomerParams,
+      //     classify: { kind: "read" },
+      //     handler: async (p, ctx) => {
+      //       const result = await ctx.sdk.getCustomer(p.id);
+      //       throwIfError(result);
+      //       return result.data;
+      //     },
+      //   },
+      // )
+    },
+    mapError: (err) => {
+      if (err instanceof {{ServicePascal}}Error) {
+        return {
+          error_code: CODE_MAP[err.code] ?? "CONNECTION_ERROR",
+          message: err.message,
+          retriable: err.retriable,
+        };
+      }
+      return undefined;
+    },
+  });
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Exports
+// ───────────────────────────────────────────────────────────────────────────
+
+const connector = build{{ServicePascal}}Connector();
+export default connector;
+export const { main, fetch, validActions } = connector;
+export {
+  {{ServicePascal}}Client,
+  load{{ServicePascal}}Credentials,
+  type {{ServicePascal}}Result,
+} from "./lib/{{SERVICE_SLUG}}_client.js";
+export { {{ServicePascal}}Error } from "./lib/{{SERVICE_SLUG}}_error.js";

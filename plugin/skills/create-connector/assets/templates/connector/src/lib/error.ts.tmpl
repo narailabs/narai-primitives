@@ -1,0 +1,23 @@
+/**
+ * Bridges {{ServicePascal}}Client's `{ok: false, code, ...}` result shape to the
+ * handler-throws-an-Error contract the factory expects. `mapError` unwraps
+ * these back into canonical error envelopes.
+ */
+export class {{ServicePascal}}Error extends Error {
+  readonly code: string;
+  readonly retriable: boolean;
+  readonly httpStatus: number | undefined;
+
+  constructor(
+    code: string,
+    message: string,
+    retriable: boolean,
+    httpStatus?: number,
+  ) {
+    super(message);
+    this.name = "{{ServicePascal}}Error";
+    this.code = code;
+    this.retriable = retriable;
+    this.httpStatus = httpStatus;
+  }
+}

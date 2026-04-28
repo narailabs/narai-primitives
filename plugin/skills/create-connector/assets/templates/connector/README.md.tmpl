@@ -1,0 +1,51 @@
+# @narai/{{SERVICE_SLUG}}-agent-connector
+
+{{DESCRIPTION}} Ships a JSON-envelope CLI and a library API.
+
+## Install
+
+```bash
+npm install @narai/{{SERVICE_SLUG}}-agent-connector
+export {{SERVICE_SLUG_UPPER}}_TOKEN="..."
+```
+
+Node 20+. {{CREDENTIAL_NOTE}}
+
+## CLI
+
+```bash
+npx {{SERVICE_SLUG}}-agent-connector --action <name> --params '<json>'
+```
+
+### Supported actions
+
+{{ACTIONS_TABLE}}
+
+Example:
+
+```bash
+{{SERVICE_SLUG}}-agent-connector --action {{FIRST_ACTION}} --params '{{FIRST_ACTION_EXAMPLE_PARAMS}}'
+```
+
+Output is a JSON envelope on stdout.
+
+## Library
+
+```ts
+import { fetch, validActions } from "@narai/{{SERVICE_SLUG}}-agent-connector";
+const result = await fetch("{{FIRST_ACTION}}", { /* params */ });
+```
+
+## What's not here
+
+- {{READ_WRITE_NOTE}}
+- No wiki, documentation, or diagramming — output is a pure JSON envelope.
+- Credentials: use [`@narai/credential-providers`](https://www.npmjs.com/package/@narai/credential-providers) directly for backends other than `{{SERVICE_SLUG_UPPER}}_TOKEN`.
+
+## Claude Code plugin
+
+A ready-to-install Claude Code plugin lives at [`plugin/`](./plugin). It adds a `{{SERVICE_SLUG}}-agent` skill and a `/{{SERVICE_SLUG}}-agent <action> <params-json>` slash command, wrapping this connector. The plugin is excluded from the npm tarball via `.npmignore`.
+
+## License
+
+MIT

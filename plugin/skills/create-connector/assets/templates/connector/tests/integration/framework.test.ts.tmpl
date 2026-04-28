@@ -1,0 +1,78 @@
+/**
+ * Framework integration tests — exercises the toolkit's policy gate +
+ * hardship logger end-to-end. Uses the real createConnector flow with a
+ * mocked HTTP client.
+ */
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { build{{ServicePascal}}Connector } from "../../src/index.js";
+import {
+  {{ServicePascal}}Client,
+  type {{ServicePascal}}ClientOptions,
+} from "../../src/lib/{{SERVICE_SLUG}}_client.js";
+
+let tmpHome: string;
+let tmpCwd: string;
+let origHome: string | undefined;
+let origCwd: string;
+
+beforeEach(() => {
+  tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "{{SERVICE_SLUG}}-home-"));
+  tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), "{{SERVICE_SLUG}}-cwd-"));
+  origHome = process.env["HOME"];
+  origCwd = process.cwd();
+  process.env["HOME"] = tmpHome;
+  process.chdir(tmpCwd);
+{{INTEGRATION_ENV_CLEANUP}}
+});
+
+afterEach(() => {
+  process.chdir(origCwd);
+  if (origHome !== undefined) process.env["HOME"] = origHome;
+  else delete process.env["HOME"];
+  fs.rmSync(tmpHome, { recursive: true, force: true });
+  fs.rmSync(tmpCwd, { recursive: true, force: true });
+});
+
+function jsonResponse(body: unknown, init: { status?: number } = {}): Response {
+  return new Response(JSON.stringify(body), {
+    status: init.status ?? 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function makeClient(
+  overrides: Partial<{{ServicePascal}}ClientOptions>,
+  fetchMock: (url: string) => Promise<Response>,
+): {{ServicePascal}}Client {
+  return new {{ServicePascal}}Client({
+{{TEST_CLIENT_CREDS}}
+    rateLimitPerMin: 100,
+    connectTimeoutMs: 50,
+    readTimeoutMs: 50,
+    fetchImpl: async (url) => fetchMock(String(url)),
+    sleepImpl: async () => {},
+    ...overrides,
+  });
+}
+
+function writeRepoPolicy(yaml: string) {
+  const dir = path.join(tmpCwd, ".{{SERVICE_SLUG}}-agent");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "config.yaml"), yaml);
+}
+
+describe("policy gate integration", () => {
+  it("policy.read: escalate returns escalate envelope", async () => {
+    writeRepoPolicy("policy:\n  read: escalate\n");
+    const client = makeClient({}, async () => jsonResponse({}));
+    const c = build{{ServicePascal}}Connector({
+      sdk: async () => client,
+      credentials: async () => ({}),
+    });
+    const r = await c.fetch("{{FIRST_ACTION}}", {{FIRST_ACTION_PARAMS_JSON}});
+    expect(r.status).toBe("escalate");
+  });
+});

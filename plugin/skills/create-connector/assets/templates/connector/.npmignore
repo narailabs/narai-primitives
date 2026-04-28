@@ -1,0 +1,11 @@
+# @narai/{{SERVICE_SLUG}}-agent-connector publishes only the compiled library.
+# Everything else — source, tests, the Claude Code plugin, etc. — is
+# excluded from the npm tarball.
+src/
+tests/
+plugin/
+evals/
+vitest.config.ts
+tsconfig.json
+.gitignore
+.git/

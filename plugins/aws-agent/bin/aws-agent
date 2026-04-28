@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# aws-agent — thin shim over @narai/aws-agent-connector.
+#
+# The SessionStart hook in hooks/hooks.json installs the npm package into
+# ${CLAUDE_PLUGIN_DATA}/node_modules on first session. This shim exec's
+# that CLI.
+set -euo pipefail
+
+if [ -z "${CLAUDE_PLUGIN_DATA:-}" ]; then
+  echo "aws-agent: CLAUDE_PLUGIN_DATA is not set (run from inside Claude Code)" >&2
+  exit 2
+fi
+
+CLI="${CLAUDE_PLUGIN_DATA}/node_modules/@narai/aws-agent-connector/dist/cli.js"
+
+if [ ! -f "$CLI" ]; then
+  echo "aws-agent: connector CLI not found at $CLI" >&2
+  echo "Restart your Claude Code session to re-run the SessionStart install hook." >&2
+  exit 2
+fi
+
+exec node "$CLI" "$@"

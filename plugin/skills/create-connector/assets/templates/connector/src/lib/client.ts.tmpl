@@ -1,0 +1,280 @@
+/**
+ * {{SERVICE_SLUG}}_client.ts — HTTP client for the {{ServicePascal}} API.
+ *
+ * The frame (throttle, retry, _send, Result-envelope types) is uniform across
+ * connectors. The per-API methods at the bottom are generated for each
+ * connector based on the actions the user defined during the interview.
+ */
+import { validateUrl } from "@narai/connector-toolkit";
+import { resolveSecret } from "@narai/credential-providers";
+
+type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+const ALLOWED_METHODS: ReadonlySet<HttpMethod> = new Set<HttpMethod>([
+  "GET",
+  "POST",
+  "PUT",
+  "PATCH",
+  "DELETE",
+]);
+
+const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
+const DEFAULT_READ_TIMEOUT_MS = 30_000;
+const DEFAULT_RATE_LIMIT_PER_MIN = {{RATE_LIMIT_PER_MIN}};
+const MAX_ATTEMPTS = 4;
+const {{SERVICE_SLUG_UPPER}}_API_BASE = "{{API_BASE}}";
+const USER_AGENT = "@narai/{{SERVICE_SLUG}}-agent-connector";
+
+export interface {{ServicePascal}}ClientOptions {
+{{CLIENT_OPTIONS_FIELDS}}
+  apiBase?: string;
+  rateLimitPerMin?: number;
+  connectTimeoutMs?: number;
+  readTimeoutMs?: number;
+  fetchImpl?: typeof globalThis.fetch;
+  sleepImpl?: (ms: number) => Promise<void>;
+}
+
+export interface {{ServicePascal}}ErrorPayload {
+  ok: false;
+  code: string;
+  message: string;
+  retriable: boolean;
+  status?: number;
+}
+export interface {{ServicePascal}}SuccessPayload<T> {
+  ok: true;
+  data: T;
+  status: number;
+}
+export type {{ServicePascal}}Result<T> =
+  | {{ServicePascal}}SuccessPayload<T>
+  | {{ServicePascal}}ErrorPayload;
+
+/**
+ * Resolve credentials from `@narai/credential-providers` (cloud-backed
+ * secret store) with a `process.env` fallback. Returns null if no credentials
+ * are configured — callers map this to a CONFIG_ERROR envelope.
+ */
+export async function load{{ServicePascal}}Credentials(): Promise<
+  {{CREDENTIALS_TYPE}} | null
+> {
+{{CREDENTIALS_LOADER_BODY}}
+}
+
+export class {{ServicePascal}}Client {
+  private readonly _apiBase: string;
+{{CLIENT_PRIVATE_FIELDS}}
+  private readonly _rateLimitPerMin: number;
+  private readonly _connectTimeoutMs: number;
+  private readonly _readTimeoutMs: number;
+  private readonly _fetch: typeof globalThis.fetch;
+  private readonly _sleep: (ms: number) => Promise<void>;
+  private _requestTimestamps: number[] = [];
+
+  constructor(opts: {{ServicePascal}}ClientOptions) {
+    const base = opts.apiBase ?? {{SERVICE_SLUG_UPPER}}_API_BASE;
+    if (!validateUrl(base)) {
+      throw new Error(`Invalid {{ServicePascal}} API base: ${base}`);
+    }
+    this._apiBase = base.replace(/\/+$/, "");
+{{CLIENT_CONSTRUCTOR_ASSIGNMENTS}}
+    this._rateLimitPerMin = opts.rateLimitPerMin ?? DEFAULT_RATE_LIMIT_PER_MIN;
+    this._connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+    this._readTimeoutMs = opts.readTimeoutMs ?? DEFAULT_READ_TIMEOUT_MS;
+    this._fetch = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
+    this._sleep =
+      opts.sleepImpl ??
+      ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  }
+
+  /**
+   * Sliding-window per-minute rate limiter. Sleeps until the oldest
+   * request in the window expires when the cap is reached.
+   */
+  private async _throttle(): Promise<void> {
+    const now = Date.now();
+    const cutoff = now - 60_000;
+    this._requestTimestamps = this._requestTimestamps.filter((t) => t > cutoff);
+    if (this._requestTimestamps.length >= this._rateLimitPerMin) {
+      const oldest = this._requestTimestamps[0] ?? now;
+      const waitMs = Math.max(0, 60_000 - (now - oldest));
+      if (waitMs > 0) await this._sleep(waitMs);
+      this._requestTimestamps = this._requestTimestamps.filter(
+        (t) => t > Date.now() - 60_000,
+      );
+    }
+    this._requestTimestamps.push(Date.now());
+  }
+
+  /**
+   * Build the request headers. Auth header construction is service-specific
+   * and is filled in based on the auth scheme chosen during scaffolding.
+   */
+  private _authHeaders(): Record<string, string> {
+    return {
+{{AUTH_HEADER_ENTRIES}}
+      "User-Agent": USER_AGENT,
+      Accept: "application/json",
+{{EXTRA_HEADERS_ENTRIES}}
+    };
+  }
+
+  /**
+   * Core request helper: validates method, validates URL, throttles,
+   * retries on retriable errors (5xx + network), maps HTTP status to
+   * a service-internal error code. Always returns a Result envelope —
+   * never throws to handlers.
+   */
+  public async request<T>(
+    method: HttpMethod,
+    relPath: string,
+    body: Record<string, unknown> | null = null,
+    extraQuery: Record<string, string | number | undefined> | null = null,
+  ): Promise<{{ServicePascal}}Result<T>> {
+    if (!ALLOWED_METHODS.has(method)) {
+      return {
+        ok: false,
+        code: "METHOD_NOT_ALLOWED",
+        message: `Method ${method} not allowed`,
+        retriable: false,
+      };
+    }
+    const queryString = extraQuery ? buildQueryString(extraQuery) : "";
+    const url = `${this._apiBase}${relPath}${queryString}`;
+    if (!validateUrl(url)) {
+      return {
+        ok: false,
+        code: "INVALID_URL",
+        message: `URL rejected: ${url}`,
+        retriable: false,
+      };
+    }
+
+    let lastError: {{ServicePascal}}ErrorPayload | null = null;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      await this._throttle();
+      const ctrl = new AbortController();
+      const timer = setTimeout(
+        () => ctrl.abort(),
+        this._connectTimeoutMs + this._readTimeoutMs,
+      );
+      try {
+        const headers: Record<string, string> = {
+          ...this._authHeaders(),
+          ...(body ? { "Content-Type": "application/json" } : {}),
+        };
+        const init: RequestInit = {
+          method,
+          headers,
+          signal: ctrl.signal,
+        };
+        if (body) init.body = JSON.stringify(body);
+
+        const response = await this._fetch(url, init);
+        const status = response.status;
+        if (status === 429 || status >= 500) {
+          const retryAfter = parseRetryAfter(response.headers.get("retry-after"));
+          lastError = {
+            ok: false,
+            code: status === 429 ? "RATE_LIMITED" : "SERVER_ERROR",
+            message: `{{ServicePascal}} returned HTTP ${status}`,
+            retriable: true,
+            status,
+          };
+          if (attempt < MAX_ATTEMPTS - 1) {
+            await this._sleep(retryAfter ?? Math.min(30_000, 500 * 2 ** attempt));
+            continue;
+          }
+          return lastError;
+        }
+        if (!response.ok) {
+          let bodyText = "";
+          try {
+            bodyText = await response.text();
+          } catch {
+            /* ignore */
+          }
+          return {
+            ok: false,
+            code: classifyHttpStatus(status),
+            message: `{{ServicePascal}} HTTP ${status}: ${truncate(bodyText, 200)}`,
+            retriable: false,
+            status,
+          };
+        }
+        const data = (await response.json()) as T;
+        return { ok: true, data, status };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const aborted = err instanceof DOMException || /abort/i.test(message);
+        lastError = {
+          ok: false,
+          code: aborted ? "TIMEOUT" : "NETWORK_ERROR",
+          message: aborted ? "Request timed out" : message,
+          retriable: true,
+        };
+        if (attempt < MAX_ATTEMPTS - 1) {
+          await this._sleep(Math.min(30_000, 500 * 2 ** attempt));
+          continue;
+        }
+        return lastError;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    return (
+      lastError ?? {
+        ok: false,
+        code: "UNKNOWN",
+        message: "Exhausted retries without a response",
+        retriable: true,
+      }
+    );
+  }
+
+  // ─── Service methods ──────────────────────────────────────────────────
+  // {{SERVICE_METHODS}}
+  // (The scaffolder generates one public method per action: search(),
+  //  getCustomer(id), etc. Each calls this.request<T>() and returns
+  //  {{ServicePascal}}Result<T>.)
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────
+
+function buildQueryString(
+  params: Record<string, string | number | undefined>,
+): string {
+  const entries = Object.entries(params).filter(
+    ([, v]) => v !== undefined && v !== null && v !== "",
+  );
+  if (entries.length === 0) return "";
+  const qs = entries
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+    .join("&");
+  return `?${qs}`;
+}
+
+function parseRetryAfter(value: string | null): number | null {
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  return null;
+}
+
+function classifyHttpStatus(status: number): string {
+  if (status === 401) return "UNAUTHORIZED";
+  if (status === 403) return "FORBIDDEN";
+  if (status === 404) return "NOT_FOUND";
+  if (status === 400) return "BAD_REQUEST";
+  if (status === 422) return "UNPROCESSABLE";
+  return "HTTP_ERROR";
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
+// ─── Service-specific response types ────────────────────────────────────
+// {{RESPONSE_TYPES}}
+// (The scaffolder generates interfaces here for each action's response
+//  shape, e.g., {{ServicePascal}}Customer, {{ServicePascal}}ChargeList.)

@@ -1,0 +1,63 @@
+/**
+ * Tests for the {{ServicePascal}} connector built on `@narai/connector-toolkit`.
+ *
+ * Uses dependency injection (fetchImpl + sleepImpl) to mock HTTP without
+ * touching the real {{ServicePascal}} API.
+ */
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { build{{ServicePascal}}Connector } from "../../src/index.js";
+import {
+  {{ServicePascal}}Client,
+  type {{ServicePascal}}ClientOptions,
+} from "../../src/lib/{{SERVICE_SLUG}}_client.js";
+
+function jsonResponse(
+  body: unknown,
+  init: { status?: number; headers?: Record<string, string> } = {},
+): Response {
+  return new Response(JSON.stringify(body), {
+    status: init.status ?? 200,
+    headers: {
+      "Content-Type": "application/json",
+      ...(init.headers ?? {}),
+    },
+  });
+}
+
+function makeClient(
+  overrides: Partial<{{ServicePascal}}ClientOptions> = {},
+  fetchMock?: (url: string, init?: RequestInit) => Promise<Response>,
+): {{ServicePascal}}Client {
+  return new {{ServicePascal}}Client({
+{{TEST_CLIENT_CREDS}}
+    rateLimitPerMin: 100,
+    connectTimeoutMs: 50,
+    readTimeoutMs: 50,
+    fetchImpl: fetchMock
+      ? (async (url, init) => fetchMock(String(url), init))
+      : undefined,
+    sleepImpl: async () => {},
+    ...overrides,
+  });
+}
+
+function makeConnector(client: {{ServicePascal}}Client) {
+  return build{{ServicePascal}}Connector({
+    sdk: async () => client,
+    credentials: async () => ({{TEST_CLIENT_CREDS_OBJECT}}),
+  });
+}
+
+describe("{{ServicePascal}} connector — happy path", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  // {{HAPPY_PATH_TESTS}}
+  // (The scaffolder generates one happy-path test per action, e.g.:
+  //   it("get_customer returns the customer payload", async () => {
+  //     const client = makeClient({}, async () => jsonResponse({ id: "cus_1", email: "a@b.c" }));
+  //     const connector = makeConnector(client);
+  //     const r = await connector.fetch("get_customer", { id: "cus_1" });
+  //     expect(r.status).toBe("success");
+  //   });
+  // )
+});

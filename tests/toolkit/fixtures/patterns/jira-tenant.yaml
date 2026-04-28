@@ -1,0 +1,20 @@
+version: 1
+last_updated: 2026-04-22T10:00:00Z
+patterns:
+  - pattern_id: jira-archived-404
+    status: active
+    confidence: 0.95
+    kind: not_found
+    actions: [get_issue, jql_search]
+    matcher:
+      context_regex: "HTTP 404.*archived"
+    advice: |
+      Issues in Archived projects return 404. Check fields.archivedBy.
+  - pattern_id: jira-adf-null-body
+    status: draft
+    confidence: 0.6
+    kind: schema
+    actions: [get_comments]
+    matcher:
+      context_regex: "ADF body is null"
+    advice: Treat null body as empty string.

@@ -1,0 +1,6 @@
+{
+  "name": "confluence-agent-plugin",
+  "version": "1.0.0",
+  "description": "Read-only Confluence connector for Claude Code. Wraps @narai/confluence-agent-connector.",
+  "author": "narai"
+}
