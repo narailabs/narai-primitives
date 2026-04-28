@@ -26,7 +26,11 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
 
-      - run: npm ci
+      # @anthropic-ai/claude-agent-sdk peer-depends on zod@^4 but the rest of
+      # the bundle (toolkit, connectors) is on zod@^3. We use --legacy-peer-deps
+      # because zod@4 has breaking changes for our existing schemas; revisit
+      # this when we migrate.
+      - run: npm ci --legacy-peer-deps
 
       - name: Typecheck
         run: npm run typecheck
