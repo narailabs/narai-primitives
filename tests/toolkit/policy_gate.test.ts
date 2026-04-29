@@ -12,7 +12,7 @@ describe("checkPolicy — kind rules", () => {
     expect(d.reason).toBe("auto-approved");
   });
 
-  it("write with default policy (=present) returns escalate", () => {
+  it("write with default policy (=escalate) returns escalate", () => {
     const d = checkPolicy({ kind: "write" }, DEFAULT_POLICY, "auto", noApproval);
     expect(d.status).toBe("escalate");
   });
@@ -93,7 +93,7 @@ describe("checkPolicy — approval_mode state machine", () => {
   });
 
   it("approval_mode does not apply to write/admin", () => {
-    // Write rule = present → escalate regardless of approval_mode.
+    // Write rule = escalate regardless of approval_mode.
     const d = checkPolicy(
       { kind: "write" },
       DEFAULT_POLICY,
