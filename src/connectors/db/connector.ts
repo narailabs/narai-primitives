@@ -24,6 +24,7 @@
 import { createConnector, EnvelopeOverride, type Connector, type ExtendedEnvelope } from "narai-primitives/toolkit";
 import { z } from "zod";
 import { fetch as dispatcherFetch, type FetchResult } from "./dispatcher.js";
+import { DB_POLICY_EXTRAS } from "./lib/plugin_config.js";
 
 // ───────────────────────────────────────────────────────────────────────────
 // Param schemas
@@ -132,6 +133,9 @@ export function buildDbConnector(overrides: BuildOptions = {}): Connector {
     // toolkit's YAML discovery — the dispatcher loads and gates against
     // the resolved config internally.
     disablePolicyDiscovery: true,
+    // Declare the extra decision values db understands beyond the
+    // universal PolicyDecision set. Mirrors `DbExtraDecision` at runtime.
+    policyExtras: DB_POLICY_EXTRAS,
     credentials: async () => ({}),
     // No SDK to preload — drivers are lazy-loaded via `getConnection` inside
     // the dispatcher on the allow path only.

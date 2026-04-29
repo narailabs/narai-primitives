@@ -34,6 +34,18 @@
       "types": "./dist/connectors/db/index.d.ts",
       "import": "./dist/connectors/db/index.js"
     },
+    "./db/policy": {
+      "types": "./dist/connectors/db/lib/policy.d.ts",
+      "import": "./dist/connectors/db/lib/policy.js"
+    },
+    "./db/schema": {
+      "types": "./dist/connectors/db/lib/schema.d.ts",
+      "import": "./dist/connectors/db/lib/schema.js"
+    },
+    "./db/plugin-config": {
+      "types": "./dist/connectors/db/lib/plugin_config.d.ts",
+      "import": "./dist/connectors/db/lib/plugin_config.js"
+    },
     "./gcp": {
       "types": "./dist/connectors/gcp/index.d.ts",
       "import": "./dist/connectors/gcp/index.js"
