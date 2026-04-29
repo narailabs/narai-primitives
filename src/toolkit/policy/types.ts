@@ -29,18 +29,34 @@ export interface Classification {
 // Rules — operator-configured actions per kind / aspect.
 // ───────────────────────────────────────────────────────────────────────────
 
-/** Wire rules operators set per classification. */
-export type Rule = "success" | "present" | "escalate" | "denied";
+/**
+ * Wire rules operators set per classification. The toolkit-level base set
+ * holds only `success | escalate | denied`. Connectors that need a custom
+ * rule (e.g. db-agent's `"present"` rule, which means "displayed but not
+ * executed") declare it locally and translate to a base rule at their own
+ * boundary before invoking `checkPolicy`. The wire envelope (`status` is
+ * `string`) and the `extendDecision` hook still let those connectors emit
+ * connector-specific outcomes.
+ */
+export type Rule = "success" | "escalate" | "denied";
 
 /** Rule without `"success"` — used for safety-floor slots (admin, ddl, privilege). */
 export type RestrictedRule = Exclude<Rule, "success">;
 
-export interface PolicyRules {
-  read: Rule;
-  write: Rule;
-  admin: RestrictedRule;
+/**
+ * The toolkit-level rules shape, keyed by classification kind. `TExtra`
+ * mirrors `PolicyMap`'s parameter, but the default is `never` (not `string`):
+ * the toolkit gate is the strict checkpoint, so unspecialized `PolicyRules`
+ * means "base rules only". Connectors with extra rule values declare them
+ * explicitly via `PolicyRules<"present">` etc., and translate to base
+ * before invoking `checkPolicy`.
+ */
+export interface PolicyRules<TExtra extends string = never> {
+  read: Rule | TExtra;
+  write: Rule | TExtra;
+  admin: RestrictedRule | TExtra;
   /** Per-aspect rule map. Absent aspects fall through to the kind's rule. */
-  aspects?: Record<string, Rule>;
+  aspects?: Record<string, Rule | TExtra>;
 }
 
 export type ApprovalMode =
@@ -49,10 +65,16 @@ export type ApprovalMode =
   | "confirm_each"
   | "grant_required";
 
-/** Defaults matching db-agent's historical behavior, generalized to CRUD. */
+/**
+ * Connector-agnostic default rules. Writes escalate by default (operators
+ * may downgrade to `success` per connector); admin is the safety-floor
+ * default-deny. Connectors that historically used `"present"` for write
+ * (e.g. db-agent's "displayed but not executed") declare it in their own
+ * defaults and translate to `"escalate"` before reaching the toolkit gate.
+ */
 export const DEFAULT_POLICY: PolicyRules = {
   read: "success",
-  write: "present",
+  write: "escalate",
   admin: "denied",
   aspects: {},
 };

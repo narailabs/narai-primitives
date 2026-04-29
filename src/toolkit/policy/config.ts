@@ -26,7 +26,6 @@ import {
 
 const VALID_RULES: ReadonlySet<Rule> = new Set([
   "success",
-  "present",
   "escalate",
   "denied",
 ]);
@@ -128,7 +127,7 @@ function validateRule(
 ): Rule {
   if (typeof value !== "string" || !VALID_RULES.has(value as Rule)) {
     throw new Error(
-      `${field}: expected one of [success, present, escalate, denied], got: ${JSON.stringify(
+      `${field}: expected one of [success, escalate, denied], got: ${JSON.stringify(
         value,
       )}`,
     );
