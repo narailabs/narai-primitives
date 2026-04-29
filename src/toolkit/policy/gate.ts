@@ -3,10 +3,12 @@
  * `./approval.ts` (the factory wires it up per connector invocation).
  *
  * Rule combination: kind rule is the base; each aspect rule (if declared)
- * applies on top via Rule strictness (denied > escalate > present > success).
- * Note: Rule "present" collapses to Decision "escalate" — extendDecision
- * hooks intercept escalate to emit ExtendedEnvelope.
- * Ties go to the first offender so the `reason` message is predictable.
+ * applies on top via Rule strictness (denied > escalate > success). Ties
+ * go to the first offender so the `reason` message is predictable.
+ *
+ * Connectors with custom rule values (e.g. db-agent's `"present"`) must
+ * translate them to base values before invoking `checkPolicy` — the gate
+ * is exhaustive over the base 3-rule set only.
  */
 import type {
   ApprovalMode,
@@ -20,9 +22,8 @@ import { DECISION_RANK } from "./types.js";
 /** Strictness rank for combining Rule values (same order as DECISION_RANK). */
 const RULE_RANK: Record<Rule, number> = {
   success: 0,
-  present: 1,
-  escalate: 2,
-  denied: 3,
+  escalate: 1,
+  denied: 2,
 };
 
 /** Minimal state needed for approval-mode resolution. Pure-data. */
@@ -38,7 +39,7 @@ export interface ApprovalState {
  */
 export function checkPolicy(
   classification: Classification,
-  rules: PolicyRules,
+  rules: PolicyRules<never>,
   approvalMode: ApprovalMode,
   approvalState: ApprovalState,
 ): Decision {
@@ -71,11 +72,6 @@ export function checkPolicy(
         status: "escalate",
         reason: escalateReason(kind, strictestReasonSource, offendingAspect),
       };
-    // Rule "present" collapses to Decision "escalate" in toolkit 3.0;
-    // extendDecision hooks (e.g. db-agent) intercept escalate to emit
-    // a connector-specific ExtendedEnvelope.
-    case "present":
-      return { status: "escalate", reason: presentReason(kind, strictestReasonSource, offendingAspect) };
     case "success":
       // A "success" rule for reads still has to pass the approval mode gate.
       if (kind === "read") {
@@ -164,15 +160,4 @@ function escalateReason(
     return `${aspect} aspect requires approval`;
   }
   return `${kind} requires approval`;
-}
-
-function presentReason(
-  kind: string,
-  source: "kind" | "aspect",
-  aspect: string | null,
-): string {
-  if (source === "aspect" && aspect !== null) {
-    return `${aspect} aspect is displayed but not executed`;
-  }
-  return `${kind} is displayed but not executed`;
 }

@@ -23,6 +23,13 @@ export {
 } from "./secrets.js";
 
 export {
+  validatePolicies,
+  assertValidPolicies,
+  type PolicyIssue,
+  type ValidationOptions,
+} from "./policy_validation.js";
+
+export {
   loadConnectorEnvironment,
   type LoadConnectorEnvironmentOptions,
 } from "./bootstrap.js";
