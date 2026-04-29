@@ -11,23 +11,34 @@
 /** The five canonical policy actions every connector understands. */
 export type PolicyAction = "read" | "write" | "delete" | "admin" | "privilege";
 
-/** The base policy decisions. db-agent extends this with `present`. */
-export type PolicyDecision = "allow" | "escalate" | "deny" | "present";
+/**
+ * The base policy decisions every connector understands. Connectors with
+ * outcomes beyond this (e.g. db's `present`) declare them locally and
+ * specialize `PolicyMap` / `ResolvedConnector` via the `TExtra` parameter.
+ */
+export type PolicyDecision = "allow" | "escalate" | "deny";
 
 /**
- * A policy block. Universal actions (read/write/...) take a PolicyDecision;
- * connector-specific extras (e.g. `unbounded_select` for db-agent) may take
- * any string value. The library does not interpret extras — the connector
+ * A policy block. Universal actions (read/write/...) take a `PolicyDecision`,
+ * optionally widened by a connector-specific `TExtra` string union (e.g.
+ * `PolicyMap<"present">` for db-agent). Connector-specific extra *actions*
+ * (e.g. `unbounded_select` for db-agent) flow through the index signature
+ * with no constraint — the library does not interpret them; the connector
  * does.
+ *
+ * Default `TExtra = string` keeps the type connector-agnostic (any string
+ * value is admitted) so the hub and resolve layer can pass policy blocks
+ * around without knowing which connector they target. Code that wants
+ * strict typing — db-agent, custom connectors — specializes.
  */
-export interface PolicyMap {
-  read?: PolicyDecision;
-  write?: PolicyDecision;
-  delete?: PolicyDecision;
-  admin?: PolicyDecision;
-  privilege?: PolicyDecision;
+export interface PolicyMap<TExtra extends string = string> {
+  read?: PolicyDecision | TExtra;
+  write?: PolicyDecision | TExtra;
+  delete?: PolicyDecision | TExtra;
+  admin?: PolicyDecision | TExtra;
+  privilege?: PolicyDecision | TExtra;
   /** Connector-specific extras (e.g. `unbounded_select`). */
-  [extra: string]: PolicyDecision | string | undefined;
+  [extra: string]: PolicyDecision | TExtra | string | undefined;
 }
 
 /**
@@ -54,9 +65,11 @@ export interface ResolveOptions {
 
 /**
  * The fully-resolved view of one connector's effective config for a given
- * (consumer, environment) pair.
+ * (consumer, environment) pair. `TExtra` mirrors `PolicyMap`'s parameter so
+ * a connector that defines extra decision values (e.g. db's `"present"`)
+ * can specialize once and have its policy slot strictly typed throughout.
  */
-export interface ResolvedConnector {
+export interface ResolvedConnector<TExtra extends string = string> {
   /** Connector name, matching its key under `connectors:` in the config. */
   name: string;
   /**
@@ -80,7 +93,7 @@ export interface ResolvedConnector {
   /** Whether this connector's guardrail rules participate in the unified hook. */
   enforce_hooks: boolean;
   /** Effective policy after base+env+consumer merge. */
-  policy: PolicyMap;
+  policy: PolicyMap<TExtra>;
   /**
    * All connector-specific extras (`audit`, `servers`, `atlassian-api-key`,
    * etc.). Secrets like `env:NAME` are passed through unresolved so each
@@ -89,15 +102,20 @@ export interface ResolvedConnector {
   options: Record<string, unknown>;
 }
 
-/** The fully-resolved view of the whole config for a given call. */
-export interface ResolvedConfig {
+/**
+ * The fully-resolved view of the whole config for a given call. `TExtra`
+ * widens the policy decision union for both the top-level `policy` and
+ * every connector slice; the hub keeps the default `string` so it doesn't
+ * have to know what extras any individual connector contributes.
+ */
+export interface ResolvedConfig<TExtra extends string = string> {
   /** Hub-specific settings. Read by `@narai/connector-hub`. */
   hub: {
     model: string | null;
     max_tokens: number | null;
   };
   /** Top-level policy defaults (apply unless a connector overrides). */
-  policy: PolicyMap;
+  policy: PolicyMap<TExtra>;
   /** Top-level enforce_hooks default. */
   enforce_hooks: boolean;
   /** Top-level model default; null means inherit from the active session. */
@@ -107,5 +125,5 @@ export interface ResolvedConfig {
   /** Resolved consumer name, or null if none was provided. */
   consumer: string | null;
   /** Per-connector resolved views. */
-  connectors: Record<string, ResolvedConnector>;
+  connectors: Record<string, ResolvedConnector<TExtra>>;
 }

@@ -143,6 +143,17 @@ export interface ConnectorConfig<TSdk = unknown> {
   policyConfigPath?: string;
   /** Aspects that cannot be downgraded to `"success"` in operator config. */
   policyFloorAspects?: readonly string[];
+  /**
+   * Decision strings this connector recognizes beyond the universal
+   * `PolicyDecision` set (`"allow" | "escalate" | "deny"`). Declaring this
+   * is the runtime complement to specializing `PolicyMap<TExtra>` at the
+   * type level: the hub may use it to validate operator-supplied
+   * `~/.connectors/config.yaml` values, and tooling can introspect a
+   * connector's policy vocabulary without parsing its source. Example:
+   * db-agent declares `policyExtras: ["present"] as const` to register
+   * its `"present"` rule.
+   */
+  readonly policyExtras?: readonly string[];
   /** Default rules when no config is found. Defaults to `DEFAULT_POLICY`. */
   defaultPolicy?: PolicyRules;
   /**

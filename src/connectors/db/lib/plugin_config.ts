@@ -21,10 +21,46 @@
 import * as fs from "node:fs";
 import * as yaml from "js-yaml";
 
+import type {
+  PolicyDecision,
+  PolicyMap,
+  ResolvedConnector,
+} from "narai-primitives/config";
+
 import type { OperationType } from "./policy.js";
 
-export type PolicyRule = "allow" | "present" | "escalate" | "deny";
+/**
+ * The extra decision value db-agent contributes on top of the universal
+ * `PolicyDecision` set. Exported so `PolicyMap<DbExtraDecision>` can be
+ * built by consumers that want strict typing on db's policy block.
+ */
+export type DbExtraDecision = "present";
+
+/**
+ * The full set of policy rules valid in a db-agent config. Composed from
+ * the universal `PolicyDecision` (`"allow" | "escalate" | "deny"`) plus
+ * db's local `"present"`. Stated this way rather than re-listing the four
+ * literals so the base set has exactly one source of truth.
+ */
+export type PolicyRule = PolicyDecision | DbExtraDecision;
 export type RestrictedPolicyRule = Exclude<PolicyRule, "allow">;
+
+/**
+ * `PolicyMap` specialized to db-agent's decision vocabulary. Use this in
+ * db-internal code that wants `policy.read = "present"` to typecheck while
+ * `policy.read = "anything-else"` does not.
+ */
+export type DbPolicyMap = PolicyMap<DbExtraDecision>;
+
+/** `ResolvedConnector` specialized to db-agent's decision vocabulary. */
+export type DbResolvedConnector = ResolvedConnector<DbExtraDecision>;
+
+/**
+ * Tuple-typed vocabulary suitable for `createConnector`'s `policyExtras`
+ * field. Kept as a single source of truth so the type-level extras and the
+ * runtime declaration stay in lockstep.
+ */
+export const DB_POLICY_EXTRAS = ["present"] as const satisfies readonly DbExtraDecision[];
 
 export type UnboundedSelectMode = "escalate" | "allow";
 

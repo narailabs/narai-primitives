@@ -22,12 +22,20 @@
  * accepts an optional driver and dispatches accordingly.
  */
 import { performance } from "node:perf_hooks";
+import type { PolicyDecision } from "narai-primitives/config";
 import type { DatabaseDriver } from "./drivers/base.js";
 import { logEvent, scrubSqlSecrets } from "./audit.js";
 import { DEFAULT_POLICY, type PolicyRules } from "./plugin_config.js";
 
-/** Possible outcomes of a policy check (wire format = lowercase string). */
-export type Decision = "allow" | "deny" | "escalate" | "present_only";
+/**
+ * Possible outcomes of a db-internal policy check (wire format = lowercase
+ * string). Composed from the universal `PolicyDecision` plus db's local
+ * `"present_only"` so the base set has a single source of truth. Note that
+ * `"present_only"` is a *runtime* spelling distinct from the *config-level*
+ * `"present"` rule (the latter is the operator-facing token in YAML; this
+ * one is the wire status emitted in the envelope after rule translation).
+ */
+export type Decision = PolicyDecision | "present_only";
 
 /** Namespace providing Python-style attribute access (`Decision.ALLOW`). */
 export const Decision = {
