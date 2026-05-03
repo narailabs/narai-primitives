@@ -1,6 +1,6 @@
 {
   "name": "narai-primitives",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "description": "Read-only connectors + planning hub + connector framework + credential resolution, in one package. Bundles what was @narai/connector-toolkit, @narai/connector-config, @narai/connector-hub, the seven @narai/<svc>-agent-connector packages, and @narai/credential-providers.",
   "type": "module",
   "main": "./dist/hub/index.js",
