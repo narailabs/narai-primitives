@@ -33,7 +33,7 @@ afterEach(() => {
 
 /** Build a fake `<root>/<name>-agent-connector/{dist/cli.js, plugin/skills/<name>-agent/SKILL.md}`
  *  layout under tmpDir. Returns the absolute cli path so the test can register
- *  it with the injected `cliResolver`. */
+ *  it with the injected `cliResolver`. This is the LEGACY pre-2.0 layout. */
 function setupFakeConnector(
   root: string,
   name: string,
@@ -51,6 +51,34 @@ function setupFakeConnector(
   fs.writeFileSync(
     path.join(pkgRoot, "plugin", "skills", `${name}-agent`, "SKILL.md"),
     opts.skill ?? `# ${name} skill body`,
+  );
+  return cliPath;
+}
+
+/** Build a fake bundled-2.x layout under `<root>/narai-primitives/`:
+ *   - dist/connectors/<name>/cli.js
+ *   - plugins/<name>-agent/skills/<name>-agent/SKILL.md
+ *  Returns the cli path so a test can register it with the cliResolver. */
+function setupBundledConnector(
+  root: string,
+  name: string,
+  opts: { cliBody?: string; skill?: string } = {},
+): string {
+  const pkgRoot = path.join(root, "narai-primitives");
+  fs.mkdirSync(path.join(pkgRoot, "dist", "connectors", name), { recursive: true });
+  fs.mkdirSync(
+    path.join(pkgRoot, "plugins", `${name}-agent`, "skills", `${name}-agent`),
+    { recursive: true },
+  );
+  const cliPath = path.join(pkgRoot, "dist", "connectors", name, "cli.js");
+  fs.writeFileSync(
+    cliPath,
+    opts.cliBody ??
+      `process.stdout.write(JSON.stringify({status:"success",action:"x",data:{name:"${name}"}}));\n`,
+  );
+  fs.writeFileSync(
+    path.join(pkgRoot, "plugins", `${name}-agent`, "skills", `${name}-agent`, "SKILL.md"),
+    opts.skill ?? `# ${name} skill body (bundled)`,
   );
   return cliPath;
 }
@@ -128,6 +156,69 @@ describe("gather end-to-end with stubs", () => {
       data: { name: "aws" },
     });
     expect(out.results[0]?.error).toBeUndefined();
+  });
+
+  it("loads SKILL.md from the bundled 2.x layout (plugins/<name>-agent/skills/<name>-agent/SKILL.md)", async () => {
+    // The bundled 2.x narai-primitives layout puts the connector CLI at
+    // <root>/dist/connectors/<name>/cli.js and the skill at
+    // <root>/plugins/<name>-agent/skills/<name>-agent/SKILL.md.
+    // Both paths must resolve correctly from `prepareConnector`.
+    //
+    // We verify by capturing the planner's systemPrompt — buildSystemPrompt
+    // concatenates each connector's skillContent verbatim, so finding the
+    // bundled-skill marker in the prompt proves the bundled SKILL.md was
+    // read successfully.
+    const cli = setupBundledConnector(tmpDir, "aws", {
+      skill: "# aws bundled skill — only this body proves bundled SKILL.md loaded",
+    });
+    let capturedSystemPrompt = "";
+    const planner: Planner = {
+      plan: async (systemPrompt) => {
+        capturedSystemPrompt = systemPrompt;
+        return JSON.stringify([{ connector: "aws", action: "x", params: {} }]);
+      },
+    };
+    const loader = stubLoader({ aws: { skill: "aws-agent-connector" } });
+    const cliResolver: CliResolver = (name) =>
+      name === "aws"
+        ? { command: "node", args: [cli], source: "bundled-self", resolvedPath: cli }
+        : null;
+    const out = await gather(
+      { prompt: "?" },
+      { planner, configLoader: loader, cliResolver },
+    );
+    // No prep error — SKILL.md was found at one of the candidate paths.
+    expect(
+      out.results.every((r) => r.error?.code !== "SKILL_NOT_FOUND"),
+    ).toBe(true);
+    // The bundled-skill marker must appear in the system prompt — proves
+    // the bundled candidate path was the one that resolved.
+    expect(capturedSystemPrompt).toContain("aws bundled skill");
+  });
+
+  it("falls back to the legacy plugin/skills/<name>-agent/SKILL.md layout when the bundled path is absent", async () => {
+    // Existing pre-2.0 packages still ship the legacy `plugin/skills/...`
+    // path. The hub must keep finding SKILL.md there too.
+    const cli = setupFakeConnector(tmpDir, "jira", {
+      skill: "# jira legacy skill body — only the legacy path can produce this",
+    });
+    let capturedSystemPrompt = "";
+    const planner: Planner = {
+      plan: async (systemPrompt) => {
+        capturedSystemPrompt = systemPrompt;
+        return JSON.stringify([{ connector: "jira", action: "x", params: {} }]);
+      },
+    };
+    const loader = stubLoader({ jira: { skill: "jira-agent-connector" } });
+    const cliResolver = stubCliResolver({ jira: cli });
+    const out = await gather(
+      { prompt: "?" },
+      { planner, configLoader: loader, cliResolver },
+    );
+    expect(
+      out.results.every((r) => r.error?.code !== "SKILL_NOT_FOUND"),
+    ).toBe(true);
+    expect(capturedSystemPrompt).toContain("jira legacy skill body");
   });
 
   it("returns plan: [] and PLANNER_INVALID when planner output is unparsable", async () => {

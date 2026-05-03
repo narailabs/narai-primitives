@@ -45,10 +45,31 @@ function shortName(skill: string): string {
   return skill.replace(/-agent-connector$/, "");
 }
 
-/** Walk up from a `dist/cli.js` path to the package root. */
+/** Walk up from a connector CLI path to the narai-primitives package root.
+ *
+ * Two layouts to handle:
+ *   - Bundled 2.x: `<root>/dist/connectors/<name>/cli.js` (walk up 4)
+ *   - Legacy:     `<root>/dist/cli.js` (walk up 2 — pre-2.0 per-connector packages)
+ */
 function packageRootFromCli(cliPath: string): string {
+  const parts = cliPath.split(path.sep);
+  const distIdx = parts.lastIndexOf("dist");
+  if (distIdx > 0 && parts[distIdx + 1] === "connectors") {
+    // <root>/dist/connectors/<name>/cli.js → <root>
+    return parts.slice(0, distIdx).join(path.sep);
+  }
   // <root>/dist/cli.js → <root>
   return path.dirname(path.dirname(cliPath));
+}
+
+/** Candidate SKILL.md paths under a package root, in preference order. */
+function skillMdCandidates(root: string, name: string): string[] {
+  return [
+    // Bundled 2.x: plugins/<name>-agent/skills/<name>-agent/SKILL.md
+    path.join(root, "plugins", `${name}-agent`, "skills", `${name}-agent`, "SKILL.md"),
+    // Legacy: plugin/skills/<name>-agent/SKILL.md (pre-2.0 per-connector packages)
+    path.join(root, "plugin", "skills", `${name}-agent`, "SKILL.md"),
+  ];
 }
 
 /** Read a file synchronously, returning null on failure. */
@@ -116,13 +137,20 @@ function prepareConnector(
     };
   }
   const root = packageRootFromCli(resolved.resolvedPath);
-  const skillFile = path.join(root, "plugin", "skills", `${name}-agent`, "SKILL.md");
-  const skillContent = tryRead(skillFile);
+  const candidates = skillMdCandidates(root, name);
+  let skillContent: string | null = null;
+  for (const candidate of candidates) {
+    const content = tryRead(candidate);
+    if (content !== null) {
+      skillContent = content;
+      break;
+    }
+  }
   if (skillContent === null) {
     return {
       error: {
         code: "SKILL_NOT_FOUND",
-        message: `SKILL.md not found at ${skillFile}`,
+        message: `SKILL.md not found at any of: ${candidates.join(", ")}`,
       },
     };
   }
