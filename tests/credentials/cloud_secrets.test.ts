@@ -4,7 +4,7 @@
  * network.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CloudSecretsProvider } from "../src/cloud_secrets.js";
+import { CloudSecretsProvider } from "../../src/credentials/cloud_secrets.js";
 
 describe("credential_providers/cloud_secrets", () => {
   describe("aws sub-provider", () => {

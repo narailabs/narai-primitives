@@ -177,7 +177,7 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
       throw new NotionError(
         "CONFIG_ERROR",
         "Notion credentials not configured. Set NOTION_TOKEN or register a " +
-          "credential provider via @narai/credential-providers.",
+          "credential provider via narai-primitives/credentials.",
         false,
       );
     }

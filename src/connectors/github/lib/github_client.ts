@@ -5,7 +5,7 @@
  * and POST against `/graphql` (read-only queries) are permitted.
  */
 import { validateUrl } from "narai-primitives/toolkit";
-import { resolveSecret } from "@narai/credential-providers";
+import { resolveSecret } from "narai-primitives/credentials";
 
 type HttpMethod = "GET" | "POST_GRAPHQL";
 const ALLOWED_METHODS: ReadonlySet<HttpMethod> = new Set<HttpMethod>([

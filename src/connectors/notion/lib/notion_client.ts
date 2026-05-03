@@ -7,7 +7,7 @@
  * `POST_READ_ONLY` pseudo-method in addition to the standard GETs.
  */
 import { validateUrl } from "narai-primitives/toolkit";
-import { resolveSecret } from "@narai/credential-providers";
+import { resolveSecret } from "narai-primitives/credentials";
 
 type HttpMethod = "GET" | "POST_READ_ONLY";
 const ALLOWED_METHODS: ReadonlySet<HttpMethod> = new Set<HttpMethod>([

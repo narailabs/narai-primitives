@@ -448,4 +448,4 @@ export function pluginConfigFromSlice(slice: {
 }
 
 // `parseCredentialRef`, `CredentialRef`, and `KNOWN_PROVIDERS` live in
-// `@narai/credential-providers` now.
+// `narai-primitives/credentials` now.

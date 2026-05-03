@@ -240,7 +240,7 @@ export const resolveSecrets =
   defaultResolver.resolveSecrets.bind(defaultResolver);
 
 // Re-export provider implementations so callers can import everything from
-// `@narai/credential-providers` directly.
+// `narai-primitives/credentials` directly.
 export { FileProvider } from "./file.js";
 export { EnvVarProvider } from "./env_var.js";
 export { KeychainProvider } from "./keychain.js";

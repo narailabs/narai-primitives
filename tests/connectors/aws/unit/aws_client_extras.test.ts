@@ -15,10 +15,10 @@ import {
   loadAwsCredentialsOverride,
 } from "../../../../src/connectors/aws/lib/aws_client.js";
 
-vi.mock("@narai/credential-providers", () => ({
+vi.mock("narai-primitives/credentials", () => ({
   resolveSecret: vi.fn(async () => null),
 }));
-import { resolveSecret } from "@narai/credential-providers";
+import { resolveSecret } from "narai-primitives/credentials";
 
 type SendHandler = (cmd: Record<string, unknown>) => Promise<unknown>;
 

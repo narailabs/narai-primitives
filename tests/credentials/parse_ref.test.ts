@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { parseCredentialRef } from "../src/parse_ref.js";
+import { parseCredentialRef } from "../../src/credentials/parse_ref.js";
 import {
   CredentialResolver,
   clearProviders,
   registerProvider,
   type CredentialProvider,
-} from "../src/index.js";
+} from "../../src/credentials/index.js";
 
 const stubProvider: CredentialProvider = {
   async getSecret() {

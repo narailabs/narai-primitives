@@ -2,7 +2,7 @@
  * Tests for EnvVarProvider.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { EnvVarProvider } from "../src/env_var.js";
+import { EnvVarProvider } from "../../src/credentials/env_var.js";
 
 describe("credential_providers/env_var", () => {
   const saved: Record<string, string | undefined> = {};

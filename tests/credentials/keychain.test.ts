@@ -44,7 +44,7 @@ vi.mock("@napi-rs/keyring", () => {
 });
 
 import { execFileSync } from "node:child_process";
-import { KeychainProvider } from "../src/keychain.js";
+import { KeychainProvider } from "../../src/credentials/keychain.js";
 
 const execMock = execFileSync as unknown as ReturnType<typeof vi.fn>;
 
@@ -223,7 +223,9 @@ describe("credential_providers/keychain", () => {
       // we want to exercise in `_loadOptional`.
       vi.resetModules();
       vi.doUnmock("@napi-rs/keyring");
-      const { KeychainProvider: Fresh } = await import("../src/keychain.js");
+      const { KeychainProvider: Fresh } = await import(
+        "../../src/credentials/keychain.js"
+      );
       const p = new Fresh({ platform: "win32" });
       await expect(p.getSecret("x")).rejects.toThrow(
         /npm install --save-dev @napi-rs\/keyring/,

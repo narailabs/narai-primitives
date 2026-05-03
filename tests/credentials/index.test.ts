@@ -12,7 +12,7 @@ import {
   resolveSecret,
   resolveSecrets,
   type CredentialProvider,
-} from "../src/index.js";
+} from "../../src/credentials/index.js";
 
 function makeProvider(
   data: Record<string, string>,

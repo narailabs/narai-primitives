@@ -104,7 +104,9 @@ export class FileProvider implements CredentialProvider {
     } catch {
       // file absent or unreadable — skip
     }
-    return { exists: value !== null, provider: "file", lastModified };
+    const out: SecretMetadata = { exists: value !== null, provider: "file" };
+    if (lastModified !== undefined) out.lastModified = lastModified;
+    return out;
   }
 
   private _warnOnce(): void {

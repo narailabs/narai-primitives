@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { FileProvider } from "../src/file.js";
+import { FileProvider } from "../../src/credentials/file.js";
 
 describe("credential_providers/file", () => {
   let tmpDir: string;

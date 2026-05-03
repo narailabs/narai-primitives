@@ -2,7 +2,7 @@
  * Tests for the redact / redactAll helpers.
  */
 import { describe, expect, it } from "vitest";
-import { redact, redactAll } from "../src/redact.js";
+import { redact, redactAll } from "../../src/credentials/redact.js";
 
 describe("credential_providers/redact", () => {
   describe("redact", () => {
