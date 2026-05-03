@@ -122,7 +122,6 @@
     "@aws-sdk/client-sts": "^3.1030.0",
     "@azure/keyvault-secrets": "^4.10.0",
     "@google-cloud/secret-manager": "^6.0.0",
-    "@napi-rs/keyring": "^1.1.0",
     "gpt-tokenizer": "^2.5.0",
     "mongodb": "^7.1.1",
     "mssql": "^12.2.1",
