@@ -25,6 +25,7 @@ describe("resolveAgentCli", () => {
       name: "fake",
       homeOverride: fakeHome,
       envOverride: {},
+      bundledSelfRoot: null,
     });
     expect(result).toBeNull();
   });
@@ -37,6 +38,7 @@ describe("resolveAgentCli", () => {
       name: "jira",
       homeOverride: fakeHome,
       envOverride: { JIRA_AGENT_CLI: customCli },
+      bundledSelfRoot: null,
     });
     expect(result).not.toBeNull();
     expect(result?.source).toBe("env");
@@ -54,6 +56,7 @@ describe("resolveAgentCli", () => {
       name: "db",
       homeOverride: fakeHome,
       envOverride: { DB_AGENT_CLI: customCli },
+      bundledSelfRoot: null,
     });
     expect(result?.source).toBe("env");
   });
@@ -63,6 +66,7 @@ describe("resolveAgentCli", () => {
       name: "jira",
       homeOverride: fakeHome,
       envOverride: { JIRA_AGENT_CLI: path.join(fakeHome, "nope") },
+      bundledSelfRoot: null,
     });
     expect(result).toBeNull();
   });
@@ -79,6 +83,7 @@ describe("resolveAgentCli", () => {
       name: "jira",
       homeOverride: fakeHome,
       envOverride: {},
+      bundledSelfRoot: null,
     });
     expect(result?.source).toBe("plugin-cache");
     expect(result?.resolvedPath).toBe(cliPath);
@@ -93,6 +98,7 @@ describe("resolveAgentCli", () => {
         name: "jira",
         homeOverride: fakeHome,
         envOverride: { CLAUDE_PLUGIN_DATA: pluginData },
+        bundledSelfRoot: null,
       });
       expect(result?.source).toBe("claude-plugin-data");
       expect(result?.resolvedPath).toBe(cliPath);
@@ -108,6 +114,7 @@ describe("resolveAgentCli", () => {
       name: "jira",
       homeOverride: fakeHome,
       envOverride: {},
+      bundledSelfRoot: null,
     });
     expect(result?.source).toBe("dev-fallback");
     expect(result?.resolvedPath).toBe(cliPath);
@@ -122,6 +129,7 @@ describe("resolveAgentCli", () => {
       homeOverride: fakeHome,
       envOverride: {},
       devRoot: customRoot,
+      bundledSelfRoot: null,
     });
     expect(result?.resolvedPath).toBe(cliPath);
   });
@@ -143,9 +151,134 @@ describe("resolveAgentCli", () => {
       pluginNameContains: "myorg-thing-plugin",
       packageName: "@myorg/thing",
       cliRelativePath: "build/main.js",
+      bundledSelfRoot: null,
     });
     expect(result?.source).toBe("plugin-cache");
     expect(result?.resolvedPath).toBe(cliPath);
+  });
+
+  it("bundled-self resolves a CLI inside narai-primitives' own dist tree", () => {
+    // Simulate the canonical 2.x bundled layout: narai-primitives' package
+    // root contains dist/connectors/<name>/cli.js for every connector.
+    const bundledRoot = fs.mkdtempSync(path.join(os.tmpdir(), "np-bundled-"));
+    try {
+      const cliPath = path.join(
+        bundledRoot,
+        "dist",
+        "connectors",
+        "github",
+        "cli.js",
+      );
+      fs.mkdirSync(path.dirname(cliPath), { recursive: true });
+      fs.writeFileSync(cliPath, "#!/usr/bin/env node\n");
+      const result = resolveAgentCli({
+        name: "github",
+        homeOverride: fakeHome,
+        envOverride: {},
+        bundledSelfRoot: bundledRoot,
+      });
+      expect(result?.source).toBe("bundled-self");
+      expect(result?.command).toBe("node");
+      expect(result?.resolvedPath).toBe(cliPath);
+    } finally {
+      fs.rmSync(bundledRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("bundled-self is preferred over plugin-cache when both exist", () => {
+    // The bundled CLI ships with the package; plugin-cache is a legacy
+    // fallback. When narai-primitives is installed normally, bundled-self
+    // is the right answer.
+    const bundledRoot = fs.mkdtempSync(path.join(os.tmpdir(), "np-bundled-"));
+    try {
+      const bundledCli = path.join(
+        bundledRoot,
+        "dist",
+        "connectors",
+        "jira",
+        "cli.js",
+      );
+      fs.mkdirSync(path.dirname(bundledCli), { recursive: true });
+      fs.writeFileSync(bundledCli, "");
+
+      // Also set up a plugin-cache entry for the legacy package layout.
+      const pluginDir = path.join(
+        fakeHome,
+        ".claude", "plugins", "cache",
+        "jira-agent-plugin",
+        "node_modules", "@narai", "jira-agent-connector",
+      );
+      touchPackageCli(pluginDir);
+
+      const result = resolveAgentCli({
+        name: "jira",
+        homeOverride: fakeHome,
+        envOverride: {},
+        bundledSelfRoot: bundledRoot,
+      });
+      expect(result?.source).toBe("bundled-self");
+      expect(result?.resolvedPath).toBe(bundledCli);
+    } finally {
+      fs.rmSync(bundledRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("env-var override still wins over bundled-self", () => {
+    // Operators must always be able to override with NAME_AGENT_CLI even
+    // when narai-primitives' own bundled CLI is available.
+    const bundledRoot = fs.mkdtempSync(path.join(os.tmpdir(), "np-bundled-"));
+    try {
+      const bundledCli = path.join(
+        bundledRoot,
+        "dist",
+        "connectors",
+        "jira",
+        "cli.js",
+      );
+      fs.mkdirSync(path.dirname(bundledCli), { recursive: true });
+      fs.writeFileSync(bundledCli, "");
+
+      const customCli = path.join(fakeHome, "custom", "cli.js");
+      fs.mkdirSync(path.dirname(customCli), { recursive: true });
+      fs.writeFileSync(customCli, "");
+
+      const result = resolveAgentCli({
+        name: "jira",
+        homeOverride: fakeHome,
+        envOverride: { JIRA_AGENT_CLI: customCli },
+        bundledSelfRoot: bundledRoot,
+      });
+      expect(result?.source).toBe("env");
+      expect(result?.resolvedPath).toBe(customCli);
+    } finally {
+      fs.rmSync(bundledRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("bundled-self gracefully degrades when the connector is not bundled", () => {
+    // A name that has no built CLI under bundledSelfRoot should fall
+    // through to the lower fallbacks instead of erroring.
+    const bundledRoot = fs.mkdtempSync(path.join(os.tmpdir(), "np-bundled-empty-"));
+    try {
+      // Empty bundled root — no dist/connectors/<name>/cli.js inside.
+      const pluginDir = path.join(
+        fakeHome,
+        ".claude", "plugins", "cache",
+        "jira-agent-plugin",
+        "node_modules", "@narai", "jira-agent-connector",
+      );
+      const pluginCli = touchPackageCli(pluginDir);
+      const result = resolveAgentCli({
+        name: "jira",
+        homeOverride: fakeHome,
+        envOverride: {},
+        bundledSelfRoot: bundledRoot,
+      });
+      expect(result?.source).toBe("plugin-cache");
+      expect(result?.resolvedPath).toBe(pluginCli);
+    } finally {
+      fs.rmSync(bundledRoot, { recursive: true, force: true });
+    }
   });
 
   it("plugin cache is preferred over CLAUDE_PLUGIN_DATA when both exist", () => {
@@ -165,6 +298,7 @@ describe("resolveAgentCli", () => {
         name: "jira",
         homeOverride: fakeHome,
         envOverride: { CLAUDE_PLUGIN_DATA: pluginData },
+        bundledSelfRoot: null,
       });
       expect(result?.source).toBe("plugin-cache");
       expect(result?.resolvedPath).toBe(pluginCli);
