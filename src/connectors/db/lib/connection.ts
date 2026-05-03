@@ -16,7 +16,7 @@
 import { getEnvironment } from "./environments.js";
 import { DatabaseDriver } from "./drivers/base.js";
 import { logEvent } from "./audit.js";
-import { parseCredentialRef, resolveSecret } from "@narai/credential-providers";
+import { parseCredentialRef, resolveSecret } from "narai-primitives/credentials";
 
 // ---------------------------------------------------------------------------
 // Driver factory registry

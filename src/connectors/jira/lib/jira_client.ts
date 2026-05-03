@@ -10,7 +10,7 @@
  * - Credentials resolved via `resolveSecret` with `env_var` fallback order.
  */
 import { validateUrl } from "narai-primitives/toolkit";
-import { resolveSecret } from "@narai/credential-providers";
+import { resolveSecret } from "narai-primitives/credentials";
 import { adfToPlainText, type AdfNode } from "./adf.js";
 
 type HttpMethod = "GET";

@@ -135,7 +135,7 @@ export function buildConfluenceConnector(
         "CONFIG_ERROR",
         "Confluence credentials not configured. Set CONFLUENCE_SITE_URL, " +
           "CONFLUENCE_EMAIL, and CONFLUENCE_API_TOKEN (or register a credential " +
-          "provider via @narai/credential-providers).",
+          "provider via narai-primitives/credentials).",
         false,
       );
     }

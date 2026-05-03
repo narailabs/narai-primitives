@@ -10,7 +10,7 @@
  *   - `fetchWithCaps` — size/timeout-capped fetch.
  *   - `validateUrl`, `checkPathContainment`, `sanitizeLabel` — security primitives.
  *
- * Credentials remain external; depend on `@narai/credential-providers` directly.
+ * Credentials live at the `narai-primitives/credentials` subpath.
  */
 
 // ─── Primary API ───────────────────────────────────────────────────────────

@@ -4,8 +4,8 @@
  * Thin compatibility shim: the legacy `FileCredentialProvider` /
  * `EnvVarCredentialProvider` / `getCredentials()` surface is retained
  * (imported by `connection.ts` and the Phase E drivers arriving later),
- * but the implementations now delegate to the new
- * `@narai/credential-providers` package.
+ * but the implementations now delegate to the
+ * `narai-primitives/credentials` subpath.
  *
  * Contract:
  *  - `FileCredentialProvider` reads a JSON file keyed by `db-<env>`.
@@ -19,7 +19,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { FileProvider, EnvVarProvider } from "@narai/credential-providers";
+import { FileProvider, EnvVarProvider } from "narai-primitives/credentials";
 
 /**
  * Default credentials file location — `~/.config/wiki_db/credentials.json`.
@@ -47,7 +47,7 @@ export abstract class CredentialProvider {
  *     ...
  *   }
  *
- * Delegates the actual file reading to `@narai/credential-providers`' FileProvider
+ * Delegates the actual file reading to `narai-primitives/credentials`' FileProvider
  * so the file-mode safety check (refuses 0644+ on POSIX) and plaintext
  * warning fire here too. Nested `db-<env>.username` / `db-<env>.password`
  * lookups are resolved by FileProvider's dot-path traversal.

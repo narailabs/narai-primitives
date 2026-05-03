@@ -3,7 +3,7 @@
  * Shares the Basic-auth + rate-limit + retry design with jira_client.ts.
  */
 import { validateUrl } from "narai-primitives/toolkit";
-import { resolveSecret } from "@narai/credential-providers";
+import { resolveSecret } from "narai-primitives/credentials";
 
 type HttpMethod = "GET";
 const ALLOWED_METHODS: ReadonlySet<HttpMethod> = new Set<HttpMethod>(["GET"]);

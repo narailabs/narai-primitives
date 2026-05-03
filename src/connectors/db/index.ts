@@ -48,7 +48,7 @@ export {
   type CloudSecretsConfig,
   type CloudSubProvider,
   type CredentialRef,
-} from "@narai/credential-providers";
+} from "narai-primitives/credentials";
 
 export {
   parseConfig,

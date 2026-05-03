@@ -13,10 +13,10 @@ import {
 } from "../../../../src/connectors/github/lib/github_client.js";
 
 // Mock the credentials module so we can drive `loadGithubCredentials` deterministically.
-vi.mock("@narai/credential-providers", () => ({
+vi.mock("narai-primitives/credentials", () => ({
   resolveSecret: vi.fn(async () => null),
 }));
-import { resolveSecret } from "@narai/credential-providers";
+import { resolveSecret } from "narai-primitives/credentials";
 
 function jsonResponse(
   body: unknown,

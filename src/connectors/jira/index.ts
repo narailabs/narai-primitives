@@ -135,7 +135,7 @@ export function buildJiraConnector(overrides: BuildOptions = {}): Connector {
         "CONFIG_ERROR",
         "Jira credentials not configured. Set JIRA_SITE_URL, JIRA_EMAIL, and " +
           "JIRA_API_TOKEN (or register a credential provider via " +
-          "@narai/credential-providers).",
+          "narai-primitives/credentials).",
         false,
       );
     }

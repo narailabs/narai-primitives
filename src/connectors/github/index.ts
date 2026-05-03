@@ -223,7 +223,7 @@ export function buildGithubConnector(overrides: BuildOptions = {}): Connector {
       throw new GithubError(
         "CONFIG_ERROR",
         "GitHub credentials not configured. Set GITHUB_TOKEN (personal access " +
-          "token) or register a credential provider via @narai/credential-providers.",
+          "token) or register a credential provider via narai-primitives/credentials.",
         false,
       );
     }

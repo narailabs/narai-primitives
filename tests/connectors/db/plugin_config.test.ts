@@ -1,7 +1,7 @@
 /**
  * Tests for src/lib/plugin_config.ts — V2.0 vocab + connector-config slice.
  *
- * Reference-string grammar lives in `@narai/credential-providers`.
+ * Reference-string grammar lives in `narai-primitives/credentials`.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as fs from "node:fs";

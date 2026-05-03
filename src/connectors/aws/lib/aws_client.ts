@@ -10,7 +10,7 @@
  *
  * Only whitelisted read-only *Command types are exposed here.
  */
-import { resolveSecret } from "@narai/credential-providers";
+import { resolveSecret } from "narai-primitives/credentials";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 const DEFAULT_READ_TIMEOUT_MS = 30_000;
