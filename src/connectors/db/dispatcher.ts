@@ -34,6 +34,7 @@ import { SQLiteDriver } from "./lib/drivers/sqlite.js";
 import type {
   DatabaseDriver,
   ExecuteReadResult,
+  Table,
 } from "./lib/drivers/base.js";
 import { parseConfig } from "./config.js";
 import {
@@ -263,14 +264,33 @@ export function adaptDriver(
   };
 }
 
-export function runSchema(
+/**
+ * Phase E drivers (pg, mysql, mssql, oracle, mongo, dynamo) return a useless
+ * stub from sync `getSchema` and put the real query logic in an async
+ * `getSchemaAsync` method. Detect the async hook the same way `SchemaManager`
+ * does (`lib/schema.ts`) and prefer it; fall back to sync `getSchema` for
+ * sqlite which has no async variant.
+ */
+interface AsyncSchemaDriver {
+  getSchemaAsync?(
+    conn: unknown,
+    schemaName?: string,
+    tableFilter?: string | null,
+  ): Promise<Table[]>;
+}
+
+export async function runSchema(
   driver: DatabaseDriver,
   conn: unknown,
   filter: string | null,
   envName: string = "",
-): FetchResult {
+): Promise<FetchResult> {
   try {
-    const tables = driver.getSchema(conn, undefined, filter);
+    const asyncHook = (driver as AsyncSchemaDriver).getSchemaAsync;
+    const tables: Table[] =
+      typeof asyncHook === "function"
+        ? await asyncHook.call(driver, conn, undefined, filter)
+        : driver.getSchema(conn, undefined, filter);
     let columnCount = 0;
     for (const t of tables) columnCount += t.columns.length;
     logEvent({
@@ -449,11 +469,13 @@ async function runQueryOnSqlite(v: QueryParamsValidated): Promise<FetchResult> {
   }
 }
 
-function runSchemaOnSqlite(v: SchemaParamsValidated): FetchResult {
+async function runSchemaOnSqlite(
+  v: SchemaParamsValidated,
+): Promise<FetchResult> {
   const driver = new SQLiteDriver();
   const conn = driver.connect({ database: v.sqlite_path! });
   try {
-    return runSchema(driver, conn, v.filter ?? null, "");
+    return await runSchema(driver, conn, v.filter ?? null, "");
   } finally {
     driver.close(conn);
   }
@@ -576,7 +598,12 @@ async function runOnEnv(
   try {
     if (action === "schema") {
       const sv = v as SchemaParamsValidated;
-      return runSchema(conn.driver, conn.native, sv.filter ?? null, envName);
+      return await runSchema(
+        conn.driver,
+        conn.native,
+        sv.filter ?? null,
+        envName,
+      );
     }
     const qv = v as QueryParamsValidated;
     const policy = new Policy(approvalMode, rules);
@@ -627,7 +654,7 @@ export async function fetch(
       return await runOnEnv("query", v);
     }
     const v = validateSchemaParams(p);
-    if (v.sqlite_path) return runSchemaOnSqlite(v);
+    if (v.sqlite_path) return await runSchemaOnSqlite(v);
     return await runOnEnv("schema", v);
   } catch (exc) {
     return {

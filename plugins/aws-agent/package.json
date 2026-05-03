@@ -4,6 +4,6 @@
   "private": true,
   "description": "Runtime manifest for aws-agent-plugin. The SessionStart hook runs `npm install` on this manifest into ${CLAUDE_PLUGIN_DATA}.",
   "dependencies": {
-    "narai-primitives": "^2.0.0"
+    "narai-primitives": "^2.1.3"
   }
 }
