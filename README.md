@@ -2,11 +2,12 @@
 
 Read-only connectors + planning hub + connector framework, in one package.
 
-Bundles what used to ship as eight separate `@narai/*` packages:
+Bundles what used to ship as eleven separate `@narai/*` packages:
 
 - `@narai/connector-toolkit` → `narai-primitives/toolkit`
 - `@narai/connector-config` → `narai-primitives/config`
 - `@narai/connector-hub` → `narai-primitives` (default) or `narai-primitives/hub`
+- `@narai/credential-providers` → `narai-primitives/credentials`
 - `@narai/aws-agent-connector` → `narai-primitives/aws`
 - `@narai/confluence-agent-connector` → `narai-primitives/confluence`
 - `@narai/db-agent-connector` → `narai-primitives/db`
@@ -14,8 +15,6 @@ Bundles what used to ship as eight separate `@narai/*` packages:
 - `@narai/github-agent-connector` → `narai-primitives/github`
 - `@narai/jira-agent-connector` → `narai-primitives/jira`
 - `@narai/notion-agent-connector` → `narai-primitives/notion`
-
-`@narai/credential-providers` stays as a separate package.
 
 ## Install
 
@@ -61,8 +60,8 @@ Update imports:
 +import { loadResolvedConfig } from "narai-primitives/config";
 ```
 
-The eight old packages are deprecated on npm and will receive no new releases.
+All eleven old packages are deprecated on npm and will receive no new releases.
 
 ## Contributing
 
-- [Architecture Invariants](docs/architecture-invariants.md) — load-bearing invariants every contributor should know before refactoring
+See [CONTRIBUTING.md](CONTRIBUTING.md). Contributors touching `src/toolkit/agent_resolver.ts`, `src/hub/index.ts`, `src/credentials/`, or `src/connectors/db/` should also read [`docs/architecture-invariants.md`](docs/architecture-invariants.md).

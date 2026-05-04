@@ -2,12 +2,54 @@
 
 Thanks for your interest in contributing. Most contributions fall into one of two buckets:
 
-1. **Fixes / improvements to existing code** — open a PR following the conventions in this repo. Tests and types must stay green.
-2. **A brand-new builtin connector** — read the rest of this document. It describes the file layout, naming, testing, and marketplace surfacing expected of a new builtin.
+1. **Fixes / improvements to existing code** — see [Fixes and improvements](#fixes-and-improvements) below for the local-dev loop, conventions, and PR hygiene.
+2. **A brand-new builtin connector** — read the [New builtin connector](#new-builtin-connector) section. It describes the file layout, naming, testing, and marketplace surfacing expected of a new builtin.
 
 If you instead want a **local connector** for your own project (private API, internal tool, one-off), don't add it here. Use the `/create-connector` Claude Code skill (shipped via the [`narai`](https://github.com/narailabs/narai-claude-plugins) marketplace) — it scaffolds a minimal local connector at `.connectors/connectors/<slug>/` with no plugin layer, no publish step, no `git init`. Builtins are reserved for connectors useful enough that bundling them in the core npm package and shipping a Claude Code plugin for them is justified.
 
-## Before you start
+## Fixes and improvements
+
+### Before you start
+
+Read [`docs/architecture-invariants.md`](docs/architecture-invariants.md) — four load-bearing invariants that have each failed at least once between 2.1.0 and 2.1.3 despite green unit tests. If your change touches `src/toolkit/agent_resolver.ts`, `src/hub/index.ts`, `src/credentials/`, `src/connectors/db/lib/drivers/`, or `src/connectors/db/dispatcher.ts`, that doc is required reading.
+
+### Local dev loop
+
+```sh
+npm install
+npm run build
+npm test
+```
+
+Live-DB integration tests are gated behind `TEST_LIVE_*` env vars (e.g. `TEST_LIVE_POSTGRES=1`) and stay skipped by default so CI is hermetic. `npm run typecheck` runs the strict pass without emitting; `npm run coverage` runs the full suite with v8 coverage and enforces global thresholds.
+
+### Code conventions
+
+- 2-space indent, ESM-only (`"type": "module"`).
+- Strict TypeScript with `exactOptionalPropertyTypes` (see `tsconfig.json`); don't widen the compiler options to silence errors.
+- No emojis in source or docs.
+- Follow existing file/module style; don't reformat adjacent code.
+
+### Releasing
+
+Releases are tag-driven via `.github/workflows/release.yml`. Bump `package.json` version, then:
+
+```sh
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+This triggers `npm publish --provenance` plus a GitHub Release. The workflow fails closed if the tag doesn't match `package.json`. Pre-release tags (`vX.Y.Z-rc.N`) publish under the `next` npm dist-tag and are marked as pre-releases on GitHub; plain semver tags go to `latest`.
+
+### PR hygiene
+
+- Include test coverage for behavior changes.
+- If you touch one of the four invariant paths above, run doc-wiki's `eval-14` (`wiki-gather-credential-boundary`) and `eval-20` (`wiki-gather-db-postgres-success`) manually before merging — both exercise the full `gather()` → connector subprocess → bundled `SKILL.md` → CLI → envelope round-trip and have caught bugs that passed unit tests in this repo. doc-wiki lives at <https://github.com/narailabs/doc-wiki>.
+- Keep PRs focused; don't bundle drive-by refactors with the core change.
+
+## New builtin connector
+
+Before you start:
 
 - Check that the service isn't already covered. Today's builtins: `aws`, `confluence`, `db` (postgres / mysql / sqlite / mssql / mongodb / dynamodb / oracle), `gcp`, `github`, `jira`, `notion`. Database backends not yet supported by `db` should usually go into `db`'s driver registry rather than start fresh.
 - File an issue first if you're unsure whether the connector belongs here. Adding a builtin is a long-term commitment to maintain it.

@@ -101,9 +101,14 @@ files and assert the optional SDK / driver names appear only inside dynamic
 - `tests/credentials/lazy_loading.test.ts`
 - `tests/connectors/db/lazy_loading.test.ts`
 
-**History.** Discipline established as part of the 2.0 consolidation; both
-guard tests landed during the 2.1.x stabilization to make accidental
-top-level imports fail CI rather than runtime.
+**History.** Discipline established as part of the 2.0 consolidation. The
+credentials guard test (`tests/credentials/lazy_loading.test.ts`) landed in
+2.1.0 alongside the `@narai/credential-providers` absorption (commit
+`d1654dd`, "feat(credentials): absorb @narai/credential-providers as
+/credentials subpath"). The db-driver guard test
+(`tests/connectors/db/lazy_loading.test.ts`) followed in 2.1.1 (commit
+`a5de88f`, "test(db): lock in driver lazy-loading invariant"). Both make
+accidental top-level imports fail CI rather than runtime.
 
 ## 4. db schema dispatch: prefer `getSchemaAsync`
 
