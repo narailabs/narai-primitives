@@ -306,4 +306,92 @@ describe("resolveAgentCli", () => {
       fs.rmSync(pluginData, { recursive: true, force: true });
     }
   });
+
+  describe("debug logging (NARAI_DEBUG_RESOLVER)", () => {
+    let writes: string[];
+    let originalWrite: typeof process.stderr.write;
+
+    beforeEach(() => {
+      writes = [];
+      originalWrite = process.stderr.write.bind(process.stderr);
+      process.stderr.write = ((chunk: string | Uint8Array) => {
+        writes.push(typeof chunk === "string" ? chunk : chunk.toString());
+        return true;
+      }) as typeof process.stderr.write;
+    });
+    afterEach(() => {
+      process.stderr.write = originalWrite;
+    });
+
+    it("is silent by default (env var unset)", () => {
+      const customCli = path.join(fakeHome, "x", "cli.js");
+      fs.mkdirSync(path.dirname(customCli), { recursive: true });
+      fs.writeFileSync(customCli, "");
+      resolveAgentCli({
+        name: "jira",
+        homeOverride: fakeHome,
+        envOverride: { JIRA_AGENT_CLI: customCli },
+        bundledSelfRoot: null,
+      });
+      expect(writes.join("")).toBe("");
+    });
+
+    it("emits a stderr breadcrumb when env var is '1' on env-path resolution", () => {
+      const customCli = path.join(fakeHome, "x", "cli.js");
+      fs.mkdirSync(path.dirname(customCli), { recursive: true });
+      fs.writeFileSync(customCli, "");
+      resolveAgentCli({
+        name: "jira",
+        homeOverride: fakeHome,
+        envOverride: { JIRA_AGENT_CLI: customCli, NARAI_DEBUG_RESOLVER: "1" },
+        bundledSelfRoot: null,
+      });
+      const out = writes.join("");
+      expect(out).toContain("[narai-primitives:resolver]");
+      expect(out).toContain("'jira'");
+      expect(out).toContain("via env");
+      expect(out).toContain(customCli);
+    });
+
+    it("emits a stderr breadcrumb on bundled-self resolution", () => {
+      const root = path.join(fakeHome, "primitives");
+      const bundled = path.join(root, "dist", "connectors", "db", "cli.js");
+      fs.mkdirSync(path.dirname(bundled), { recursive: true });
+      fs.writeFileSync(bundled, "");
+      resolveAgentCli({
+        name: "db",
+        homeOverride: fakeHome,
+        envOverride: { NARAI_DEBUG_RESOLVER: "1" },
+        bundledSelfRoot: root,
+      });
+      const out = writes.join("");
+      expect(out).toContain("'db'");
+      expect(out).toContain("via bundled-self");
+      expect(out).toContain(bundled);
+    });
+
+    it("emits a 'not resolved' breadcrumb when nothing matches", () => {
+      resolveAgentCli({
+        name: "fake",
+        homeOverride: fakeHome,
+        envOverride: { NARAI_DEBUG_RESOLVER: "1" },
+        bundledSelfRoot: null,
+      });
+      const out = writes.join("");
+      expect(out).toContain("'fake' not resolved");
+    });
+
+    it("does NOT emit when env var is set to anything other than '1'", () => {
+      const customCli = path.join(fakeHome, "x", "cli.js");
+      fs.mkdirSync(path.dirname(customCli), { recursive: true });
+      fs.writeFileSync(customCli, "");
+      resolveAgentCli({
+        name: "jira",
+        homeOverride: fakeHome,
+        envOverride: { JIRA_AGENT_CLI: customCli, NARAI_DEBUG_RESOLVER: "true" },
+        bundledSelfRoot: null,
+      });
+      expect(writes.join("")).toBe("");
+    });
+  });
 });
