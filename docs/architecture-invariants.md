@@ -1,7 +1,7 @@
 # Architecture Invariants
 
 This document captures four load-bearing invariants in narai-primitives 2.x. Each
-exists because consolidating ten previously-separate packages into one bundled
+exists because consolidating eleven previously-separate packages into one bundled
 layout broke assumptions baked into the original per-package code. Three of the
 four invariants were violated at least once between 2.1.0 and 2.1.3 — every
 violation passed unit tests and only surfaced when an end-to-end caller
