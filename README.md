@@ -62,3 +62,7 @@ Update imports:
 ```
 
 The eight old packages are deprecated on npm and will receive no new releases.
+
+## Contributing
+
+- [Architecture Invariants](docs/architecture-invariants.md) — load-bearing invariants every contributor should know before refactoring
