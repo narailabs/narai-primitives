@@ -221,6 +221,69 @@ describe("gather end-to-end with stubs", () => {
     expect(capturedSystemPrompt).toContain("jira legacy skill body");
   });
 
+  it("emits a NARAI_DEBUG_RESOLVER breadcrumb on legacy SKILL.md fallback", async () => {
+    // When SKILL.md only exists at the legacy path AND the operator has
+    // opted into resolver debug logs, prepareConnector should surface the
+    // fallback so silent layout regressions don't go unnoticed.
+    const cli = setupFakeConnector(tmpDir, "jira", {
+      skill: "# legacy",
+    });
+    const planner: Planner = {
+      plan: async () => JSON.stringify([{ connector: "jira", action: "x", params: {} }]),
+    };
+    const loader = stubLoader({ jira: { skill: "jira-agent-connector" } });
+    const cliResolver = stubCliResolver({ jira: cli });
+
+    const writes: string[] = [];
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      writes.push(typeof chunk === "string" ? chunk : chunk.toString());
+      return true;
+    }) as typeof process.stderr.write;
+    const prevEnv = process.env["NARAI_DEBUG_RESOLVER"];
+    process.env["NARAI_DEBUG_RESOLVER"] = "1";
+    try {
+      await gather({ prompt: "?" }, { planner, configLoader: loader, cliResolver });
+    } finally {
+      process.stderr.write = originalWrite;
+      if (prevEnv === undefined) delete process.env["NARAI_DEBUG_RESOLVER"];
+      else process.env["NARAI_DEBUG_RESOLVER"] = prevEnv;
+    }
+
+    const stderr = writes.join("");
+    expect(stderr).toContain("[narai-primitives:hub]");
+    expect(stderr).toContain("SKILL.md fallback for 'jira'");
+    expect(stderr).toContain("legacy path");
+  });
+
+  it("is silent on legacy SKILL.md fallback when NARAI_DEBUG_RESOLVER is unset", async () => {
+    const cli = setupFakeConnector(tmpDir, "jira", {
+      skill: "# legacy",
+    });
+    const planner: Planner = {
+      plan: async () => JSON.stringify([{ connector: "jira", action: "x", params: {} }]),
+    };
+    const loader = stubLoader({ jira: { skill: "jira-agent-connector" } });
+    const cliResolver = stubCliResolver({ jira: cli });
+
+    const writes: string[] = [];
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      writes.push(typeof chunk === "string" ? chunk : chunk.toString());
+      return true;
+    }) as typeof process.stderr.write;
+    const prevEnv = process.env["NARAI_DEBUG_RESOLVER"];
+    delete process.env["NARAI_DEBUG_RESOLVER"];
+    try {
+      await gather({ prompt: "?" }, { planner, configLoader: loader, cliResolver });
+    } finally {
+      process.stderr.write = originalWrite;
+      if (prevEnv !== undefined) process.env["NARAI_DEBUG_RESOLVER"] = prevEnv;
+    }
+
+    expect(writes.join("")).not.toContain("[narai-primitives:hub]");
+  });
+
   it("returns plan: [] and PLANNER_INVALID when planner output is unparsable", async () => {
     const cli = setupFakeConnector(tmpDir, "aws");
     const planner = stubPlanner("totally not json");

@@ -19,6 +19,10 @@
  *
  * Returns null if no candidate exists, so callers can fail with a clear
  * message instead of crashing on `spawn`.
+ *
+ * Set `NARAI_DEBUG_RESOLVER=1` to emit a one-line stderr breadcrumb for each
+ * resolution attempt — off by default; intended for diagnosing silent CLI
+ * misses in the field.
  */
 
 import * as fs from "node:fs";
@@ -107,6 +111,18 @@ function defaultBundledSelfRoot(): string | null {
   }
 }
 
+/**
+ * Emit a one-line breadcrumb to stderr when `NARAI_DEBUG_RESOLVER=1` is set.
+ *
+ * Off by default — operators opt in when diagnosing silent CLI-not-found or
+ * unexpected-fallback failures (the class of bug that drove 2.1.1/2.1.2).
+ */
+function debugLog(env: NodeJS.ProcessEnv, msg: string): void {
+  if (env["NARAI_DEBUG_RESOLVER"] === "1") {
+    process.stderr.write(`[narai-primitives:resolver] ${msg}\n`);
+  }
+}
+
 export function resolveAgentCli(opts: ResolveAgentCliOptions): ResolvedAgentCli | null {
   const env = opts.envOverride ?? process.env;
   const home = opts.homeOverride ?? os.homedir();
@@ -123,6 +139,7 @@ export function resolveAgentCli(opts: ResolveAgentCliOptions): ResolvedAgentCli 
   // 1. Explicit env-var override.
   const envPath = env[envVar];
   if (typeof envPath === "string" && envPath !== "" && fs.existsSync(envPath)) {
+    debugLog(env, `'${opts.name}' resolved via env (${envVar}): ${envPath}`);
     return { command: "node", args: [envPath], source: "env", resolvedPath: envPath };
   }
 
@@ -139,6 +156,7 @@ export function resolveAgentCli(opts: ResolveAgentCliOptions): ResolvedAgentCli 
       "cli.js",
     );
     if (fs.existsSync(bundledCli)) {
+      debugLog(env, `'${opts.name}' resolved via bundled-self: ${bundledCli}`);
       return {
         command: "node",
         args: [bundledCli],
@@ -161,6 +179,7 @@ export function resolveAgentCli(opts: ResolveAgentCliOptions): ResolvedAgentCli 
       if (!entry.includes(pluginContains)) continue;
       const candidate = path.join(pluginCache, entry, "node_modules", packageName, cliRelative);
       if (fs.existsSync(candidate)) {
+        debugLog(env, `'${opts.name}' resolved via plugin-cache: ${candidate}`);
         return { command: "node", args: [candidate], source: "plugin-cache", resolvedPath: candidate };
       }
     }
@@ -171,6 +190,7 @@ export function resolveAgentCli(opts: ResolveAgentCliOptions): ResolvedAgentCli 
   if (typeof pluginData === "string" && pluginData !== "") {
     const candidate = path.join(pluginData, "node_modules", packageName, cliRelative);
     if (fs.existsSync(candidate)) {
+      debugLog(env, `'${opts.name}' resolved via claude-plugin-data: ${candidate}`);
       return { command: "node", args: [candidate], source: "claude-plugin-data", resolvedPath: candidate };
     }
   }
@@ -178,8 +198,10 @@ export function resolveAgentCli(opts: ResolveAgentCliOptions): ResolvedAgentCli 
   // 5. Dev fallback (legacy ~/src/connectors/<name>-agent-connector layout).
   const devCandidate = path.join(devRoot, `${opts.name}-agent-connector`, cliRelative);
   if (fs.existsSync(devCandidate)) {
+    debugLog(env, `'${opts.name}' resolved via dev-fallback: ${devCandidate}`);
     return { command: "node", args: [devCandidate], source: "dev-fallback", resolvedPath: devCandidate };
   }
 
+  debugLog(env, `'${opts.name}' not resolved (no candidate found in any of: env, bundled-self, plugin-cache, claude-plugin-data, dev-fallback)`);
   return null;
 }

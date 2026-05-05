@@ -72,6 +72,17 @@ function skillMdCandidates(root: string, name: string): string[] {
   ];
 }
 
+/** Emit a one-line breadcrumb to stderr when `NARAI_DEBUG_RESOLVER=1` is set.
+ *
+ * Mirrors the resolver's debug helper so operators get a single env var to
+ * diagnose silent SKILL_NOT_FOUND / fallback-path issues.
+ */
+function debugLog(msg: string): void {
+  if (process.env["NARAI_DEBUG_RESOLVER"] === "1") {
+    process.stderr.write(`[narai-primitives:hub] ${msg}\n`);
+  }
+}
+
 /** Read a file synchronously, returning null on failure. */
 function tryRead(p: string): string | null {
   try {
@@ -139,10 +150,12 @@ function prepareConnector(
   const root = packageRootFromCli(resolved.resolvedPath);
   const candidates = skillMdCandidates(root, name);
   let skillContent: string | null = null;
-  for (const candidate of candidates) {
-    const content = tryRead(candidate);
+  let matchedIndex = -1;
+  for (let i = 0; i < candidates.length; i++) {
+    const content = tryRead(candidates[i]);
     if (content !== null) {
       skillContent = content;
+      matchedIndex = i;
       break;
     }
   }
@@ -153,6 +166,11 @@ function prepareConnector(
         message: `SKILL.md not found at any of: ${candidates.join(", ")}`,
       },
     };
+  }
+  if (matchedIndex > 0) {
+    // Legacy SKILL.md path matched — bundled 2.x layout was missing or wrong.
+    // Worth surfacing for any operator who has NARAI_DEBUG_RESOLVER=1 set.
+    debugLog(`SKILL.md fallback for '${slice.name}' (legacy path): ${candidates[matchedIndex]}`);
   }
   return {
     prepared: {
