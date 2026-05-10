@@ -285,7 +285,7 @@ Subsequent shell-gate connectors do **not** repeat the first-run wiring — `con
 Run the gate script directly with a synthetic payload to confirm rule evaluation:
 
 ```sh
-echo '{"tool":"Bash","tool_input":{"command":"kubectl delete pod --all -n prod"}}' \
+echo '{"tool_name":"Bash","tool_input":{"command":"kubectl delete pod --all -n prod"}}' \
   | node <scope>/.connectors/connector-gate.mjs
 ```
 

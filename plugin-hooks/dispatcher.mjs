@@ -351,13 +351,13 @@ async function ensureBootstrap(pluginRoot, pluginData) {
   } catch {
     return;
   }
-  // Plugin's own version is shipped in lockstep with narai-primitives;
-  // fall back to stripping the dependency range's semver prefix
-  // (`^2.1.3` → `2.1.3`) so the equality check matches the installed
-  // package's resolved version field.
+  // Read the wanted narai-primitives version from the plugin's
+  // `dependencies` block (e.g. `"^2.1.3"`) and strip the semver
+  // prefix so the equality check matches the installed package's
+  // resolved version field (e.g. `"2.1.3"`). The plugin's own
+  // `version` is independent and not interchangeable.
   const depRange = rootMeta.dependencies?.["narai-primitives"];
-  const wantVersion =
-    rootMeta.version ?? depRange?.replace(/^[\^~>=< ]+/, "");
+  const wantVersion = depRange?.replace(/^[\^~>=< ]+/, "");
   if (!wantVersion) return;
 
   fs.mkdirSync(pluginData, { recursive: true });
