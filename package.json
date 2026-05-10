@@ -65,6 +65,10 @@
     "./notion": {
       "types": "./dist/connectors/notion/index.d.ts",
       "import": "./dist/connectors/notion/index.js"
+    },
+    "./linear": {
+      "types": "./dist/connectors/linear/index.d.ts",
+      "import": "./dist/connectors/linear/index.js"
     }
   },
   "bin": {
@@ -76,6 +80,7 @@
     "github-agent-connector": "./dist/connectors/github/cli.js",
     "jira-agent-connector": "./dist/connectors/jira/cli.js",
     "notion-agent-connector": "./dist/connectors/notion/cli.js",
+    "linear-agent-connector": "./dist/connectors/linear/cli.js",
     "usage-report": "./dist/toolkit/cli/usage-report.js"
   },
   "engines": {
