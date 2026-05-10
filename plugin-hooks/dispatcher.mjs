@@ -69,9 +69,93 @@ async function main() {
   process.exit(0);
 }
 
-// Handler stubs — filled in by Tasks 3-7.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-async function onSessionStart(cfg) { /* Task 3 + 4 */ }
+/**
+ * Walk siblings of `pluginDataDir` looking for a `node_modules/narai-primitives`
+ * at `wantedVersion`. Returns the matched node_modules path, or null if no
+ * usable sibling found. Used to skip redundant npm install when N builtin
+ * plugins are loaded in the same Claude Code session.
+ */
+export function findSiblingInstall(pluginDataDir, wantedVersion) {
+  const parent = path.dirname(pluginDataDir);
+  let entries;
+  try {
+    entries = fs.readdirSync(parent, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const candidate = path.join(parent, entry.name);
+    if (candidate === pluginDataDir) continue;
+    const pkgJson = path.join(
+      candidate,
+      "node_modules",
+      "narai-primitives",
+      "package.json",
+    );
+    if (!fs.existsSync(pkgJson)) continue;
+    try {
+      const meta = JSON.parse(fs.readFileSync(pkgJson, "utf-8"));
+      if (meta.version === wantedVersion) {
+        return path.join(candidate, "node_modules");
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+async function onSessionStart(cfg) {
+  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
+  const pluginData = process.env.CLAUDE_PLUGIN_DATA;
+  if (!pluginRoot || !pluginData) return;
+
+  const rootPkg = path.join(pluginRoot, "package.json");
+  if (!fs.existsSync(rootPkg)) return;
+  const rootMeta = JSON.parse(fs.readFileSync(rootPkg, "utf-8"));
+  const wantVersion = rootMeta.dependencies?.["narai-primitives"]
+    ?? rootMeta.version;
+
+  fs.mkdirSync(pluginData, { recursive: true });
+
+  const myInstall = path.join(pluginData, "node_modules", "narai-primitives");
+  if (fs.existsSync(myInstall)) {
+    try {
+      const installed = JSON.parse(
+        fs.readFileSync(path.join(myInstall, "package.json"), "utf-8"),
+      );
+      if (installed.version === wantVersion) {
+        // Already installed at the right version; skip.
+        return;
+      }
+    } catch {
+      // Fall through to re-install.
+    }
+  }
+
+  const sibling = findSiblingInstall(pluginData, wantVersion);
+  if (sibling !== null) {
+    try {
+      const myNodeModules = path.join(pluginData, "node_modules");
+      if (fs.existsSync(myNodeModules)) {
+        fs.rmSync(myNodeModules, { recursive: true, force: true });
+      }
+      fs.symlinkSync(sibling, myNodeModules, "dir");
+      return;
+    } catch {
+      // Fall through to install.
+    }
+  }
+
+  fs.copyFileSync(rootPkg, path.join(pluginData, "package.json"));
+  const { spawnSync } = await import("node:child_process");
+  spawnSync("npm", ["install", "--no-audit", "--no-fund"], {
+    cwd: pluginData,
+    stdio: "inherit",
+  });
+}
+
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function onPreToolUse(cfg) { /* Task 7 */ }
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
