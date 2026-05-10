@@ -166,7 +166,8 @@ function throwIfError<T>(
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// ADF conversion helper (inline-copy of jira pattern)
+// ADF conversion helper — local copy; JiraError vs ConfluenceError prevents
+// sharing this with the jira connector. Keep the two in lockstep when extending.
 // ───────────────────────────────────────────────────────────────────────────
 
 type ContentInput = z.infer<typeof contentInput>;
