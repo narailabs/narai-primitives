@@ -139,4 +139,13 @@ describe("Jira connector — policy gate", () => {
     });
     expect(r.status).toBe("escalate");
   });
+
+  it("delete_comment with default policy → escalate (sdk never called)", async () => {
+    const c = makeConnectorWithPolicy();
+    const r = await c.fetch("delete_comment", {
+      issue_key: "PROJ-1",
+      comment_id: "c99",
+    });
+    expect(r.status).toBe("escalate");
+  });
 });

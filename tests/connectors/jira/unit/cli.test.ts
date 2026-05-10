@@ -1,6 +1,8 @@
 /**
  * Tests for the Jira connector built on `@narai/connector-toolkit`.
  */
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildJiraConnector } from "../../../../src/connectors/jira/index.js";
 import {
@@ -758,6 +760,122 @@ describe("jira connector — write actions (write: success policy)", () => {
     });
     // Body should be FormData
     expect(capturedBody).toBeInstanceOf(FormData);
+  });
+
+  it("post_attachment (path input, explicit mime_type) uploads multipart correctly", async () => {
+    // Write fixture inside cwd so checkPathContainment passes.
+    const tmpDir = fs.mkdtempSync(path.join(process.cwd(), "tmp-jira-test-"));
+    const tmpFile = path.join(tmpDir, "note.txt");
+    fs.writeFileSync(tmpFile, "test");
+    let capturedHeaders: Headers | null = null;
+    let capturedBody: unknown = null;
+    try {
+      const client = makeClient({}, async (_url, init) => {
+        capturedHeaders = new Headers(init?.headers as HeadersInit);
+        capturedBody = init?.body;
+        return jsonResponse(
+          [{ id: "att3", filename: "note.txt", mimeType: "text/plain", size: 4 }],
+          { status: 200 },
+        );
+      });
+      const c = makeWriteConnector(client);
+      const r = await c.fetch("post_attachment", {
+        issue_key: "PROJ-1",
+        files: [{ path: tmpFile, mime_type: "text/plain" }],
+      });
+      expect(r.status).toBe("success");
+      if (r.status === "success") {
+        expect(r.data["issue_key"]).toBe("PROJ-1");
+        const atts = r.data["attachments"] as Array<Record<string, unknown>>;
+        expect(atts).toHaveLength(1);
+        expect(atts[0]?.["attachment_id"]).toBe("att3");
+      }
+      // Multipart: no explicit Content-Type, X-Atlassian-Token present, body is FormData
+      expect(capturedHeaders!.get("X-Atlassian-Token")).toBe("no-check");
+      expect(capturedHeaders!.get("Content-Type")).toBeNull();
+      expect(capturedBody).toBeInstanceOf(FormData);
+    } finally {
+      fs.unlinkSync(tmpFile);
+      fs.rmdirSync(tmpDir);
+    }
+  });
+
+  it("post_attachment (path input, .json extension) infers mime type via EXT_MIME", async () => {
+    // No mime_type provided — connector should infer application/json from .json extension.
+    const tmpDir = fs.mkdtempSync(path.join(process.cwd(), "tmp-jira-test-"));
+    const tmpFile = path.join(tmpDir, "data.json");
+    fs.writeFileSync(tmpFile, '{"key":1}');
+    try {
+      const client = makeClient({}, async () =>
+        jsonResponse(
+          [{ id: "att4", filename: "data.json", mimeType: "application/json", size: 9 }],
+          { status: 200 },
+        ),
+      );
+      const c = makeWriteConnector(client);
+      const r = await c.fetch("post_attachment", {
+        issue_key: "PROJ-1",
+        files: [{ path: tmpFile }],
+      });
+      expect(r.status).toBe("success");
+      if (r.status === "success") {
+        const atts = r.data["attachments"] as Array<Record<string, unknown>>;
+        expect(atts[0]?.["attachment_id"]).toBe("att4");
+        expect(atts[0]?.["media_type"]).toBe("application/json");
+      }
+    } finally {
+      fs.unlinkSync(tmpFile);
+      fs.rmdirSync(tmpDir);
+    }
+  });
+
+  it("transition_issue with comment sends ADF in update.comment", async () => {
+    let sentBody = "";
+    const client = makeClient({}, async (_url, init) => {
+      sentBody = init?.body as string;
+      return new Response(null, { status: 204 });
+    });
+    const c = makeWriteConnector(client);
+    const r = await c.fetch("transition_issue", {
+      issue_key: "PROJ-1",
+      transition_id: "31",
+      comment: { format: "markdown", value: "moving to done" },
+    });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      expect(r.data["issue_key"]).toBe("PROJ-1");
+      expect(r.data["transitioned"]).toBe(true);
+    }
+    const body = JSON.parse(sentBody);
+    // Transition ID forwarded correctly
+    expect(body.transition).toEqual({ id: "31" });
+    // ADF comment embedded in update.comment[0].add.body
+    const adfBody = body?.update?.comment?.[0]?.add?.body;
+    expect(adfBody).toBeDefined();
+    expect(adfBody.type).toBe("doc");
+    expect(adfBody.version).toBe(1);
+    expect(Array.isArray(adfBody.content)).toBe(true);
+    // At least one paragraph node containing the text
+    const paragraphs = adfBody.content.filter((n: { type: string }) => n.type === "paragraph");
+    expect(paragraphs.length).toBeGreaterThan(0);
+    const allText = paragraphs
+      .flatMap((p: { content?: Array<{ type: string; text?: string }> }) =>
+        (p.content ?? []).filter((n) => n.type === "text").map((n) => n.text ?? ""),
+      )
+      .join("");
+    expect(allText).toContain("moving to done");
+  });
+
+  it("transition_issue rejects invalid ADF comment with VALIDATION_ERROR", async () => {
+    const client = makeClient({}, async () => new Response(null, { status: 204 }));
+    const c = makeWriteConnector(client);
+    const r = await c.fetch("transition_issue", {
+      issue_key: "PROJ-1",
+      transition_id: "31",
+      comment: { format: "adf", value: { type: "paragraph" } }, // missing doc root
+    });
+    expect(r.status).toBe("error");
+    if (r.status === "error") expect(r.error_code).toBe("VALIDATION_ERROR");
   });
 
   it("add_comment with markdown format → ADF body sent", async () => {
