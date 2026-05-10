@@ -1,0 +1,4 @@
+{
+  "name": "confluence",
+  "binPath": "narai-primitives/dist/connectors/confluence"
+}

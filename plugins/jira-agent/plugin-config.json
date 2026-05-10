@@ -1,0 +1,4 @@
+{
+  "name": "jira",
+  "binPath": "narai-primitives/dist/connectors/jira"
+}

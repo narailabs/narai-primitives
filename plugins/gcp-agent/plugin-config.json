@@ -1,0 +1,4 @@
+{
+  "name": "gcp",
+  "binPath": "narai-primitives/dist/connectors/gcp"
+}
