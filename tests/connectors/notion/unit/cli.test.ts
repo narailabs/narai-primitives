@@ -713,4 +713,64 @@ describe("notion connector — write actions", () => {
       expect(r.data["id"]).toBe(VALID_PAGE_ID);
     }
   });
+
+  it("update_page PATCHes /v1/pages/{id} with properties body", async () => {
+    let capturedUrl = "";
+    let capturedBody: Record<string, unknown> = {};
+    let capturedMethod = "";
+    const c = makeWriteConnector(async (url, init) => {
+      capturedUrl = url;
+      capturedMethod = String(init?.method ?? "");
+      capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      return jsonResponse({
+        id: VALID_PAGE_ID,
+        last_edited_time: "2026-05-01T00:00:00Z",
+      });
+    });
+    const r = await c.fetch("update_page", {
+      page_id: VALID_PAGE_ID,
+      properties: { Name: { title: [{ text: { content: "X" } }] } },
+    });
+    expect(r.status).toBe("success");
+    expect(capturedMethod).toBe("PATCH");
+    expect(capturedUrl).toMatch(new RegExp(`/v1/pages/${VALID_PAGE_ID}$`));
+    const props = capturedBody["properties"] as Record<string, unknown>;
+    expect(props?.["Name"]).toBeDefined();
+    if (r.status === "success") {
+      expect(r.data["id"]).toBe(VALID_PAGE_ID);
+      expect(r.data["last_edited"]).toBe("2026-05-01T00:00:00Z");
+      expect(r.data["updated"]).toBe(true);
+    }
+  });
+
+  it("update_block PATCHes /v1/blocks/{id} with payload body", async () => {
+    let capturedUrl = "";
+    let capturedBody: Record<string, unknown> = {};
+    let capturedMethod = "";
+    const payload = {
+      paragraph: { rich_text: [{ type: "text", text: { content: "edited" } }] },
+    };
+    const c = makeWriteConnector(async (url, init) => {
+      capturedUrl = url;
+      capturedMethod = String(init?.method ?? "");
+      capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      return jsonResponse({
+        id: VALID_BLOCK_ID,
+        type: "paragraph",
+      });
+    });
+    const r = await c.fetch("update_block", {
+      block_id: VALID_BLOCK_ID,
+      payload,
+    });
+    expect(r.status).toBe("success");
+    expect(capturedMethod).toBe("PATCH");
+    expect(capturedUrl).toMatch(new RegExp(`/v1/blocks/${VALID_BLOCK_ID}$`));
+    expect(capturedBody).toEqual(payload);
+    if (r.status === "success") {
+      expect(r.data["block_id"]).toBe(VALID_BLOCK_ID);
+      expect(r.data["type"]).toBe("paragraph");
+      expect(r.data["updated"]).toBe(true);
+    }
+  });
 });

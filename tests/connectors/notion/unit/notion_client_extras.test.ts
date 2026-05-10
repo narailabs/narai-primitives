@@ -178,7 +178,7 @@ describe("NotionClient.request — retry & timeout branches", () => {
     if (!r.ok) expect(r.code).toBe("METHOD_NOT_ALLOWED");
   });
 
-  it("allows POST_READ_ONLY on database query path via regex", async () => {
+  it("POST_READ_ONLY maps to POST and is permitted by ALLOWED_METHODS", async () => {
     let calledMethod = "";
     const client = makeClient({}, async (_url, init) => {
       calledMethod = String(init?.method);

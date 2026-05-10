@@ -88,19 +88,6 @@ const getCommentsParams = z.object({
 
 // ── Write param schemas ──────────────────────────────────────────────────────
 
-// Accepts any valid Notion UUID: 8-4-4-4-12 with optional hyphens.
-const uuidSchema = z
-  .string()
-  .transform((s) => s.trim().toLowerCase())
-  .pipe(
-    z
-      .string()
-      .regex(
-        /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/,
-        "Invalid Notion UUID",
-      ),
-  );
-
 // Children input: pass pre-built blocks or raw markdown (auto-converted).
 const childrenInput = z.union([
   z.object({ format: z.literal("blocks"), value: z.array(z.unknown()) }),
@@ -109,8 +96,8 @@ const childrenInput = z.union([
 
 const createPageParams = z.object({
   parent: z.union([
-    z.object({ type: z.literal("page_id"), page_id: uuidSchema }),
-    z.object({ type: z.literal("database_id"), database_id: uuidSchema }),
+    z.object({ type: z.literal("page_id"), page_id: uuidField("page_id") }),
+    z.object({ type: z.literal("database_id"), database_id: uuidField("database_id") }),
     z.object({ type: z.literal("workspace"), workspace: z.literal(true) }),
   ]),
   properties: z.record(z.string(), z.unknown()).default({}),
@@ -118,37 +105,37 @@ const createPageParams = z.object({
 });
 
 const updatePageParams = z.object({
-  page_id: uuidSchema,
+  page_id: uuidField("page_id"),
   properties: z.record(z.string(), z.unknown()).optional(),
   archived: z.boolean().optional(),
 });
 
 const archivePageParams = z.object({
-  page_id: uuidSchema,
+  page_id: uuidField("page_id"),
 });
 
 const appendBlocksParams = z.object({
-  block_id: uuidSchema,
+  block_id: uuidField("block_id"),
   children: childrenInput,
 });
 
 const updateBlockParams = z.object({
-  block_id: uuidSchema,
+  block_id: uuidField("block_id"),
   payload: z.record(z.string(), z.unknown()),
 });
 
 const deleteBlockParams = z.object({
-  block_id: uuidSchema,
+  block_id: uuidField("block_id"),
 });
 
 const createDatabaseEntryParams = z.object({
-  database_id: uuidSchema,
+  database_id: uuidField("database_id"),
   properties: z.record(z.string(), z.unknown()),
   children: childrenInput.optional(),
 });
 
 const updateDatabaseEntryParams = z.object({
-  page_id: uuidSchema,
+  page_id: uuidField("page_id"),
   properties: z.record(z.string(), z.unknown()),
 });
 
