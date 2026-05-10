@@ -154,6 +154,43 @@ async function onSessionStart(cfg) {
     cwd: pluginData,
     stdio: "inherit",
   });
+
+  // Best-effort: emit nudge banner if the toolkit is reachable.
+  try {
+    const reminderPath = path.join(
+      pluginData,
+      "node_modules",
+      "narai-primitives",
+      "dist",
+      "toolkit",
+      "plugin",
+      "reminder.js",
+    );
+    if (fs.existsSync(reminderPath)) {
+      const mod = await import(reminderPath);
+      const decision = mod.evaluateNudge({ connectors: [cfg.name] });
+      if (decision.nudge) process.stdout.write(decision.banner + "\n");
+    }
+  } catch (err) {
+    process.stderr.write(`dispatcher: nudge failed (${err.message})\n`);
+  }
+
+  // Best-effort: stale-summarize.
+  try {
+    const stalePath = path.join(
+      pluginData,
+      "node_modules",
+      "narai-primitives",
+      "plugin-hooks",
+      "stale-summarize.mjs",
+    );
+    if (fs.existsSync(stalePath)) {
+      process.env.USAGE_CONNECTOR_NAME = cfg.name;
+      await import(stalePath);
+    }
+  } catch (err) {
+    process.stderr.write(`dispatcher: stale-summarize failed (${err.message})\n`);
+  }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars

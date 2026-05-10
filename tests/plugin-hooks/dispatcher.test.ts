@@ -126,3 +126,35 @@ describe("dispatcher event routing", () => {
     });
   });
 });
+
+describe("dispatcher session-start integrations", () => {
+  let tmpRoot: string;
+  let tmpData: string;
+
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dispatcher-int-root-"));
+    tmpData = fs.mkdtempSync(path.join(os.tmpdir(), "dispatcher-int-data-"));
+    fs.writeFileSync(
+      path.join(tmpRoot, "plugin-config.json"),
+      JSON.stringify({ name: "jira" }),
+    );
+    fs.writeFileSync(
+      path.join(tmpRoot, "package.json"),
+      JSON.stringify({
+        name: "jira-agent",
+        version: "1.0.0",
+        dependencies: { "narai-primitives": "1.0.0" },
+      }),
+    );
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    fs.rmSync(tmpData, { recursive: true, force: true });
+  });
+
+  it("invokes nudge + stale-summarize without crashing on missing toolkit", async () => {
+    const r = await runDispatcher("session-start", tmpRoot, tmpData);
+    expect(r.exitCode).toBe(0);
+  });
+});
