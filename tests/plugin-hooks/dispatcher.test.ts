@@ -183,3 +183,21 @@ describe("dispatcher post-tool-use", () => {
     }
   });
 });
+
+describe("dispatcher session-end", () => {
+  it("session-end exits 0 even when toolkit is missing", async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "se-root-"));
+    const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), "se-data-"));
+    try {
+      fs.writeFileSync(
+        path.join(tmpRoot, "plugin-config.json"),
+        JSON.stringify({ name: "jira" }),
+      );
+      const r = await runDispatcher("session-end", tmpRoot, tmpData);
+      expect(r.exitCode).toBe(0);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      fs.rmSync(tmpData, { recursive: true, force: true });
+    }
+  });
+});

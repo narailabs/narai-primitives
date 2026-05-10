@@ -214,5 +214,21 @@ async function onPostToolUse(cfg) {
     process.stderr.write(`dispatcher: usage-record failed (${err.message})\n`);
   }
 }
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-async function onSessionEnd(cfg) { /* Task 6 */ }
+async function onSessionEnd(cfg) {
+  const pluginData = process.env.CLAUDE_PLUGIN_DATA;
+  if (!pluginData) return;
+  const summaryPath = path.join(
+    pluginData,
+    "node_modules",
+    "narai-primitives",
+    "plugin-hooks",
+    "session-summary.mjs",
+  );
+  if (!fs.existsSync(summaryPath)) return;
+  process.env.USAGE_CONNECTOR_NAME = cfg.name;
+  try {
+    await import(summaryPath);
+  } catch (err) {
+    process.stderr.write(`dispatcher: session-summary failed (${err.message})\n`);
+  }
+}
