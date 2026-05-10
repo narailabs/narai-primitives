@@ -381,6 +381,21 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
         handler: async (p: z.infer<typeof getAttachmentParams>, ctx) => {
           const blockRes = await ctx.sdk.getBlock(p.block_id);
           throwIfError(blockRes);
+          // Verify the block actually belongs to the requested page so
+          // callers can't fetch arbitrary block content by guessing IDs.
+          // Notion exposes parent as {type: "page_id"|"block_id"|..., page_id?, ...}.
+          // We require a direct page_id parent — nested blocks (parent.type ===
+          // "block_id") are rejected here because verifying the page ancestor
+          // would require an unbounded walk.
+          const parent = (blockRes.data as { parent?: { type?: string; page_id?: string } }).parent;
+          if (parent?.page_id !== p.page_id) {
+            throw new NotionError(
+              "NOT_FOUND",
+              `Block '${p.block_id}' is not a direct child of page '${p.page_id}'`,
+              false,
+              404,
+            );
+          }
           const normalized = normalizeFileBlockForFetch(blockRes.data);
           if (!normalized) {
             throw new NotionError(
@@ -390,7 +405,23 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
               400,
             );
           }
-          const attachment = await fetchAttachment(normalized.url);
+          let attachment: Awaited<ReturnType<typeof fetchAttachment>>;
+          try {
+            attachment = await fetchAttachment(normalized.url);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            // Deterministic failures (invalid URL scheme, size cap) stay
+            // non-retriable; transient / network failures retriable.
+            const isDeterministic =
+              message.includes("invalid URL scheme") ||
+              (err instanceof Error &&
+                err.constructor?.name === "FetchCapExceeded");
+            throw new NotionError(
+              isDeterministic ? "BAD_REQUEST" : "HTTP_ERROR",
+              `Failed to fetch attachment URL: ${message}`,
+              !isDeterministic,
+            );
+          }
           return {
             attachment_id: p.block_id,
             page_id: p.page_id,

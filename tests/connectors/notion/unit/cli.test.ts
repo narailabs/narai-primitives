@@ -343,6 +343,7 @@ describe("notion connector — fetch()", () => {
         return jsonResponse({
           id: blockId,
           type: "file",
+          parent: { type: "page_id", page_id: pageId },
           file: {
             type: "external",
             external: { url: "https://example.com/report.txt" },
@@ -386,6 +387,7 @@ describe("notion connector — fetch()", () => {
       jsonResponse({
         id: blockId,
         type: "paragraph",
+        parent: { type: "page_id", page_id: pageId },
         paragraph: { rich_text: [] },
       }),
     );
@@ -396,6 +398,34 @@ describe("notion connector — fetch()", () => {
     });
     expect(r.status).toBe("error");
     if (r.status === "error") expect(r.error_code).toBe("VALIDATION_ERROR");
+  });
+
+  it("get_attachment rejects blocks not parented to the requested page", async () => {
+    const pageId = "a1b2c3d4e5f6789012345678901234ab";
+    const otherPageId = "c1c2c3c4c5c6789012345678901234cd";
+    const blockId = "b1b2c3d4e5f6789012345678901234ab";
+    const client = makeClient({}, async () =>
+      jsonResponse({
+        id: blockId,
+        type: "file",
+        // Parent points at a different page than the one in the request —
+        // the connector must reject as NOT_FOUND so callers can't fetch
+        // arbitrary blocks by guessing IDs.
+        parent: { type: "page_id", page_id: otherPageId },
+        file: {
+          type: "external",
+          external: { url: "https://example.com/file.txt" },
+          name: "file.txt",
+        },
+      }),
+    );
+    const c = makeConnector(client);
+    const r = await c.fetch("get_attachment", {
+      page_id: pageId,
+      block_id: blockId,
+    });
+    expect(r.status).toBe("error");
+    if (r.status === "error") expect(r.error_code).toBe("NOT_FOUND");
   });
 
   it("get_comments returns comment list", async () => {
