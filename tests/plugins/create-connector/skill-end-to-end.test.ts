@@ -30,14 +30,7 @@ describe("create-connector end-to-end (shell-gate flavor)", () => {
   afterEach(() => fs.rmSync(scope, { recursive: true, force: true }));
 
   it("stamps a working shell-gate connector end-to-end", async () => {
-    // 1. Stamp connector-gate.mjs from template.
-    //    The template uses CommonJS require(). Stamping alongside the
-    //    _runtime package.json ({"type":"commonjs"}) is insufficient because
-    //    Node always treats .mjs as ESM regardless of package.json.
-    //    We therefore stamp to connector-gate.mjs AND copy the _runtime
-    //    package.json, then spawn via a CJS-compatible path (.cjs alias).
-    //    The settings.json and config.yaml assertions use the canonical
-    //    connector-gate.mjs path (what the real wiring helper writes).
+    // 1. Stamp connector-gate.mjs from template (ESM — stamps verbatim).
     const runtimeSrc = fs.readFileSync(
       path.join(TEMPLATES, "_runtime", "connector-gate.mjs.tmpl"),
       "utf-8",
@@ -45,14 +38,8 @@ describe("create-connector end-to-end (shell-gate flavor)", () => {
     const connectorsBin = path.join(scope, ".connectors");
     fs.mkdirSync(connectorsBin, { recursive: true });
 
-    // Stamp the canonical .mjs (for settings/config assertions).
     const gateMjsPath = path.join(connectorsBin, "connector-gate.mjs");
     fs.writeFileSync(gateMjsPath, runtimeSrc);
-
-    // Stamp a .cjs alias (same content) so Node can spawn it as CJS.
-    // The template uses require() — .mjs forces ESM and breaks at runtime.
-    const gateCjsPath = path.join(connectorsBin, "connector-gate.cjs");
-    fs.writeFileSync(gateCjsPath, runtimeSrc);
 
     // 2. Stamp the shell-gate connector files.
     const slug = "deploy-prod";
@@ -86,10 +73,10 @@ describe("create-connector end-to-end (shell-gate flavor)", () => {
     const settingsPath = path.join(scope, ".claude", "settings.json");
     ensureSettingsHook(settingsPath, gateMjsPath);
 
-    // 5. Smoke-test the gate by spawning the .cjs alias directly.
+    // 5. Smoke-test the gate by spawning the .mjs file directly.
     const result = await new Promise<{ stdout: string; exitCode: number }>(
       (resolve) => {
-        const proc = spawn("node", [gateCjsPath], {
+        const proc = spawn("node", [gateMjsPath], {
           env: { ...process.env, NARAI_GATE_SCOPE: scope },
           stdio: ["pipe", "pipe", "pipe"],
         });

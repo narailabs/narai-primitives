@@ -273,13 +273,8 @@ Substitutions: `{{SLUG}}`, `{{DESCRIPTION}}`, `{{RULES}}` (JSON array), `{{RULES
 After stamping:
 
 **First-run wiring** (if `<scope>/.connectors/connector-gate.mjs` doesn't exist yet):
-1. Stamp `assets/templates/_runtime/connector-gate.mjs.tmpl` to `<scope>/.connectors/connector-gate.mjs`. Make it executable.
-2. **Convert `require()` to ESM imports** in the stamped file (`.mjs` requires ESM):
-   - `const fs = require("node:fs")` → `import * as fs from "node:fs"`
-   - `const path = require("node:path")` → `import * as path from "node:path"`
-   - `const { fileURLToPath } = require("node:url")` → `import { fileURLToPath } from "node:url"`
-   (Alternatively, stamp as `connector-gate.cjs` and update the settings.json command accordingly.)
-3. Call `ensureSettingsHook(<scope>/.claude/settings.json, <abs-path-to-connector-gate.mjs>)` from `lib/settings-wiring.mjs`. This adds the `PreToolUse` hook entry. Settings.json is backed up to `<file>.bak-<timestamp>` before any write.
+1. Stamp `assets/templates/_runtime/connector-gate.mjs.tmpl` to `<scope>/.connectors/connector-gate.mjs`. Make it executable. The template is ESM; stamp the content verbatim.
+2. Call `ensureSettingsHook(<scope>/.claude/settings.json, <abs-path-to-connector-gate.mjs>)` from `lib/settings-wiring.mjs`. This adds the `PreToolUse` hook entry. Settings.json is backed up to `<file>.bak-<timestamp>` before any write.
 
 Subsequent shell-gate connectors do **not** repeat the first-run wiring — `connector-gate.mjs` auto-discovers all `<scope>/.connectors/connectors/*/gates.json` at runtime.
 
@@ -372,7 +367,7 @@ Call `registerConnector(<scope>, <slug>, {skill: <abs-path>, bin: <abs-bin-path-
 The first time a gate-bearing connector is created (shell-gate flavor, or any custom connector that ships `gates.json`) in a given scope:
 
 1. Check whether `<scope>/.connectors/connector-gate.mjs` already exists via `hasConnectorGateHook(<scope>/.claude/settings.json, <scope>/.connectors/connector-gate.mjs)` from `lib/settings-wiring.mjs`.
-2. If not: stamp `assets/templates/_runtime/connector-gate.mjs.tmpl` to `<scope>/.connectors/connector-gate.mjs`. Convert `require()` calls to ESM `import` statements (see Flavor: Shell-command gate above). Make the file executable.
+2. If not: stamp `assets/templates/_runtime/connector-gate.mjs.tmpl` to `<scope>/.connectors/connector-gate.mjs`. The template is ESM; stamp verbatim. Make the file executable.
 3. Call `ensureSettingsHook(<scope>/.claude/settings.json, <abs-path-to-connector-gate.mjs>)`. This adds a `PreToolUse` hook entry. The function is idempotent — safe to call on every run.
 4. Settings.json is backed up to `<file>.bak-<timestamp>` before any write.
 

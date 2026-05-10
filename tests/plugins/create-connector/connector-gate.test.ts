@@ -20,12 +20,20 @@ const TEMPLATE = path.resolve(
   "connector-gate.mjs.tmpl",
 );
 
+function stampGate(scope: string): string {
+  const gatePath = path.join(scope, ".connectors", "connector-gate.mjs");
+  fs.mkdirSync(path.dirname(gatePath), { recursive: true });
+  fs.writeFileSync(gatePath, fs.readFileSync(TEMPLATE, "utf-8"));
+  return gatePath;
+}
+
 async function runGate(
   scopeRoot: string,
   payload: object,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const gatePath = stampGate(scopeRoot);
   return new Promise((resolve, reject) => {
-    const proc = spawn("node", [TEMPLATE], {
+    const proc = spawn("node", [gatePath], {
       env: { ...process.env, NARAI_GATE_SCOPE: scopeRoot },
       stdio: ["pipe", "pipe", "pipe"],
     });
