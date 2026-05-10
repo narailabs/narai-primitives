@@ -142,7 +142,7 @@ export class LinearClient {
             Accept: "application/json",
           },
           body,
-          signal: readCtrl.signal,
+          signal: AbortSignal.any([connectCtrl.signal, readCtrl.signal]),
         });
         clearTimeout(connectTimer);
         const status = response.status;
