@@ -1,5 +1,5 @@
 /**
- * @narai/confluence-agent-connector — read-only Confluence connector.
+ * @narai/confluence-agent-connector — Confluence connector (read + write).
  *
  * Built on @narai/connector-toolkit. The default export is a ready-to-use
  * `Connector` instance; `buildConfluenceConnector(overrides?)` is exposed
@@ -14,9 +14,12 @@ import {
   extractBinary,
   FORMAT_MAP,
   sanitizeLabel,
+  assertValidAdf,
+  checkPathContainment,
   type Connector,
   type ErrorCode,
 } from "narai-primitives/toolkit";
+import { markdownToAdf } from "marklassian";
 import { z } from "zod";
 import {
   ConfluenceClient,
@@ -77,6 +80,60 @@ const getCommentsParams = pageIdOnly.extend({
   limit: z.coerce.number().int().positive().default(50),
 });
 
+// ── Write-action param schemas ───────────────────────────────────────────────
+
+const pageIdSchema = z.string().regex(/^\d+$/, "Invalid page_id — expected numeric string");
+const spaceKeySchema = z
+  .string()
+  .regex(/^[A-Z][A-Z0-9_]*$/, "Invalid space_key — expected uppercase alphanumeric");
+
+const contentInput = z.union([
+  z.object({ format: z.literal("adf"), value: z.unknown() }),
+  z.object({ format: z.literal("markdown"), value: z.string() }),
+  z.object({ format: z.literal("plain"), value: z.string() }),
+]);
+
+const fileInput = z.union([
+  z.object({
+    filename: z.string(),
+    content_base64: z.string(),
+    mime_type: z.string().optional(),
+  }),
+  z.object({
+    filename: z.string().optional(),
+    path: z.string(),
+    mime_type: z.string().optional(),
+  }),
+]);
+
+const createPageParams = z.object({
+  space_key: spaceKeySchema,
+  title: z.string().min(1),
+  body: contentInput,
+  parent_id: pageIdSchema.optional(),
+});
+
+const updatePageParams = z.object({
+  page_id: pageIdSchema,
+  title: z.string().min(1),
+  body: contentInput,
+  expected_version: z.number().int().positive(),
+});
+
+const deletePageParams = z.object({
+  page_id: pageIdSchema,
+});
+
+const addCommentParams = z.object({
+  page_id: pageIdSchema,
+  body: contentInput,
+});
+
+const postAttachmentParams = z.object({
+  page_id: pageIdSchema,
+  files: z.array(fileInput).min(1),
+});
+
 // ───────────────────────────────────────────────────────────────────────────
 // Error-code translation: Confluence client codes → toolkit canonical codes
 // ───────────────────────────────────────────────────────────────────────────
@@ -91,6 +148,7 @@ const CODE_MAP: Record<string, ErrorCode> = {
   BAD_REQUEST: "VALIDATION_ERROR",
   INVALID_URL: "VALIDATION_ERROR",
   METHOD_NOT_ALLOWED: "VALIDATION_ERROR",
+  VALIDATION_ERROR: "VALIDATION_ERROR",
   HTTP_ERROR: "CONNECTION_ERROR",
   CONFIG_ERROR: "CONFIG_ERROR",
 };
@@ -110,6 +168,60 @@ function throwIfError<T>(
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// ADF conversion helper (inline-copy of jira pattern)
+// ───────────────────────────────────────────────────────────────────────────
+
+type ContentInput = z.infer<typeof contentInput>;
+
+function resolveContentToAdf(input: ContentInput): unknown {
+  if (input.format === "adf") {
+    return input.value;
+  }
+  if (input.format === "markdown") {
+    return markdownToAdf(input.value);
+  }
+  // plain
+  return {
+    type: "doc",
+    version: 1,
+    content: [
+      {
+        type: "paragraph",
+        content: [{ type: "text", text: input.value }],
+      },
+    ],
+  };
+}
+
+/** Convert contentInput to ADF, asserting validity. Throws ConfluenceError on bad ADF. */
+function toAdf(input: ContentInput): unknown {
+  const doc = resolveContentToAdf(input);
+  try {
+    assertValidAdf(doc);
+  } catch (e) {
+    throw new ConfluenceError(
+      "VALIDATION_ERROR",
+      e instanceof Error ? e.message : String(e),
+      false,
+      400,
+    );
+  }
+  return doc;
+}
+
+// Inline MIME map for attachment path inputs.
+const EXT_MIME: Record<string, string> = {
+  ".pdf": "application/pdf",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".txt": "text/plain",
+  ".json": "application/json",
+  ".csv": "text/csv",
+};
+
+// ───────────────────────────────────────────────────────────────────────────
 // Connector factory
 // ───────────────────────────────────────────────────────────────────────────
 
@@ -118,6 +230,8 @@ export interface BuildOptions {
   sdk?: () => Promise<ConfluenceClient>;
   /** Override credentials loader (tests). */
   credentials?: () => Promise<Record<string, unknown>>;
+  /** Override the default policy rules (used in tests). */
+  defaultPolicy?: import("narai-primitives/toolkit").PolicyRules;
 }
 
 export function buildConfluenceConnector(
@@ -148,6 +262,9 @@ export function buildConfluenceConnector(
     scope: (ctx) => ctx.sdk.siteUrl,
     credentials: overrides.credentials ?? defaultCredentials,
     sdk: overrides.sdk ?? defaultSdk,
+    ...(overrides.defaultPolicy !== undefined
+      ? { defaultPolicy: overrides.defaultPolicy }
+      : {}),
     actions: {
       cql_search: {
         description: "Search Confluence pages with a CQL query",
@@ -335,6 +452,152 @@ export function buildConfluenceConnector(
               created: c.created,
               version: c.version,
               body_plain: c.body_plain,
+            })),
+          };
+        },
+      },
+      create_page: {
+        description: "Create a new Confluence page",
+        params: createPageParams,
+        classify: { kind: "write" },
+        handler: async (p: z.infer<typeof createPageParams>, ctx) => {
+          const adf = toAdf(p.body);
+          const payload: Record<string, unknown> = {
+            type: "page",
+            title: p.title,
+            space: { key: p.space_key },
+            body: {
+              atlas_doc_format: {
+                value: JSON.stringify(adf),
+                representation: "atlas_doc_format",
+              },
+            },
+          };
+          if (p.parent_id !== undefined) {
+            payload["ancestors"] = [{ id: p.parent_id }];
+          }
+          const result = await ctx.sdk.createPage(payload);
+          throwIfError(result);
+          return {
+            id: result.data.id,
+            title: result.data.title ?? p.title,
+            version: result.data.version?.number ?? 1,
+          };
+        },
+      },
+      update_page: {
+        description: "Update an existing Confluence page",
+        params: updatePageParams,
+        classify: { kind: "write" },
+        handler: async (p: z.infer<typeof updatePageParams>, ctx) => {
+          const adf = toAdf(p.body);
+          const payload = {
+            type: "page",
+            title: p.title,
+            body: {
+              atlas_doc_format: {
+                value: JSON.stringify(adf),
+                representation: "atlas_doc_format",
+              },
+            },
+            version: { number: p.expected_version + 1 },
+          };
+          const result = await ctx.sdk.updatePage(p.page_id, payload);
+          throwIfError(result);
+          return {
+            id: p.page_id,
+            version: result.data.version?.number ?? p.expected_version + 1,
+            updated: true,
+          };
+        },
+      },
+      delete_page: {
+        description: "Delete a Confluence page",
+        params: deletePageParams,
+        classify: { kind: "write", aspects: ["delete"] },
+        handler: async (p: z.infer<typeof deletePageParams>, ctx) => {
+          const result = await ctx.sdk.deletePage(p.page_id);
+          throwIfError(result);
+          return { id: p.page_id, deleted: true };
+        },
+      },
+      add_comment: {
+        description: "Add a comment to a Confluence page",
+        params: addCommentParams,
+        classify: { kind: "write" },
+        handler: async (p: z.infer<typeof addCommentParams>, ctx) => {
+          const adf = toAdf(p.body);
+          const payload = {
+            type: "comment",
+            container: { id: p.page_id, type: "page" },
+            body: {
+              atlas_doc_format: {
+                value: JSON.stringify(adf),
+                representation: "atlas_doc_format",
+              },
+            },
+          };
+          const result = await ctx.sdk.addComment(payload);
+          throwIfError(result);
+          const r = result.data;
+          return {
+            comment_id: r.id,
+            created: r.history?.createdDate ?? null,
+            author: r.history?.createdBy?.displayName ?? null,
+          };
+        },
+      },
+      post_attachment: {
+        description: "Upload one or more files as attachments to a Confluence page",
+        params: postAttachmentParams,
+        classify: { kind: "write" },
+        handler: async (p: z.infer<typeof postAttachmentParams>, ctx) => {
+          const files: Array<{
+            filename: string;
+            bytes: Uint8Array;
+            mimeType?: string;
+          }> = [];
+          for (const f of p.files) {
+            if ("content_base64" in f) {
+              const entry: { filename: string; bytes: Uint8Array; mimeType?: string } = {
+                filename: f.filename,
+                bytes: new Uint8Array(Buffer.from(f.content_base64, "base64")),
+              };
+              if (f.mime_type !== undefined) entry.mimeType = f.mime_type;
+              files.push(entry);
+            } else {
+              if (!checkPathContainment(f.path, process.cwd())) {
+                throw new ConfluenceError(
+                  "VALIDATION_ERROR",
+                  `Path '${f.path}' escapes working directory`,
+                  false,
+                  400,
+                );
+              }
+              const bytes = new Uint8Array(fs.readFileSync(f.path));
+              const filename = f.filename ?? path.basename(f.path);
+              const ext = path.extname(f.path).toLowerCase();
+              const mimeType = f.mime_type ?? EXT_MIME[ext];
+              const entry: { filename: string; bytes: Uint8Array; mimeType?: string } = {
+                filename,
+                bytes,
+              };
+              if (mimeType !== undefined) entry.mimeType = mimeType;
+              files.push(entry);
+            }
+          }
+          const result = await ctx.sdk.postAttachment(p.page_id, files);
+          throwIfError(result);
+          const attachments = Array.isArray(result.data.results)
+            ? result.data.results
+            : [];
+          return {
+            page_id: p.page_id,
+            attachments: attachments.map((a) => ({
+              id: a.id,
+              title: a.title ?? "",
+              mediaType: a.metadata?.mediaType ?? "application/octet-stream",
+              size: a.extensions?.fileSize ?? 0,
             })),
           };
         },

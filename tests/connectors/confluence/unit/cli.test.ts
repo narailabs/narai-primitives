@@ -4,6 +4,8 @@
  * The factory pattern changes the injection shape: each test builds its
  * own connector via `buildConfluenceConnector({ sdk: async () => fakeClient })`.
  */
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildConfluenceConnector } from "../../../../src/connectors/confluence/index.js";
 import {
@@ -87,7 +89,7 @@ describe("ConfluenceClient", () => {
   it("rejects unknown HTTP methods", async () => {
     const client = makeClient();
     const res = await client.request(
-      "DELETE" as never,
+      "PATCH" as never,
       "/wiki/rest/api/space/DEV",
     );
     expect(res).toEqual(
@@ -248,12 +250,17 @@ describe("confluence connector — fetch()", () => {
   it("exposes validActions", () => {
     const c = buildConfluenceConnector();
     expect([...c.validActions].sort()).toEqual([
+      "add_comment",
       "cql_search",
+      "create_page",
+      "delete_page",
       "get_attachment",
       "get_comments",
       "get_page",
       "get_space",
       "list_attachments",
+      "post_attachment",
+      "update_page",
     ]);
   });
 
@@ -536,5 +543,354 @@ describe("confluence connector — fetch()", () => {
     if (r.status === "success") {
       expect(r.data["mermaid"]).toBeUndefined();
     }
+  });
+});
+
+// ─── Write-action tests ───────────────────────────────────────────────────────
+//
+// HTTP-shape coverage done directly via ConfluenceClient (no policy gate).
+// Connector-level tests use a connector built with write: "success" to reach
+// the handler without an escalate envelope.
+
+function makeWriteConnector(client: ConfluenceClient) {
+  return buildConfluenceConnector({
+    sdk: async () => client,
+    credentials: async () => ({ email: "user@example.com" }),
+    defaultPolicy: { read: "success", write: "success", admin: "denied" },
+  });
+}
+
+describe("ConfluenceClient — write methods", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("createPage sends POST with JSON body and Content-Type: application/json", async () => {
+    let method = "";
+    let capturedHeaders: Headers | null = null;
+    let sentBody = "";
+    const client = makeClient({}, async (_url, init) => {
+      method = init?.method ?? "";
+      capturedHeaders = new Headers(init?.headers as HeadersInit);
+      sentBody = init?.body as string;
+      return jsonResponse(
+        { id: "123", title: "My Page", version: { number: 1 } },
+        { status: 200 },
+      );
+    });
+    const r = await client.createPage({
+      type: "page",
+      title: "My Page",
+      space: { key: "DEV" },
+      body: {
+        atlas_doc_format: {
+          value: JSON.stringify({ type: "doc", version: 1, content: [] }),
+          representation: "atlas_doc_format",
+        },
+      },
+    });
+    expect(r.ok).toBe(true);
+    expect(method).toBe("POST");
+    expect(capturedHeaders!.get("Content-Type")).toBe("application/json");
+    const parsed = JSON.parse(sentBody);
+    expect(parsed.body.atlas_doc_format.representation).toBe("atlas_doc_format");
+  });
+
+  it("updatePage sends PUT and returns updated content", async () => {
+    let method = "";
+    const client = makeClient({}, async (_url, init) => {
+      method = init?.method ?? "";
+      return jsonResponse(
+        { id: "123", title: "Updated", version: { number: 2 } },
+        { status: 200 },
+      );
+    });
+    const r = await client.updatePage("123", { type: "page", title: "Updated", version: { number: 2 } });
+    expect(r.ok).toBe(true);
+    expect(method).toBe("PUT");
+  });
+
+  it("deletePage sends DELETE and handles 204", async () => {
+    let method = "";
+    const client = makeClient({}, async (_url, init) => {
+      method = init?.method ?? "";
+      return new Response(null, { status: 204 });
+    });
+    const r = await client.deletePage("123");
+    expect(r.ok).toBe(true);
+    expect(method).toBe("DELETE");
+  });
+
+  it("addComment sends POST with JSON body", async () => {
+    let method = "";
+    const client = makeClient({}, async (_url, init) => {
+      method = init?.method ?? "";
+      return jsonResponse(
+        { id: "c1", history: { createdDate: "2026-01-01", createdBy: { displayName: "Alice" } } },
+        { status: 200 },
+      );
+    });
+    const r = await client.addComment({
+      type: "comment",
+      container: { id: "123", type: "page" },
+      body: {
+        atlas_doc_format: {
+          value: JSON.stringify({ type: "doc", version: 1, content: [] }),
+          representation: "atlas_doc_format",
+        },
+      },
+    });
+    expect(r.ok).toBe(true);
+    expect(method).toBe("POST");
+  });
+
+  it("postAttachment sends multipart without explicit Content-Type, with X-Atlassian-Token", async () => {
+    let capturedHeaders: Headers | null = null;
+    let capturedBody: unknown = null;
+    const client = makeClient({}, async (_url, init) => {
+      capturedHeaders = new Headers(init?.headers as HeadersInit);
+      capturedBody = init?.body;
+      return jsonResponse(
+        { results: [{ id: "att1", title: "hello.txt", metadata: { mediaType: "text/plain" }, extensions: { fileSize: 5 } }] },
+        { status: 200 },
+      );
+    });
+    const r = await client.postAttachment("123", [
+      { filename: "hello.txt", bytes: new Uint8Array([104, 101, 108, 108, 111]) },
+    ]);
+    expect(r.ok).toBe(true);
+    // X-Atlassian-Token must be present
+    expect(capturedHeaders!.get("X-Atlassian-Token")).toBe("no-check");
+    // Content-Type must NOT be explicitly set (let fetch set the boundary)
+    expect(capturedHeaders!.get("Content-Type")).toBeNull();
+    // Body must be a FormData instance
+    expect(capturedBody).toBeInstanceOf(FormData);
+  });
+});
+
+describe("confluence connector — write actions (write: success policy)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("create_page happy path: atlas_doc_format representation, value is JSON-stringified ADF", async () => {
+    let sentBody = "";
+    const client = makeClient({}, async (_url, init) => {
+      sentBody = init?.body as string;
+      return jsonResponse(
+        { id: "999", title: "New Page", version: { number: 1 } },
+        { status: 200 },
+      );
+    });
+    const c = makeWriteConnector(client);
+    const r = await c.fetch("create_page", {
+      space_key: "DEV",
+      title: "New Page",
+      body: { format: "plain", value: "Hello world" },
+    });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      expect(r.data["id"]).toBe("999");
+      expect(r.data["title"]).toBe("New Page");
+    }
+    const parsed = JSON.parse(sentBody);
+    expect(parsed.body.atlas_doc_format.representation).toBe("atlas_doc_format");
+    // value must be a JSON-stringified string (not a nested object)
+    expect(typeof parsed.body.atlas_doc_format.value).toBe("string");
+    const adf = JSON.parse(parsed.body.atlas_doc_format.value as string);
+    expect(adf.type).toBe("doc");
+    expect(adf.version).toBe(1);
+  });
+
+  it("create_page markdown conversion: ADF has heading node containing text 'Hi'", async () => {
+    let sentBody = "";
+    const client = makeClient({}, async (_url, init) => {
+      sentBody = init?.body as string;
+      return jsonResponse(
+        { id: "1000", title: "Md Page", version: { number: 1 } },
+        { status: 200 },
+      );
+    });
+    const c = makeWriteConnector(client);
+    const r = await c.fetch("create_page", {
+      space_key: "DEV",
+      title: "Md Page",
+      body: { format: "markdown", value: "# Hi" },
+    });
+    expect(r.status).toBe("success");
+    const parsed = JSON.parse(sentBody);
+    const adf = JSON.parse(parsed.body.atlas_doc_format.value as string);
+    // The converted ADF should have at least one heading node
+    const headings = adf.content.filter((n: { type: string }) => n.type === "heading");
+    expect(headings.length).toBeGreaterThan(0);
+    // The heading node should contain text "Hi"
+    const allText = headings
+      .flatMap((h: { content?: Array<{ type: string; text?: string }> }) =>
+        (h.content ?? []).filter((n) => n.type === "text").map((n) => n.text ?? ""),
+      )
+      .join("");
+    expect(allText).toContain("Hi");
+  });
+
+  it("create_page ADF validation rejection: invalid root → VALIDATION_ERROR", async () => {
+    const client = makeClient({}, async () =>
+      jsonResponse({ id: "x" }, { status: 200 }),
+    );
+    const c = makeWriteConnector(client);
+    const r = await c.fetch("create_page", {
+      space_key: "DEV",
+      title: "Bad",
+      body: { format: "adf", value: { type: "paragraph" } }, // missing doc root
+    });
+    expect(r.status).toBe("error");
+    if (r.status === "error") expect(r.error_code).toBe("VALIDATION_ERROR");
+  });
+
+  it("update_page happy path: version.number === expected_version + 1", async () => {
+    let sentBody = "";
+    const client = makeClient({}, async (_url, init) => {
+      sentBody = init?.body as string;
+      return jsonResponse(
+        { id: "42", title: "Updated", version: { number: 6 } },
+        { status: 200 },
+      );
+    });
+    const c = makeWriteConnector(client);
+    const r = await c.fetch("update_page", {
+      page_id: "42",
+      title: "Updated",
+      body: { format: "plain", value: "new content" },
+      expected_version: 5,
+    });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      expect(r.data["id"]).toBe("42");
+      expect(r.data["version"]).toBe(6);
+      expect(r.data["updated"]).toBe(true);
+    }
+    const parsed = JSON.parse(sentBody);
+    expect(parsed.version.number).toBe(6); // expected_version (5) + 1
+  });
+
+  it("delete_page happy path: returns {id, deleted: true}", async () => {
+    const client = makeClient({}, async () => new Response(null, { status: 204 }));
+    const c = makeWriteConnector(client);
+    const r = await c.fetch("delete_page", { page_id: "77" });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      expect(r.data["id"]).toBe("77");
+      expect(r.data["deleted"]).toBe(true);
+    }
+  });
+
+  it("add_comment happy path: type=comment, container.id matches page_id", async () => {
+    let sentBody = "";
+    const client = makeClient({}, async (_url, init) => {
+      sentBody = init?.body as string;
+      return jsonResponse(
+        {
+          id: "c99",
+          history: { createdDate: "2026-05-01T00:00:00Z", createdBy: { displayName: "Alice" } },
+        },
+        { status: 200 },
+      );
+    });
+    const c = makeWriteConnector(client);
+    const r = await c.fetch("add_comment", {
+      page_id: "123",
+      body: { format: "plain", value: "Nice page!" },
+    });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      expect(r.data["comment_id"]).toBe("c99");
+      expect(r.data["author"]).toBe("Alice");
+    }
+    const parsed = JSON.parse(sentBody);
+    expect(parsed.type).toBe("comment");
+    expect(parsed.container.id).toBe("123");
+  });
+
+  it("post_attachment (base64): no Content-Type, X-Atlassian-Token: no-check, FormData body", async () => {
+    let capturedHeaders: Headers | null = null;
+    let capturedBody: unknown = null;
+    const client = makeClient({}, async (_url, init) => {
+      capturedHeaders = new Headers(init?.headers as HeadersInit);
+      capturedBody = init?.body;
+      return jsonResponse(
+        {
+          results: [
+            { id: "att1", title: "doc.txt", metadata: { mediaType: "text/plain" }, extensions: { fileSize: 3 } },
+          ],
+        },
+        { status: 200 },
+      );
+    });
+    const c = makeWriteConnector(client);
+    const r = await c.fetch("post_attachment", {
+      page_id: "123",
+      files: [
+        {
+          filename: "doc.txt",
+          content_base64: Buffer.from("hi!").toString("base64"),
+          mime_type: "text/plain",
+        },
+      ],
+    });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      expect(r.data["page_id"]).toBe("123");
+      const atts = r.data["attachments"] as Array<Record<string, unknown>>;
+      expect(atts).toHaveLength(1);
+      expect(atts[0]?.["id"]).toBe("att1");
+    }
+    expect(capturedHeaders!.get("X-Atlassian-Token")).toBe("no-check");
+    expect(capturedHeaders!.get("Content-Type")).toBeNull();
+    expect(capturedBody).toBeInstanceOf(FormData);
+  });
+
+  it("post_attachment (path): writes tmp file inside CWD, upload succeeds, no Content-Type", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(process.cwd(), "tmp-conf-test-"));
+    const tmpFile = path.join(tmpDir, "note.txt");
+    fs.writeFileSync(tmpFile, "test");
+    let capturedHeaders: Headers | null = null;
+    let capturedBody: unknown = null;
+    try {
+      const client = makeClient({}, async (_url, init) => {
+        capturedHeaders = new Headers(init?.headers as HeadersInit);
+        capturedBody = init?.body;
+        return jsonResponse(
+          {
+            results: [
+              { id: "att2", title: "note.txt", metadata: { mediaType: "text/plain" }, extensions: { fileSize: 4 } },
+            ],
+          },
+          { status: 200 },
+        );
+      });
+      const c = makeWriteConnector(client);
+      const r = await c.fetch("post_attachment", {
+        page_id: "123",
+        files: [{ path: tmpFile, mime_type: "text/plain" }],
+      });
+      expect(r.status).toBe("success");
+      expect(capturedHeaders!.get("X-Atlassian-Token")).toBe("no-check");
+      expect(capturedHeaders!.get("Content-Type")).toBeNull();
+      expect(capturedBody).toBeInstanceOf(FormData);
+    } finally {
+      fs.unlinkSync(tmpFile);
+      fs.rmdirSync(tmpDir);
+    }
+  });
+
+  it("post_attachment (path escape): /etc/passwd → VALIDATION_ERROR, sdk never called", async () => {
+    let sdkCalled = false;
+    const client = makeClient({}, async () => {
+      sdkCalled = true;
+      return jsonResponse({ results: [] }, { status: 200 });
+    });
+    const c = makeWriteConnector(client);
+    const r = await c.fetch("post_attachment", {
+      page_id: "123",
+      files: [{ path: "/etc/passwd" }],
+    });
+    expect(r.status).toBe("error");
+    if (r.status === "error") expect(r.error_code).toBe("VALIDATION_ERROR");
+    expect(sdkCalled).toBe(false);
   });
 });

@@ -5,8 +5,13 @@
 import { validateUrl } from "narai-primitives/toolkit";
 import { resolveSecret } from "narai-primitives/credentials";
 
-type HttpMethod = "GET";
-const ALLOWED_METHODS: ReadonlySet<HttpMethod> = new Set<HttpMethod>(["GET"]);
+type HttpMethod = "GET" | "POST" | "PUT" | "DELETE";
+const ALLOWED_METHODS: ReadonlySet<HttpMethod> = new Set<HttpMethod>([
+  "GET",
+  "POST",
+  "PUT",
+  "DELETE",
+]);
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 const DEFAULT_READ_TIMEOUT_MS = 30_000;
@@ -118,7 +123,11 @@ export class ConfluenceClient {
   public async request<T = unknown>(
     method: HttpMethod,
     path: string,
-    init: { query?: Record<string, unknown>; headers?: Record<string, string> } = {},
+    init: {
+      query?: Record<string, unknown>;
+      headers?: Record<string, string>;
+      body?: object | FormData;
+    } = {},
   ): Promise<ConfluenceResult<T>> {
     if (!ALLOWED_METHODS.has(method)) {
       return {
@@ -138,6 +147,19 @@ export class ConfluenceClient {
       };
     }
 
+    // Build the request body and any body-specific headers.
+    let fetchBody: string | FormData | undefined;
+    const bodyHeaders: Record<string, string> = {};
+    if (init.body !== undefined) {
+      if (init.body instanceof FormData) {
+        fetchBody = init.body;
+        // Do NOT set Content-Type: let fetch set the multipart boundary.
+      } else {
+        fetchBody = JSON.stringify(init.body);
+        bodyHeaders["Content-Type"] = "application/json";
+      }
+    }
+
     let lastError: ConfluenceErrorPayload | null = null;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       await this._throttle();
@@ -152,8 +174,10 @@ export class ConfluenceClient {
           headers: {
             Authorization: this._authHeader,
             Accept: "application/json",
+            ...bodyHeaders,
             ...(init.headers ?? {}),
           },
+          ...(fetchBody !== undefined ? { body: fetchBody } : {}),
           signal: readCtrl.signal,
         });
         const status = response.status;
@@ -184,6 +208,10 @@ export class ConfluenceClient {
             retriable: false,
             status,
           };
+        }
+        // 204 No Content — no body to parse.
+        if (status === 204) {
+          return { ok: true, data: {} as T, status };
         }
         const data = (await response.json()) as T;
         return { ok: true, data, status };
@@ -366,6 +394,60 @@ export class ConfluenceClient {
     }
   }
 
+  /** POST /wiki/rest/api/content — create a new page */
+  public async createPage(
+    payload: object,
+  ): Promise<ConfluenceResult<ConfluenceContent>> {
+    return this.request("POST", "/wiki/rest/api/content", { body: payload });
+  }
+
+  /** PUT /wiki/rest/api/content/{id} — update an existing page */
+  public async updatePage(
+    id: string,
+    payload: object,
+  ): Promise<ConfluenceResult<ConfluenceContent>> {
+    return this.request("PUT", `/wiki/rest/api/content/${id}`, { body: payload });
+  }
+
+  /** DELETE /wiki/rest/api/content/{id} — returns 204 */
+  public async deletePage(
+    id: string,
+  ): Promise<ConfluenceResult<Record<string, never>>> {
+    return this.request("DELETE", `/wiki/rest/api/content/${id}`);
+  }
+
+  /** POST /wiki/rest/api/content — create a comment (type=comment) */
+  public async addComment(
+    payload: object,
+  ): Promise<ConfluenceResult<ConfluenceRawCreatedContent>> {
+    return this.request("POST", "/wiki/rest/api/content", { body: payload });
+  }
+
+  /**
+   * POST /wiki/rest/api/content/{pageId}/child/attachment — multipart upload.
+   * Each file becomes a `file` part. X-Atlassian-Token: no-check required.
+   */
+  public async postAttachment(
+    pageId: string,
+    files: Array<{ filename: string; bytes: Uint8Array; mimeType?: string }>,
+  ): Promise<ConfluenceResult<ConfluenceAttachmentUploadResponse>> {
+    const formData = new FormData();
+    for (const f of files) {
+      const blob = new Blob([f.bytes], {
+        type: f.mimeType ?? "application/octet-stream",
+      });
+      formData.append("file", blob, f.filename);
+    }
+    return this.request(
+      "POST",
+      `/wiki/rest/api/content/${pageId}/child/attachment`,
+      {
+        body: formData,
+        headers: { "X-Atlassian-Token": "no-check" },
+      },
+    );
+  }
+
   public get siteUrl(): string {
     return this._site;
   }
@@ -428,6 +510,20 @@ export interface ConfluenceCommentList {
   size?: number;
   start?: number;
   limit?: number;
+}
+
+export interface ConfluenceRawCreatedContent {
+  id: string;
+  history?: { createdDate?: string; createdBy?: { displayName?: string } };
+}
+
+export interface ConfluenceAttachmentUploadResponse {
+  results: Array<{
+    id: string;
+    title?: string;
+    metadata?: { mediaType?: string };
+    extensions?: { fileSize?: number };
+  }>;
 }
 
 interface ConfluenceRawComment {
