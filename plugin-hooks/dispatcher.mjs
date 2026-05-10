@@ -143,55 +143,7 @@ async function onSessionStart(cfg) {
   const pluginData = process.env.CLAUDE_PLUGIN_DATA;
   if (!pluginRoot || !pluginData) return;
 
-  const rootPkg = path.join(pluginRoot, "package.json");
-  if (!fs.existsSync(rootPkg)) return;
-  const rootMeta = JSON.parse(fs.readFileSync(rootPkg, "utf-8"));
-  // Plugin's own version is shipped in lockstep with narai-primitives;
-  // fall back to stripping the dependency range's semver prefix
-  // (`^2.1.3` → `2.1.3`) so the equality check matches the installed
-  // package's resolved version field.
-  const depRange = rootMeta.dependencies?.["narai-primitives"];
-  const wantVersion =
-    rootMeta.version ?? depRange?.replace(/^[\^~>=< ]+/, "");
-  if (!wantVersion) return;
-
-  fs.mkdirSync(pluginData, { recursive: true });
-
-  const myInstall = path.join(pluginData, "node_modules", "narai-primitives");
-  if (fs.existsSync(myInstall)) {
-    try {
-      const installed = JSON.parse(
-        fs.readFileSync(path.join(myInstall, "package.json"), "utf-8"),
-      );
-      if (installed.version === wantVersion) {
-        // Already installed at the right version; skip.
-        return;
-      }
-    } catch {
-      // Fall through to re-install.
-    }
-  }
-
-  const sibling = findSiblingInstall(pluginData, wantVersion);
-  if (sibling !== null) {
-    try {
-      const myNodeModules = path.join(pluginData, "node_modules");
-      if (fs.existsSync(myNodeModules)) {
-        fs.rmSync(myNodeModules, { recursive: true, force: true });
-      }
-      fs.symlinkSync(sibling, myNodeModules, "dir");
-      return;
-    } catch {
-      // Fall through to install.
-    }
-  }
-
-  fs.copyFileSync(rootPkg, path.join(pluginData, "package.json"));
-  const { spawnSync } = await import("node:child_process");
-  spawnSync("npm", ["install", "--no-audit", "--no-fund"], {
-    cwd: pluginData,
-    stdio: "inherit",
-  });
+  await ensureBootstrap(pluginRoot, pluginData);
 
   // Best-effort: emit nudge banner if the toolkit is reachable.
   try {
@@ -303,11 +255,17 @@ async function onPreToolUse(cfg) {
           ) continue;
           let re;
           try { re = new RegExp(rule.pattern); } catch { continue; }
-          if (re.test(command)) {
-            decisions.push({
-              decision: rule.decision,
-              reason: rule.reason ?? `${slug} gate: ${rule.name ?? "rule"}`,
-            });
+          // Match against each compound segment so anchored rules
+          // (`^psql`) can't be bypassed by chaining (`echo ok; psql ...`).
+          // Mirrors the standalone connector-gate.mjs behavior.
+          for (const segment of splitCompound(command)) {
+            if (re.test(segment)) {
+              decisions.push({
+                decision: rule.decision,
+                reason: rule.reason ?? `${slug} gate: ${rule.name ?? "rule"}`,
+              });
+              break;
+            }
           }
         }
       } catch (err) {
@@ -372,4 +330,87 @@ async function onSessionEnd(cfg) {
   } catch (err) {
     process.stderr.write(`dispatcher: session-summary failed (${err.message})\n`);
   }
+}
+
+/**
+ * Ensure narai-primitives is installed in pluginData. Tries (in order):
+ *   1. Skip if already installed at the right version.
+ *   2. Symlink from a sibling plugin's node_modules.
+ *   3. npm install in pluginData.
+ *
+ * Best-effort: all branches return without throwing. The caller proceeds
+ * to side effects (nudge, stale-summarize, etc.) even when the install
+ * is cached, so recurring per-session behavior fires every run.
+ */
+async function ensureBootstrap(pluginRoot, pluginData) {
+  const rootPkg = path.join(pluginRoot, "package.json");
+  if (!fs.existsSync(rootPkg)) return;
+  let rootMeta;
+  try {
+    rootMeta = JSON.parse(fs.readFileSync(rootPkg, "utf-8"));
+  } catch {
+    return;
+  }
+  // Plugin's own version is shipped in lockstep with narai-primitives;
+  // fall back to stripping the dependency range's semver prefix
+  // (`^2.1.3` → `2.1.3`) so the equality check matches the installed
+  // package's resolved version field.
+  const depRange = rootMeta.dependencies?.["narai-primitives"];
+  const wantVersion =
+    rootMeta.version ?? depRange?.replace(/^[\^~>=< ]+/, "");
+  if (!wantVersion) return;
+
+  fs.mkdirSync(pluginData, { recursive: true });
+
+  const myInstall = path.join(pluginData, "node_modules", "narai-primitives");
+  if (fs.existsSync(myInstall)) {
+    try {
+      const installed = JSON.parse(
+        fs.readFileSync(path.join(myInstall, "package.json"), "utf-8"),
+      );
+      if (installed.version === wantVersion) return;
+    } catch {
+      // Fall through to re-install.
+    }
+  }
+
+  const sibling = findSiblingInstall(pluginData, wantVersion);
+  if (sibling !== null) {
+    try {
+      const myNodeModules = path.join(pluginData, "node_modules");
+      if (fs.existsSync(myNodeModules)) {
+        fs.rmSync(myNodeModules, { recursive: true, force: true });
+      }
+      fs.symlinkSync(sibling, myNodeModules, "dir");
+      return;
+    } catch {
+      // Fall through to install.
+    }
+  }
+
+  fs.copyFileSync(rootPkg, path.join(pluginData, "package.json"));
+  const { spawnSync } = await import("node:child_process");
+  spawnSync("npm", ["install", "--no-audit", "--no-fund"], {
+    cwd: pluginData,
+    stdio: "inherit",
+  });
+}
+
+/**
+ * Split a bash command on chaining operators so anchored gate rules
+ * apply per-segment. Mirrors connector-gate.mjs's behavior.
+ */
+function splitCompound(cmd) {
+  const parts = cmd.split(/\s*(?:&&|\|\||;|\|)\s*/);
+  return parts
+    .map((p) => stripPrefix(p.trim()))
+    .filter((p) => p.length > 0);
+}
+
+function stripPrefix(s) {
+  let cur = s;
+  while (/^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/.test(cur)) {
+    cur = cur.replace(/^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/, "");
+  }
+  return cur.replace(/^(sudo|nice|time)\s+/, "");
 }
