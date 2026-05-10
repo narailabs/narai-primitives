@@ -54,7 +54,7 @@ Return the connector's JSON envelope verbatim.
 
 **denied** (default for privilege actions, or operator-set policy)
 ```json
-{"status": "denied", "action": "delete_page", "reason": "DELETE statements are not allowed"}
+{"status": "denied", "action": "delete_page", "reason": "DELETE actions are not allowed by operator policy"}
 ```
 
 **error**
