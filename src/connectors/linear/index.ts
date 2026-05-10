@@ -385,12 +385,19 @@ export function buildLinearConnector(overrides: BuildOptions = {}): Connector {
           try {
             dl = await fetchAttachment(match.url);
           } catch (err) {
+            const message =
+              err instanceof Error ? err.message : String(err);
+            // Deterministic failures (invalid URL scheme, size cap, etc.)
+            // should not be retried — same input will always fail. Network
+            // / transient errors stay retriable.
+            const isDeterministic =
+              message.includes("invalid URL scheme") ||
+              (err instanceof Error &&
+                err.constructor?.name === "FetchCapExceeded");
             throw new LinearError(
-              "HTTP_ERROR",
-              `Failed to fetch attachment URL: ${
-                err instanceof Error ? err.message : String(err)
-              }`,
-              true,
+              isDeterministic ? "BAD_REQUEST" : "HTTP_ERROR",
+              `Failed to fetch attachment URL: ${message}`,
+              !isDeterministic,
             );
           }
           return {
