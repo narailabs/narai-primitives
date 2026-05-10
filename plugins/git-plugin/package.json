@@ -1,0 +1,8 @@
+{
+  "name": "git-plugin",
+  "version": "1.0.0",
+  "description": "Claude Code plugin: PreToolUse hook gating risky git commands.",
+  "type": "module",
+  "private": true,
+  "license": "MIT"
+}
