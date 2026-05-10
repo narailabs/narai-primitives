@@ -216,7 +216,9 @@ describe("dispatcher pre-tool-use db-guard", () => {
       fs.writeFileSync(
         path.join(tmpRoot, "hooks", "guardrails.json"),
         JSON.stringify({
-          rules: [{ pattern: "^psql\\b", message: "Use db-agent." }],
+          version: 1,
+          name: "test-db-guard",
+          rules: [{ block_first_token_basename: ["psql"], redirect: "Use db-agent." }],
         }),
       );
       const payload = JSON.stringify({
@@ -244,7 +246,9 @@ describe("dispatcher pre-tool-use db-guard", () => {
       fs.writeFileSync(
         path.join(tmpRoot, "hooks", "guardrails.json"),
         JSON.stringify({
-          rules: [{ pattern: "^psql\\b", message: "Use db-agent." }],
+          version: 1,
+          name: "test-db-guard",
+          rules: [{ block_first_token_basename: ["psql"], redirect: "Use db-agent." }],
         }),
       );
       const payload = JSON.stringify({

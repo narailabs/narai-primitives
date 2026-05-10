@@ -69,6 +69,30 @@ async function main() {
   process.exit(0);
 }
 
+async function loadToolkit() {
+  const { existsSync } = fs;
+  const { homedir } = await import("node:os");
+  const { fileURLToPath, pathToFileURL } = await import("node:url");
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    // 1. Bundled: dispatcher at narai-primitives/plugin-hooks/; toolkit at narai-primitives/dist/toolkit/guardrail.js
+    path.join(__dirname, "..", "dist", "toolkit", "guardrail.js"),
+    // 2. Claude Code plugin install
+    process.env.CLAUDE_PLUGIN_DATA
+      ? path.join(process.env.CLAUDE_PLUGIN_DATA, "node_modules", "narai-primitives", "dist", "toolkit", "guardrail.js")
+      : null,
+  ].filter((p) => p !== null);
+  for (const p of candidates) {
+    if (!existsSync(p)) continue;
+    try {
+      return await import(pathToFileURL(p).href);
+    } catch {
+      // try next
+    }
+  }
+  return null;
+}
+
 /**
  * Walk siblings of `pluginDataDir` looking for a `node_modules/narai-primitives`
  * at `wantedVersion`. Returns the matched node_modules path, or null if no
@@ -217,14 +241,18 @@ async function onPreToolUse(cfg) {
     );
     if (fs.existsSync(guardrailsPath)) {
       try {
-        const manifest = JSON.parse(fs.readFileSync(guardrailsPath, "utf-8"));
-        for (const rule of manifest.rules ?? []) {
-          if (new RegExp(rule.pattern).test(command)) {
-            decisions.push({
-              decision: "deny",
-              reason: rule.message ?? "blocked by db-agent guardrail",
-            });
-            break;
+        const toolkit = await loadToolkit();
+        if (toolkit) {
+          const { findBlockingRule, defaultDenyMessage, loadGuardrailManifest } = toolkit;
+          if (typeof findBlockingRule === "function") {
+            const manifest = loadGuardrailManifest(guardrailsPath);
+            const match = findBlockingRule(command, [manifest]);
+            if (match) {
+              decisions.push({
+                decision: "deny",
+                reason: defaultDenyMessage(match),
+              });
+            }
           }
         }
       } catch (err) {
