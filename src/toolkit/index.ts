@@ -191,6 +191,16 @@ export {
   type FetchAttachmentResult,
 } from "./fetch_attachment.js";
 
+// ─── Atlassian helpers (shared by jira + confluence) ─────────────────────
+
+export {
+  validateAdf,
+  assertValidAdf,
+  type ADFNode,
+  type ADFDocument,
+  type ValidateResult,
+} from "./atlassian/index.js";
+
 // ─── Self-improvement layer (added in 3.0) ───────────────────────────────
 
 export {
