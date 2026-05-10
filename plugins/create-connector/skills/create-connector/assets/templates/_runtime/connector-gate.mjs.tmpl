@@ -1,0 +1,113 @@
+#!/usr/bin/env node
+/**
+ * connector-gate.mjs — auto-discovers user connectors at
+ * <scope>/.connectors/connectors/<slug>/gates.json and applies the rules at
+ * Claude Code PreToolUse on Bash.
+ *
+ * Scope is resolved from NARAI_GATE_SCOPE (set by Claude Code's hook
+ * invocation), or falls back to the parent of this script's directory.
+ *
+ * Output shape (per Claude Code hook contract):
+ *   { hookSpecificOutput: { hookEventName: "PreToolUse",
+ *                           permissionDecision: "allow"|"deny"|"ask",
+ *                           permissionDecisionReason: "..." } }
+ *
+ * Decision precedence: deny > ask > allow.
+ *
+ * NOTE: Uses require() so that node can run this file regardless of extension.
+ * When stamped as connector-gate.mjs the shebang + require bridge still works
+ * because node falls back to CommonJS for unknown extensions.
+ */
+const fs = require("node:fs");
+const path = require("node:path");
+
+main().catch((err) => {
+  process.stderr.write(`connector-gate: ${err?.message ?? err}\n`);
+  process.exit(0);
+});
+
+async function main() {
+  const payload = await readStdinJson();
+  if (payload === null) return;
+  if (payload.tool_name !== "Bash") return;
+  const command = payload.tool_input?.command;
+  if (typeof command !== "string" || command.length === 0) return;
+
+  const scope = resolveScope();
+  const decisions = scanConnectors(scope, command);
+  if (decisions.length === 0) return;
+
+  const rank = { deny: 2, ask: 1, allow: 0 };
+  decisions.sort((a, b) => rank[b.decision] - rank[a.decision]);
+  const winner = decisions[0];
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: winner.decision,
+      permissionDecisionReason: winner.reason,
+    },
+  }));
+}
+
+function resolveScope() {
+  if (process.env.NARAI_GATE_SCOPE) return process.env.NARAI_GATE_SCOPE;
+  // __filename is available in CommonJS; fall back to process.argv[1]
+  const here = path.dirname(typeof __filename !== "undefined" ? __filename : process.argv[1]);
+  return path.dirname(here); // …/<scope>/.connectors → <scope>
+}
+
+function scanConnectors(scope, command) {
+  const root = path.join(scope, ".connectors", "connectors");
+  if (!fs.existsSync(root)) return [];
+  const out = [];
+  for (const slug of fs.readdirSync(root)) {
+    const file = path.join(root, slug, "gates.json");
+    if (!fs.existsSync(file)) continue;
+    try {
+      const cfg = JSON.parse(fs.readFileSync(file, "utf-8"));
+      for (const rule of cfg.rules ?? []) {
+        if (
+          !["deny", "ask", "allow"].includes(rule.decision) ||
+          typeof rule.pattern !== "string"
+        ) continue;
+        let re;
+        try { re = new RegExp(rule.pattern); } catch (e) { continue; }
+        for (const segment of splitCompound(command)) {
+          if (re.test(segment)) {
+            out.push({
+              decision: rule.decision,
+              reason: rule.reason ?? `${slug}: ${rule.name ?? "rule"}`,
+            });
+            break;
+          }
+        }
+      }
+    } catch (err) {
+      process.stderr.write(`connector-gate: bad ${file} (${err.message})\n`);
+    }
+  }
+  return out;
+}
+
+function splitCompound(cmd) {
+  const parts = cmd.split(/\s*(?:&&|\|\||;|\|)\s*/);
+  return parts
+    .map((p) => stripPrefix(p.trim()))
+    .filter((p) => p.length > 0);
+}
+
+function stripPrefix(s) {
+  let cur = s;
+  while (/^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/.test(cur)) {
+    cur = cur.replace(/^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/, "");
+  }
+  return cur.replace(/^(sudo|nice|time)\s+/, "");
+}
+
+async function readStdinJson() {
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  const raw = Buffer.concat(chunks).toString("utf-8").trim();
+  if (raw.length === 0) return null;
+  try { return JSON.parse(raw); } catch (e) { return null; }
+}
