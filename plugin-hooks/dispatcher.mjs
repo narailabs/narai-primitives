@@ -146,8 +146,14 @@ async function onSessionStart(cfg) {
   const rootPkg = path.join(pluginRoot, "package.json");
   if (!fs.existsSync(rootPkg)) return;
   const rootMeta = JSON.parse(fs.readFileSync(rootPkg, "utf-8"));
-  const wantVersion = rootMeta.dependencies?.["narai-primitives"]
-    ?? rootMeta.version;
+  // Plugin's own version is shipped in lockstep with narai-primitives;
+  // fall back to stripping the dependency range's semver prefix
+  // (`^2.1.3` → `2.1.3`) so the equality check matches the installed
+  // package's resolved version field.
+  const depRange = rootMeta.dependencies?.["narai-primitives"];
+  const wantVersion =
+    rootMeta.version ?? depRange?.replace(/^[\^~>=< ]+/, "");
+  if (!wantVersion) return;
 
   fs.mkdirSync(pluginData, { recursive: true });
 
