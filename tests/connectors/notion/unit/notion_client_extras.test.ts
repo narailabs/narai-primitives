@@ -171,8 +171,9 @@ describe("NotionClient.request — retry & timeout branches", () => {
   });
 
   it("rejects unrecognized HTTP method as METHOD_NOT_ALLOWED", async () => {
+    // DELETE is now a recognized method; use a truly unrecognized verb instead.
     const client = makeClient();
-    const r = await client.request("DELETE" as never, "/v1/pages/abc");
+    const r = await client.request("PUT" as never, "/v1/pages/abc");
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe("METHOD_NOT_ALLOWED");
   });
