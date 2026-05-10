@@ -739,7 +739,7 @@ describe("jira connector — write actions (write: success policy)", () => {
     }
   });
 
-  it("post_attachment with invalid base64 still passes bytes", async () => {
+  it("post_attachment (base64, no mime_type) sends FormData", async () => {
     let capturedBody: unknown = null;
     const client = makeClient({}, async (_url, init) => {
       capturedBody = init?.body;
@@ -760,6 +760,22 @@ describe("jira connector — write actions (write: success policy)", () => {
     });
     // Body should be FormData
     expect(capturedBody).toBeInstanceOf(FormData);
+  });
+
+  it("post_attachment with path outside CWD returns VALIDATION_ERROR (sdk never called)", async () => {
+    let sdkCalled = false;
+    const client = makeClient({}, async () => {
+      sdkCalled = true;
+      return jsonResponse([], { status: 200 });
+    });
+    const c = makeWriteConnector(client);
+    const r = await c.fetch("post_attachment", {
+      issue_key: "PROJ-1",
+      files: [{ path: "/etc/passwd" }],
+    });
+    expect(r.status).toBe("error");
+    if (r.status === "error") expect(r.error_code).toBe("VALIDATION_ERROR");
+    expect(sdkCalled).toBe(false);
   });
 
   it("post_attachment (path input, explicit mime_type) uploads multipart correctly", async () => {

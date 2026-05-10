@@ -44,44 +44,34 @@ const jqlSearchParams = z.object({
     .default(MAX_RESULTS_DEFAULT),
 });
 
+const issueKeyRe = /^[A-Z][A-Z0-9]+-\d+$/;
+const issueKeySchema = z
+  .string()
+  .regex(issueKeyRe, "Invalid issue_key — expected format like PROJ-123");
+const projectKeySchema = z
+  .string()
+  .regex(/^[A-Z][A-Z0-9]+$/, "Invalid project_key — expected format like PROJ");
+
 const getIssueParams = z.object({
-  issue_key: z
-    .string()
-    .regex(
-      /^[A-Z][A-Z0-9]+-\d+$/,
-      "Invalid issue_key — expected format like PROJ-123",
-    ),
+  issue_key: issueKeySchema,
   expand: z.array(z.string()).default([]),
 });
 
 const getProjectParams = z.object({
-  project_key: z
-    .string()
-    .regex(
-      /^[A-Z][A-Z0-9]+$/,
-      "Invalid project_key — expected format like PROJ",
-    ),
+  project_key: projectKeySchema,
 });
 
-const issueKeyRe = /^[A-Z][A-Z0-9]+-\d+$/;
-
 const listAttachmentsParams = z.object({
-  issue_key: z
-    .string()
-    .regex(issueKeyRe, "Invalid issue_key — expected format like PROJ-123"),
+  issue_key: issueKeySchema,
 });
 
 const getAttachmentParams = z.object({
-  issue_key: z
-    .string()
-    .regex(issueKeyRe, "Invalid issue_key — expected format like PROJ-123"),
+  issue_key: issueKeySchema,
   attachment_id: z.string().min(1, "attachment_id is required"),
 });
 
 const getCommentsParams = z.object({
-  issue_key: z
-    .string()
-    .regex(issueKeyRe, "Invalid issue_key — expected format like PROJ-123"),
+  issue_key: issueKeySchema,
   max_results: z.coerce.number().int().positive().default(50),
 });
 
@@ -94,17 +84,17 @@ const contentInput = z.union([
 ]);
 
 const createIssueParams = z.object({
-  project_key: z.string().regex(/^[A-Z][A-Z0-9]+$/),
+  project_key: projectKeySchema,
   issue_type: z.string().min(1),
   summary: z.string().min(1),
   description: contentInput.optional(),
   labels: z.array(z.string()).optional(),
   assignee_account_id: z.string().optional(),
-  parent_key: z.string().regex(issueKeyRe).optional(),
+  parent_key: issueKeySchema.optional(),
 });
 
 const updateIssueParams = z.object({
-  issue_key: z.string().regex(issueKeyRe),
+  issue_key: issueKeySchema,
   summary: z.string().min(1).optional(),
   description: contentInput.optional(),
   labels: z.array(z.string()).optional(),
@@ -112,27 +102,27 @@ const updateIssueParams = z.object({
 });
 
 const deleteIssueParams = z.object({
-  issue_key: z.string().regex(issueKeyRe),
+  issue_key: issueKeySchema,
 });
 
 const addCommentParams = z.object({
-  issue_key: z.string().regex(issueKeyRe),
+  issue_key: issueKeySchema,
   body: contentInput,
 });
 
 const updateCommentParams = z.object({
-  issue_key: z.string().regex(issueKeyRe),
+  issue_key: issueKeySchema,
   comment_id: z.string().min(1),
   body: contentInput,
 });
 
 const deleteCommentParams = z.object({
-  issue_key: z.string().regex(issueKeyRe),
+  issue_key: issueKeySchema,
   comment_id: z.string().min(1),
 });
 
 const transitionIssueParams = z.object({
-  issue_key: z.string().regex(issueKeyRe),
+  issue_key: issueKeySchema,
   transition_id: z.string().min(1),
   comment: contentInput.optional(),
 });
@@ -151,7 +141,7 @@ const fileInput = z.union([
 ]);
 
 const postAttachmentParams = z.object({
-  issue_key: z.string().regex(issueKeyRe, "Invalid issue_key"),
+  issue_key: issueKeySchema,
   files: z.array(fileInput).min(1),
 });
 

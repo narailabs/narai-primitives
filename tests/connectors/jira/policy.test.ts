@@ -40,10 +40,7 @@ function makeConnectorWithPolicy(policy?: Partial<PolicyRules>) {
 
 describe("Jira connector — policy gate", () => {
   it("read action (jql_search) with default policy → success envelope", async () => {
-    const c = makeConnectorWithPolicy();
-    // We need the SDK to handle the request, so provide a real-ish client.
-    // Since we only care about the policy outcome we must provide a working SDK.
-    // Use a stub that returns a valid JQL response for the read test.
+    // Default policy has read: "success", so we need a working SDK stub.
     const readConnector = buildJiraConnector({
       sdk: async () =>
         ({

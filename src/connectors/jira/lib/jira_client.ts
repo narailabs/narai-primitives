@@ -597,7 +597,7 @@ export interface JiraAttachmentList {
   results: JiraAttachment[];
 }
 
-export interface JiraRawAttachment {
+interface JiraRawAttachment {
   id: string;
   filename?: string;
   mimeType?: string;
@@ -626,7 +626,7 @@ export interface JiraCommentList {
   total: number;
 }
 
-export interface JiraRawComment {
+interface JiraRawComment {
   id: string;
   author?: { displayName?: string };
   created?: string;
