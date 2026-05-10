@@ -5,16 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "diff -q \"${CLAUDE_PLUGIN_ROOT}/package.json\" \"${CLAUDE_PLUGIN_DATA}/package.json\" >/dev/null 2>&1 || (mkdir -p \"${CLAUDE_PLUGIN_DATA}\" && cp \"${CLAUDE_PLUGIN_ROOT}/package.json\" \"${CLAUDE_PLUGIN_DATA}/\" && cd \"${CLAUDE_PLUGIN_DATA}\" && npm install --no-audit --no-fund) || rm -f \"${CLAUDE_PLUGIN_DATA}/package.json\""
-          },
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/reminder.mjs\" 2>/dev/null || true"
-          },
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/plugin-hooks/stale-summarize.mjs\" 2>/dev/null || true",
-            "env": { "USAGE_CONNECTOR_NAME": "linear" }
+            "command": "node \"${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/plugin-hooks/dispatcher.mjs\" session-start"
           }
         ]
       }
@@ -25,11 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/plugin-hooks/usage-record.mjs\" 2>/dev/null || true",
-            "env": {
-              "USAGE_CONNECTOR_NAME": "linear",
-              "USAGE_BIN_HINT": "narai-primitives/dist/connectors/linear"
-            }
+            "command": "node \"${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/plugin-hooks/dispatcher.mjs\" post-tool-use"
           }
         ]
       }
@@ -39,8 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/plugin-hooks/session-summary.mjs\" 2>/dev/null || true",
-            "env": { "USAGE_CONNECTOR_NAME": "linear" }
+            "command": "node \"${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/plugin-hooks/dispatcher.mjs\" session-end"
           }
         ]
       }
