@@ -212,13 +212,90 @@ describe("linear connector — get_team", () => {
 describe("linear connector — get_attachment", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("returns VALIDATION_ERROR with list_attachments guidance", async () => {
-    const c = makeWriteConnector(async () => jsonResponse({ data: {} }));
-    const r = await c.fetch("get_attachment", { attachment_id: VALID_UUID });
+  it("fetches the external URL and returns extracted text", async () => {
+    // GraphQL response describing the attachment; second fetch goes to the
+    // external URL (mocked here to return a small text/plain body).
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("api.linear.app")) {
+        return jsonResponse({
+          data: {
+            issue: {
+              attachments: {
+                nodes: [
+                  {
+                    id: VALID_UUID,
+                    title: "Notes",
+                    subtitle: null,
+                    url: "https://example.test/notes.txt",
+                    createdAt: "2026-01-01T00:00:00Z",
+                    creator: { displayName: "Alice" },
+                  },
+                ],
+              },
+            },
+          },
+        });
+      }
+      // External URL fetch via toolkit's fetchAttachment.
+      return new Response("hello world", {
+        status: 200,
+        headers: {
+          "content-type": "text/plain",
+          "content-length": "11",
+        },
+      });
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      fetchMock as unknown as typeof globalThis.fetch,
+    );
+
+    const c = makeWriteConnector(async (url, init) =>
+      fetchMock(url, init) as Promise<Response>,
+    );
+    const r = await c.fetch("get_attachment", {
+      issue_id: VALID_ISSUE_ID,
+      attachment_id: VALID_UUID,
+    });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      expect(r.data["attachment_id"]).toBe(VALID_UUID);
+      expect(r.data["issue_id"]).toBe(VALID_ISSUE_ID);
+      expect(r.data["title"]).toBe("Notes");
+      expect(r.data["media_type"]).toMatch(/text\/plain/);
+      const extracted = r.data["extracted"] as { format: string; text: string };
+      expect(extracted.format).toBe("text");
+      expect(extracted.text).toBe("hello world");
+    }
+  });
+
+  it("returns NOT_FOUND when attachment_id is not on the issue", async () => {
+    const c = makeWriteConnector(async () =>
+      jsonResponse({
+        data: {
+          issue: {
+            attachments: {
+              nodes: [
+                {
+                  id: "11111111-1111-1111-1111-111111111111",
+                  title: "Other",
+                  subtitle: null,
+                  url: "https://example.test/other",
+                  createdAt: "2026-01-01T00:00:00Z",
+                  creator: null,
+                },
+              ],
+            },
+          },
+        },
+      }),
+    );
+    const r = await c.fetch("get_attachment", {
+      issue_id: VALID_ISSUE_ID,
+      attachment_id: VALID_UUID,
+    });
     expect(r.status).toBe("error");
     if (r.status === "error") {
-      expect(r.error_code).toBe("VALIDATION_ERROR");
-      expect(r.message).toContain("list_attachments");
+      expect(r.error_code).toBe("NOT_FOUND");
     }
   });
 });

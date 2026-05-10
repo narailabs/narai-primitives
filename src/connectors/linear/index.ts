@@ -13,6 +13,7 @@
  */
 import {
   createConnector,
+  fetchAttachment,
   sanitizeLabel,
   type Connector,
   type ErrorCode,
@@ -67,7 +68,10 @@ const getCommentsParams = z.object({
 
 const listAttachmentsParams = z.object({ issue_id: issueIdOrIdentifierSchema });
 
-const getAttachmentParams = z.object({ attachment_id: issueUuidSchema });
+const getAttachmentParams = z.object({
+  issue_id: issueIdOrIdentifierSchema,
+  attachment_id: issueUuidSchema,
+});
 
 const createIssueParams = z.object({
   team_id: issueUuidSchema,
@@ -281,6 +285,14 @@ export function buildLinearConnector(overrides: BuildOptions = {}): Connector {
           const result = await ctx.sdk.getTeam(p.key_or_id);
           throwIfError(result);
           const team = result.data.team;
+          if (!team) {
+            throw new LinearError(
+              "NOT_FOUND",
+              `Team '${p.key_or_id}' not found`,
+              false,
+              404,
+            );
+          }
           return {
             id: team.id,
             key: team.key,
@@ -343,22 +355,55 @@ export function buildLinearConnector(overrides: BuildOptions = {}): Connector {
       },
 
       get_attachment: {
-        description: "Fetch and extract the contents of a Linear attachment URL",
+        description:
+          "Fetch and extract a Linear attachment by looking up its URL via list_attachments, then fetching the external file",
         params: getAttachmentParams,
         classify: { kind: "read" },
-        handler: async (_p: z.infer<typeof getAttachmentParams>, _ctx) => {
-          // Linear attachments are URL pointers to externally-hosted files.
-          // We cannot look up the URL by attachment_id alone without an issue_id.
-          // This action is a proxy: callers must supply the URL from list_attachments.
-          // Since GraphQL doesn't expose a top-level attachment query in the public API,
-          // we expose a direct URL fetch — the attachment_id serves as a trace key.
-          throw new LinearError(
-            "BAD_REQUEST",
-            "get_attachment requires a direct URL. Use list_attachments to obtain " +
-              "the URL for attachment_id, then use the toolkit's fetchAttachment utility directly.",
-            false,
-            400,
+        handler: async (p: z.infer<typeof getAttachmentParams>, ctx) => {
+          const list = await ctx.sdk.listAttachments(p.issue_id);
+          throwIfError(list);
+          if (!list.data.issue) {
+            throw new LinearError(
+              "NOT_FOUND",
+              `Issue '${p.issue_id}' not found`,
+              false,
+              404,
+            );
+          }
+          const match = list.data.issue.attachments.nodes.find(
+            (a) => a.id === p.attachment_id,
           );
+          if (!match) {
+            throw new LinearError(
+              "NOT_FOUND",
+              `Attachment '${p.attachment_id}' not found on issue '${p.issue_id}'`,
+              false,
+              404,
+            );
+          }
+          let dl: Awaited<ReturnType<typeof fetchAttachment>>;
+          try {
+            dl = await fetchAttachment(match.url);
+          } catch (err) {
+            throw new LinearError(
+              "HTTP_ERROR",
+              `Failed to fetch attachment URL: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+              true,
+            );
+          }
+          return {
+            attachment_id: match.id,
+            issue_id: p.issue_id,
+            title: match.title,
+            filename: sanitizeLabel(dl.filename, 255),
+            media_type: dl.contentType,
+            size_bytes: dl.sizeBytes,
+            checksum: dl.checksum,
+            extracted: dl.extracted,
+            source_url: dl.sourceUrl,
+          };
         },
       },
 
