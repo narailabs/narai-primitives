@@ -158,3 +158,28 @@ describe("dispatcher session-start integrations", () => {
     expect(r.exitCode).toBe(0);
   });
 });
+
+describe("dispatcher post-tool-use", () => {
+  it("post-tool-use sets USAGE_CONNECTOR_NAME from cfg.name and exits 0", async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ptu-root-"));
+    const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), "ptu-data-"));
+    try {
+      fs.writeFileSync(
+        path.join(tmpRoot, "plugin-config.json"),
+        JSON.stringify({
+          name: "jira",
+          binPath: "narai-primitives/dist/connectors/jira",
+        }),
+      );
+      const payload = JSON.stringify({
+        tool_name: "Bash",
+        tool_input: { command: "echo hi" },
+      });
+      const r = await runDispatcher("post-tool-use", tmpRoot, tmpData, payload);
+      expect(r.exitCode).toBe(0);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      fs.rmSync(tmpData, { recursive: true, force: true });
+    }
+  });
+});

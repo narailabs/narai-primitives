@@ -195,7 +195,24 @@ async function onSessionStart(cfg) {
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function onPreToolUse(cfg) { /* Task 7 */ }
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-async function onPostToolUse(cfg) { /* Task 5 */ }
+async function onPostToolUse(cfg) {
+  const pluginData = process.env.CLAUDE_PLUGIN_DATA;
+  if (!pluginData) return;
+  const usagePath = path.join(
+    pluginData,
+    "node_modules",
+    "narai-primitives",
+    "plugin-hooks",
+    "usage-record.mjs",
+  );
+  if (!fs.existsSync(usagePath)) return;
+  process.env.USAGE_CONNECTOR_NAME = cfg.name;
+  if (cfg.binPath) process.env.USAGE_BIN_HINT = cfg.binPath;
+  try {
+    await import(usagePath);
+  } catch (err) {
+    process.stderr.write(`dispatcher: usage-record failed (${err.message})\n`);
+  }
+}
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function onSessionEnd(cfg) { /* Task 6 */ }
