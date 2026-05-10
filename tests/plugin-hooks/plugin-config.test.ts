@@ -29,6 +29,12 @@ describe("parsePluginConfig", () => {
     );
   });
 
+  it("rejects empty-string name", () => {
+    expect(() => parsePluginConfig(JSON.stringify({ name: "" }))).toThrow(
+      /name/,
+    );
+  });
+
   it("rejects unknown kind", () => {
     expect(() =>
       parsePluginConfig(JSON.stringify({ name: "x", kind: "weird" })),
