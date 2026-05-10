@@ -1,0 +1,26 @@
+---
+name: {{SLUG}}
+description: |
+  {{DESCRIPTION}}
+context: connector
+---
+
+# {{ServicePascal}}
+
+Composite orchestrator. {{DESCRIPTION}}
+
+## Calls
+
+This connector calls these other connectors via `gather()`:
+
+{{DEPENDENCIES_TABLE}}
+
+## Actions
+
+{{ACTIONS_TABLE_MD}}
+
+## Invocation
+
+```sh
+{{SLUG}} --action {{FIRST_ACTION}} --params '{...}'
+```

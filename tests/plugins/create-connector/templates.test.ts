@@ -38,4 +38,19 @@ describe("flavor templates", () => {
     expect(tmpl).toContain("{{SLUG}}");
     expect(tmpl).toContain("{{RULES_TABLE}}");
   });
+
+  it("composite has all three template files", () => {
+    expect(fs.existsSync(path.join(TEMPLATES, "composite", "index.mjs.tmpl"))).toBe(true);
+    expect(fs.existsSync(path.join(TEMPLATES, "composite", "bin.tmpl"))).toBe(true);
+    expect(fs.existsSync(path.join(TEMPLATES, "composite", "SKILL.md.tmpl"))).toBe(true);
+  });
+
+  it("knowledge template references runbook usage", () => {
+    const tmpl = fs.readFileSync(
+      path.join(TEMPLATES, "knowledge", "SKILL.md.tmpl"),
+      "utf-8",
+    );
+    expect(tmpl).toContain("Knowledge-only");
+    expect(tmpl).toContain("{{STEPS}}");
+  });
 });
