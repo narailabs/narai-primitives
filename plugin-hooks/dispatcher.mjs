@@ -193,8 +193,107 @@ async function onSessionStart(cfg) {
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-async function onPreToolUse(cfg) { /* Task 7 */ }
+async function onPreToolUse(cfg) {
+  const stdin = await readStdin();
+  if (!stdin) return;
+  let payload;
+  try {
+    payload = JSON.parse(stdin);
+  } catch {
+    return;
+  }
+  if (payload.tool_name !== "Bash") return;
+  const command = payload.tool_input?.command;
+  if (typeof command !== "string" || command.length === 0) return;
+
+  const decisions = [];
+
+  // 1. db-guard (only if kind=db)
+  if (cfg.kind === "db") {
+    const guardrailsPath = path.join(
+      process.env.CLAUDE_PLUGIN_ROOT,
+      "hooks",
+      "guardrails.json",
+    );
+    if (fs.existsSync(guardrailsPath)) {
+      try {
+        const manifest = JSON.parse(fs.readFileSync(guardrailsPath, "utf-8"));
+        for (const rule of manifest.rules ?? []) {
+          if (new RegExp(rule.pattern).test(command)) {
+            decisions.push({
+              decision: "deny",
+              reason: rule.message ?? "blocked by db-agent guardrail",
+            });
+            break;
+          }
+        }
+      } catch (err) {
+        process.stderr.write(`dispatcher: db-guard failed (${err.message})\n`);
+      }
+    }
+  }
+
+  // 2. user-connector gates from $HOME and cwd
+  const home = process.env.HOME ?? "";
+  const cwd = process.cwd();
+  for (const root of [home, cwd]) {
+    if (!root) continue;
+    const gatesDir = path.join(root, ".connectors", "connectors");
+    if (!fs.existsSync(gatesDir)) continue;
+    let slugs;
+    try {
+      slugs = fs
+        .readdirSync(gatesDir, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => e.name);
+    } catch {
+      continue;
+    }
+    for (const slug of slugs) {
+      const gatesFile = path.join(gatesDir, slug, "gates.json");
+      if (!fs.existsSync(gatesFile)) continue;
+      try {
+        const gateCfg = JSON.parse(fs.readFileSync(gatesFile, "utf-8"));
+        for (const rule of gateCfg.rules ?? []) {
+          if (
+            !["deny", "ask", "allow"].includes(rule.decision) ||
+            typeof rule.pattern !== "string"
+          ) continue;
+          let re;
+          try { re = new RegExp(rule.pattern); } catch { continue; }
+          if (re.test(command)) {
+            decisions.push({
+              decision: rule.decision,
+              reason: rule.reason ?? `${slug} gate: ${rule.name ?? "rule"}`,
+            });
+          }
+        }
+      } catch (err) {
+        process.stderr.write(
+          `dispatcher: gate scan failed for ${gatesFile} (${err.message})\n`,
+        );
+      }
+    }
+  }
+
+  if (decisions.length === 0) return;
+  const rank = { deny: 2, ask: 1, allow: 0 };
+  decisions.sort((a, b) => rank[b.decision] - rank[a.decision]);
+  const winner = decisions[0];
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: winner.decision,
+      permissionDecisionReason: winner.reason,
+    },
+  }));
+}
+
+async function readStdin() {
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  return Buffer.concat(chunks).toString("utf-8").trim();
+}
 async function onPostToolUse(cfg) {
   const pluginData = process.env.CLAUDE_PLUGIN_DATA;
   if (!pluginData) return;
