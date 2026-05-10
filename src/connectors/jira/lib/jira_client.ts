@@ -13,8 +13,13 @@ import { validateUrl } from "narai-primitives/toolkit";
 import { resolveSecret } from "narai-primitives/credentials";
 import { adfToPlainText, type AdfNode } from "./adf.js";
 
-type HttpMethod = "GET";
-const ALLOWED_METHODS: ReadonlySet<HttpMethod> = new Set<HttpMethod>(["GET"]);
+type HttpMethod = "GET" | "POST" | "PUT" | "DELETE";
+const ALLOWED_METHODS: ReadonlySet<HttpMethod> = new Set<HttpMethod>([
+  "GET",
+  "POST",
+  "PUT",
+  "DELETE",
+]);
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 const DEFAULT_READ_TIMEOUT_MS = 30_000;
@@ -138,7 +143,11 @@ export class JiraClient {
   public async request<T = unknown>(
     method: HttpMethod,
     path: string,
-    init: { query?: Record<string, unknown>; headers?: Record<string, string> } = {},
+    init: {
+      query?: Record<string, unknown>;
+      headers?: Record<string, string>;
+      body?: object | FormData;
+    } = {},
   ): Promise<JiraResult<T>> {
     if (!ALLOWED_METHODS.has(method)) {
       return {
@@ -156,6 +165,19 @@ export class JiraClient {
         message: `URL rejected: ${url}`,
         retriable: false,
       };
+    }
+
+    // Build the request body and any body-specific headers.
+    let fetchBody: string | FormData | undefined;
+    const bodyHeaders: Record<string, string> = {};
+    if (init.body !== undefined) {
+      if (init.body instanceof FormData) {
+        fetchBody = init.body;
+        // Do NOT set Content-Type: let fetch set the multipart boundary.
+      } else {
+        fetchBody = JSON.stringify(init.body);
+        bodyHeaders["Content-Type"] = "application/json";
+      }
     }
 
     let lastError: JiraErrorPayload | null = null;
@@ -177,8 +199,10 @@ export class JiraClient {
           headers: {
             Authorization: this._authHeader,
             Accept: "application/json",
+            ...bodyHeaders,
             ...(init.headers ?? {}),
           },
+          ...(fetchBody !== undefined ? { body: fetchBody } : {}),
           signal: readCtrl.signal,
         });
         clearTimeout(connectTimer);
@@ -218,6 +242,10 @@ export class JiraClient {
           };
         }
 
+        // 204 No Content — no body to parse.
+        if (status === 204) {
+          return { ok: true, data: {} as T, status };
+        }
         const data = (await response.json()) as T;
         return { ok: true, data, status };
       } catch (err) {
@@ -436,6 +464,91 @@ export class JiraClient {
     };
   }
 
+  /** POST /rest/api/3/issue */
+  public async createIssue(
+    payload: object,
+  ): Promise<JiraResult<{ key: string; id: string; self: string }>> {
+    return this.request("POST", "/rest/api/3/issue", { body: payload });
+  }
+
+  /** PUT /rest/api/3/issue/{key} — returns 204 */
+  public async updateIssue(
+    key: string,
+    payload: object,
+  ): Promise<JiraResult<Record<string, never>>> {
+    return this.request("PUT", `/rest/api/3/issue/${key}`, { body: payload });
+  }
+
+  /** DELETE /rest/api/3/issue/{key} — returns 204 */
+  public async deleteIssue(
+    key: string,
+  ): Promise<JiraResult<Record<string, never>>> {
+    return this.request("DELETE", `/rest/api/3/issue/${key}`);
+  }
+
+  /** POST /rest/api/3/issue/{key}/comment */
+  public async addComment(
+    key: string,
+    payload: object,
+  ): Promise<JiraResult<JiraRawComment>> {
+    return this.request("POST", `/rest/api/3/issue/${key}/comment`, {
+      body: payload,
+    });
+  }
+
+  /** PUT /rest/api/3/issue/{key}/comment/{id} */
+  public async updateComment(
+    key: string,
+    id: string,
+    payload: object,
+  ): Promise<JiraResult<JiraRawComment>> {
+    return this.request(
+      "PUT",
+      `/rest/api/3/issue/${key}/comment/${id}`,
+      { body: payload },
+    );
+  }
+
+  /** DELETE /rest/api/3/issue/{key}/comment/{id} — returns 204 */
+  public async deleteComment(
+    key: string,
+    id: string,
+  ): Promise<JiraResult<Record<string, never>>> {
+    return this.request("DELETE", `/rest/api/3/issue/${key}/comment/${id}`);
+  }
+
+  /** POST /rest/api/3/issue/{key}/transitions — returns 204 */
+  public async transitionIssue(
+    key: string,
+    payload: object,
+  ): Promise<JiraResult<Record<string, never>>> {
+    return this.request("POST", `/rest/api/3/issue/${key}/transitions`, {
+      body: payload,
+    });
+  }
+
+  /**
+   * POST /rest/api/3/issue/{key}/attachments — multipart upload.
+   * Each file becomes a `file` part with the given filename and MIME type.
+   * X-Atlassian-Token: no-check is required by Jira's CSRF protection.
+   */
+  public async postAttachment(
+    key: string,
+    files: Array<{ filename: string; bytes: Uint8Array; mimeType?: string }>,
+  ): Promise<JiraResult<JiraRawAttachment[]>> {
+    const formData = new FormData();
+    for (const f of files) {
+      const blob = new Blob([f.bytes], {
+        type: f.mimeType ?? "application/octet-stream",
+      });
+      formData.append("file", blob, f.filename);
+    }
+    return this.request("POST", `/rest/api/3/issue/${key}/attachments`, {
+      body: formData,
+      headers: { "X-Atlassian-Token": "no-check" },
+    });
+  }
+
   public get siteUrl(): string {
     return this._site;
   }
@@ -484,7 +597,7 @@ export interface JiraAttachmentList {
   results: JiraAttachment[];
 }
 
-interface JiraRawAttachment {
+export interface JiraRawAttachment {
   id: string;
   filename?: string;
   mimeType?: string;
@@ -513,7 +626,7 @@ export interface JiraCommentList {
   total: number;
 }
 
-interface JiraRawComment {
+export interface JiraRawComment {
   id: string;
   author?: { displayName?: string };
   created?: string;

@@ -14,9 +14,12 @@ import {
   extractBinary,
   FORMAT_MAP,
   sanitizeLabel,
+  assertValidAdf,
+  checkPathContainment,
   type Connector,
   type ErrorCode,
 } from "narai-primitives/toolkit";
+import { markdownToAdf } from "marklassian";
 import { z } from "zod";
 import {
   JiraClient,
@@ -82,6 +85,76 @@ const getCommentsParams = z.object({
   max_results: z.coerce.number().int().positive().default(50),
 });
 
+// ── Write-action param schemas ───────────────────────────────────────────────
+
+const contentInput = z.union([
+  z.object({ format: z.literal("adf"), value: z.unknown() }),
+  z.object({ format: z.literal("markdown"), value: z.string() }),
+  z.object({ format: z.literal("plain"), value: z.string() }),
+]);
+
+const createIssueParams = z.object({
+  project_key: z.string().regex(/^[A-Z][A-Z0-9]+$/),
+  issue_type: z.string().min(1),
+  summary: z.string().min(1),
+  description: contentInput.optional(),
+  labels: z.array(z.string()).optional(),
+  assignee_account_id: z.string().optional(),
+  parent_key: z.string().regex(issueKeyRe).optional(),
+});
+
+const updateIssueParams = z.object({
+  issue_key: z.string().regex(issueKeyRe),
+  summary: z.string().min(1).optional(),
+  description: contentInput.optional(),
+  labels: z.array(z.string()).optional(),
+  assignee_account_id: z.string().optional(),
+});
+
+const deleteIssueParams = z.object({
+  issue_key: z.string().regex(issueKeyRe),
+});
+
+const addCommentParams = z.object({
+  issue_key: z.string().regex(issueKeyRe),
+  body: contentInput,
+});
+
+const updateCommentParams = z.object({
+  issue_key: z.string().regex(issueKeyRe),
+  comment_id: z.string().min(1),
+  body: contentInput,
+});
+
+const deleteCommentParams = z.object({
+  issue_key: z.string().regex(issueKeyRe),
+  comment_id: z.string().min(1),
+});
+
+const transitionIssueParams = z.object({
+  issue_key: z.string().regex(issueKeyRe),
+  transition_id: z.string().min(1),
+  comment: contentInput.optional(),
+});
+
+const fileInput = z.union([
+  z.object({
+    filename: z.string(),
+    content_base64: z.string(),
+    mime_type: z.string().optional(),
+  }),
+  z.object({
+    filename: z.string().optional(),
+    path: z.string(),
+    mime_type: z.string().optional(),
+  }),
+]);
+
+const postAttachmentParams = z.object({
+  issue_key: z.string().regex(issueKeyRe, "Invalid issue_key"),
+  files: z.array(fileInput).min(1),
+});
+
 // ───────────────────────────────────────────────────────────────────────────
 // Error-code translation
 // ───────────────────────────────────────────────────────────────────────────
@@ -96,6 +169,7 @@ const CODE_MAP: Record<string, ErrorCode> = {
   BAD_REQUEST: "VALIDATION_ERROR",
   INVALID_URL: "VALIDATION_ERROR",
   METHOD_NOT_ALLOWED: "VALIDATION_ERROR",
+  VALIDATION_ERROR: "VALIDATION_ERROR",
   HTTP_ERROR: "CONNECTION_ERROR",
   CONFIG_ERROR: "CONFIG_ERROR",
 };
@@ -114,12 +188,68 @@ function throwIfError<T>(
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// ADF conversion helper
+// ───────────────────────────────────────────────────────────────────────────
+
+type ContentInput = z.infer<typeof contentInput>;
+
+function resolveContentToAdf(input: ContentInput): unknown {
+  if (input.format === "adf") {
+    return input.value;
+  }
+  if (input.format === "markdown") {
+    return markdownToAdf(input.value);
+  }
+  // plain
+  return {
+    type: "doc",
+    version: 1,
+    content: [
+      {
+        type: "paragraph",
+        content: [{ type: "text", text: input.value }],
+      },
+    ],
+  };
+}
+
+/** Convert contentInput to ADF, asserting validity. Throws JiraError on bad ADF. */
+function toAdf(input: ContentInput): unknown {
+  const doc = resolveContentToAdf(input);
+  try {
+    assertValidAdf(doc);
+  } catch (e) {
+    throw new JiraError(
+      "VALIDATION_ERROR",
+      e instanceof Error ? e.message : String(e),
+      false,
+      400,
+    );
+  }
+  return doc;
+}
+
+// Inline MIME map for attachment path inputs.
+const EXT_MIME: Record<string, string> = {
+  ".pdf": "application/pdf",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".txt": "text/plain",
+  ".json": "application/json",
+  ".csv": "text/csv",
+};
+
+// ───────────────────────────────────────────────────────────────────────────
 // Connector factory
 // ───────────────────────────────────────────────────────────────────────────
 
 export interface BuildOptions {
   sdk?: () => Promise<JiraClient>;
   credentials?: () => Promise<Record<string, unknown>>;
+  /** Override the default policy rules (used in tests). */
+  defaultPolicy?: import("narai-primitives/toolkit").PolicyRules;
 }
 
 export function buildJiraConnector(overrides: BuildOptions = {}): Connector {
@@ -148,6 +278,9 @@ export function buildJiraConnector(overrides: BuildOptions = {}): Connector {
     scope: (ctx) => ctx.sdk.siteUrl,
     credentials: overrides.credentials ?? defaultCredentials,
     sdk: overrides.sdk ?? defaultSdk,
+    ...(overrides.defaultPolicy !== undefined
+      ? { defaultPolicy: overrides.defaultPolicy }
+      : {}),
     actions: {
       jql_search: {
         description: "Search Jira issues with a JQL query",
@@ -320,6 +453,179 @@ export function buildJiraConnector(overrides: BuildOptions = {}): Connector {
               created: c.created,
               updated: c.updated,
               body_plain: c.body_plain,
+            })),
+          };
+        },
+      },
+      create_issue: {
+        description: "Create a new Jira issue",
+        params: createIssueParams,
+        classify: { kind: "write" },
+        handler: async (p: z.infer<typeof createIssueParams>, ctx) => {
+          const fields: Record<string, unknown> = {
+            project: { key: p.project_key },
+            issuetype: { name: p.issue_type },
+            summary: p.summary,
+          };
+          if (p.description !== undefined) {
+            fields["description"] = toAdf(p.description);
+          }
+          if (p.labels !== undefined) fields["labels"] = p.labels;
+          if (p.assignee_account_id !== undefined) {
+            fields["assignee"] = { accountId: p.assignee_account_id };
+          }
+          if (p.parent_key !== undefined) {
+            fields["parent"] = { key: p.parent_key };
+          }
+          const result = await ctx.sdk.createIssue({ fields });
+          throwIfError(result);
+          return {
+            key: result.data.key,
+            id: result.data.id,
+            self: result.data.self,
+          };
+        },
+      },
+      update_issue: {
+        description: "Update fields on an existing Jira issue",
+        params: updateIssueParams,
+        classify: { kind: "write" },
+        handler: async (p: z.infer<typeof updateIssueParams>, ctx) => {
+          const fields: Record<string, unknown> = {};
+          if (p.summary !== undefined) fields["summary"] = p.summary;
+          if (p.description !== undefined) {
+            fields["description"] = toAdf(p.description);
+          }
+          if (p.labels !== undefined) fields["labels"] = p.labels;
+          if (p.assignee_account_id !== undefined) {
+            fields["assignee"] = { accountId: p.assignee_account_id };
+          }
+          const result = await ctx.sdk.updateIssue(p.issue_key, { fields });
+          throwIfError(result);
+          return { key: p.issue_key, updated: true };
+        },
+      },
+      delete_issue: {
+        description: "Delete a Jira issue",
+        params: deleteIssueParams,
+        classify: { kind: "write", aspects: ["delete"] },
+        handler: async (p: z.infer<typeof deleteIssueParams>, ctx) => {
+          const result = await ctx.sdk.deleteIssue(p.issue_key);
+          throwIfError(result);
+          return { key: p.issue_key, deleted: true };
+        },
+      },
+      add_comment: {
+        description: "Add a comment to a Jira issue",
+        params: addCommentParams,
+        classify: { kind: "write" },
+        handler: async (p: z.infer<typeof addCommentParams>, ctx) => {
+          const body = toAdf(p.body);
+          const result = await ctx.sdk.addComment(p.issue_key, { body });
+          throwIfError(result);
+          const r = result.data;
+          return {
+            comment_id: r.id,
+            created: r.created ?? null,
+            author: r.author?.displayName ?? null,
+          };
+        },
+      },
+      update_comment: {
+        description: "Update an existing comment on a Jira issue",
+        params: updateCommentParams,
+        classify: { kind: "write" },
+        handler: async (p: z.infer<typeof updateCommentParams>, ctx) => {
+          const body = toAdf(p.body);
+          const result = await ctx.sdk.updateComment(p.issue_key, p.comment_id, {
+            body,
+          });
+          throwIfError(result);
+          const r = result.data;
+          return {
+            comment_id: r.id,
+            updated: r.updated ?? null,
+            author: r.author?.displayName ?? null,
+          };
+        },
+      },
+      delete_comment: {
+        description: "Delete a comment from a Jira issue",
+        params: deleteCommentParams,
+        classify: { kind: "write", aspects: ["delete"] },
+        handler: async (p: z.infer<typeof deleteCommentParams>, ctx) => {
+          const result = await ctx.sdk.deleteComment(p.issue_key, p.comment_id);
+          throwIfError(result);
+          return { comment_id: p.comment_id, deleted: true };
+        },
+      },
+      transition_issue: {
+        description: "Transition a Jira issue to a new status",
+        params: transitionIssueParams,
+        classify: { kind: "write" },
+        handler: async (p: z.infer<typeof transitionIssueParams>, ctx) => {
+          const payload: Record<string, unknown> = {
+            transition: { id: p.transition_id },
+          };
+          if (p.comment !== undefined) {
+            payload["update"] = {
+              comment: [{ add: { body: toAdf(p.comment) } }],
+            };
+          }
+          const result = await ctx.sdk.transitionIssue(p.issue_key, payload);
+          throwIfError(result);
+          return { issue_key: p.issue_key, transitioned: true };
+        },
+      },
+      post_attachment: {
+        description: "Upload one or more files as attachments to a Jira issue",
+        params: postAttachmentParams,
+        classify: { kind: "write" },
+        handler: async (p: z.infer<typeof postAttachmentParams>, ctx) => {
+          const files: Array<{
+            filename: string;
+            bytes: Uint8Array;
+            mimeType?: string;
+          }> = [];
+          for (const f of p.files) {
+            if ("content_base64" in f) {
+              const entry: { filename: string; bytes: Uint8Array; mimeType?: string } = {
+                filename: f.filename,
+                bytes: new Uint8Array(Buffer.from(f.content_base64, "base64")),
+              };
+              if (f.mime_type !== undefined) entry.mimeType = f.mime_type;
+              files.push(entry);
+            } else {
+              if (!checkPathContainment(f.path, process.cwd())) {
+                throw new JiraError(
+                  "VALIDATION_ERROR",
+                  `Path '${f.path}' escapes working directory`,
+                  false,
+                  400,
+                );
+              }
+              const bytes = new Uint8Array(fs.readFileSync(f.path));
+              const filename = f.filename ?? path.basename(f.path);
+              const ext = path.extname(f.path).toLowerCase();
+              const mimeType = f.mime_type ?? EXT_MIME[ext];
+              const entry: { filename: string; bytes: Uint8Array; mimeType?: string } = {
+                filename,
+                bytes,
+              };
+              if (mimeType !== undefined) entry.mimeType = mimeType;
+              files.push(entry);
+            }
+          }
+          const result = await ctx.sdk.postAttachment(p.issue_key, files);
+          throwIfError(result);
+          const attachments = Array.isArray(result.data) ? result.data : [];
+          return {
+            issue_key: p.issue_key,
+            attachments: attachments.map((a) => ({
+              attachment_id: a.id,
+              filename: a.filename ?? "",
+              media_type: a.mimeType ?? "application/octet-stream",
+              size_bytes: a.size ?? 0,
             })),
           };
         },

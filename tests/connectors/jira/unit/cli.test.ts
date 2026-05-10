@@ -171,9 +171,9 @@ describe("JiraClient", () => {
     expect(calls[0]?.headers.get("authorization")).toMatch(/^Basic /);
   });
 
-  it("rejects non-GET methods", async () => {
+  it("rejects disallowed methods", async () => {
     const client = makeClient();
-    const res = await client.request("POST" as never, "/rest/api/3/search");
+    const res = await client.request("PATCH" as never, "/rest/api/3/search");
     expect(res).toEqual(
       expect.objectContaining({ ok: false, code: "METHOD_NOT_ALLOWED" }),
     );
@@ -217,12 +217,20 @@ describe("jira connector — fetch()", () => {
   it("exposes validActions", () => {
     const c = buildJiraConnector();
     expect([...c.validActions].sort()).toEqual([
+      "add_comment",
+      "create_issue",
+      "delete_comment",
+      "delete_issue",
       "get_attachment",
       "get_comments",
       "get_issue",
       "get_project",
       "jql_search",
       "list_attachments",
+      "post_attachment",
+      "transition_issue",
+      "update_comment",
+      "update_issue",
     ]);
   });
 
@@ -440,5 +448,348 @@ describe("envelope is wiki-agnostic — no mermaid", () => {
     const r = await c.fetch("jql_search", { jql: "project = FOO" });
     expect(r.status).toBe("success");
     if (r.status === "success") expect(r.data["mermaid"]).toBeUndefined();
+  });
+});
+
+// ─── Write-action tests ───────────────────────────────────────────────────────
+//
+// HTTP-shape coverage is done directly via JiraClient (no policy gate).
+// Connector-level tests use a connector built with write: "success" to reach
+// the handler without an escalate envelope.
+
+function makeWriteConnector(
+  client: JiraClient,
+) {
+  return buildJiraConnector({
+    sdk: async () => client,
+    credentials: async () => ({ email: "user@example.com" }),
+    defaultPolicy: { read: "success", write: "success", admin: "denied" },
+  });
+}
+
+describe("JiraClient — write methods", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("createIssue sends POST with JSON body", async () => {
+    let method = "";
+    let sentBody = "";
+    const client = makeClient({}, async (_url, init) => {
+      method = init?.method ?? "";
+      sentBody = init?.body as string;
+      return jsonResponse({ key: "PROJ-1", id: "10001", self: "https://x" }, { status: 201 });
+    });
+    const r = await client.createIssue({ fields: { summary: "hello" } });
+    expect(r.ok).toBe(true);
+    expect(method).toBe("POST");
+    expect(JSON.parse(sentBody)).toMatchObject({ fields: { summary: "hello" } });
+  });
+
+  it("updateIssue sends PUT and handles 204", async () => {
+    let method = "";
+    const client = makeClient({}, async (_url, init) => {
+      method = init?.method ?? "";
+      return new Response(null, { status: 204 });
+    });
+    const r = await client.updateIssue("PROJ-1", { fields: { summary: "new" } });
+    expect(r.ok).toBe(true);
+    expect(method).toBe("PUT");
+  });
+
+  it("deleteIssue sends DELETE and handles 204", async () => {
+    let method = "";
+    const client = makeClient({}, async (_url, init) => {
+      method = init?.method ?? "";
+      return new Response(null, { status: 204 });
+    });
+    const r = await client.deleteIssue("PROJ-1");
+    expect(r.ok).toBe(true);
+    expect(method).toBe("DELETE");
+  });
+
+  it("addComment sends POST with body", async () => {
+    let method = "";
+    const client = makeClient({}, async (_url, init) => {
+      method = init?.method ?? "";
+      return jsonResponse(
+        { id: "c1", author: { displayName: "Alice" }, created: "2026-01-01", updated: "2026-01-01" },
+        { status: 201 },
+      );
+    });
+    const r = await client.addComment("PROJ-1", { body: { type: "doc", version: 1, content: [] } });
+    expect(r.ok).toBe(true);
+    expect(method).toBe("POST");
+  });
+
+  it("updateComment sends PUT", async () => {
+    let method = "";
+    const client = makeClient({}, async (_url, init) => {
+      method = init?.method ?? "";
+      return jsonResponse(
+        { id: "c1", author: { displayName: "Alice" }, updated: "2026-01-02" },
+        { status: 200 },
+      );
+    });
+    const r = await client.updateComment("PROJ-1", "c1", { body: {} });
+    expect(r.ok).toBe(true);
+    expect(method).toBe("PUT");
+  });
+
+  it("deleteComment sends DELETE and handles 204", async () => {
+    let method = "";
+    const client = makeClient({}, async (_url, init) => {
+      method = init?.method ?? "";
+      return new Response(null, { status: 204 });
+    });
+    const r = await client.deleteComment("PROJ-1", "c1");
+    expect(r.ok).toBe(true);
+    expect(method).toBe("DELETE");
+  });
+
+  it("transitionIssue sends POST and handles 204", async () => {
+    let method = "";
+    const client = makeClient({}, async (_url, init) => {
+      method = init?.method ?? "";
+      return new Response(null, { status: 204 });
+    });
+    const r = await client.transitionIssue("PROJ-1", { transition: { id: "21" } });
+    expect(r.ok).toBe(true);
+    expect(method).toBe("POST");
+  });
+
+  it("postAttachment sends multipart without explicit Content-Type, with X-Atlassian-Token", async () => {
+    let capturedHeaders: Headers | null = null;
+    let capturedBody: unknown = null;
+    const client = makeClient({}, async (_url, init) => {
+      capturedHeaders = new Headers(init?.headers as HeadersInit);
+      capturedBody = init?.body;
+      return jsonResponse(
+        [{ id: "att1", filename: "hello.txt", mimeType: "text/plain", size: 5 }],
+        { status: 200 },
+      );
+    });
+    const r = await client.postAttachment("PROJ-1", [
+      { filename: "hello.txt", bytes: new Uint8Array([104, 101, 108, 108, 111]) },
+    ]);
+    expect(r.ok).toBe(true);
+    // X-Atlassian-Token must be present
+    expect(capturedHeaders!.get("X-Atlassian-Token")).toBe("no-check");
+    // Content-Type must NOT be explicitly set (let fetch set the boundary)
+    expect(capturedHeaders!.get("Content-Type")).toBeNull();
+    // Body must be a FormData instance
+    expect(capturedBody).toBeInstanceOf(FormData);
+  });
+});
+
+describe("jira connector — write actions (write: success policy)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("create_issue returns {key, id, self}", async () => {
+    const client = makeClient({}, async () =>
+      jsonResponse({ key: "PROJ-1", id: "10001", self: "https://x/10001" }, { status: 201 }),
+    );
+    const c = makeWriteConnector(client);
+    const r = await c.fetch("create_issue", {
+      project_key: "PROJ",
+      issue_type: "Task",
+      summary: "Do something",
+    });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      expect(r.data["key"]).toBe("PROJ-1");
+      expect(r.data["id"]).toBe("10001");
+    }
+  });
+
+  it("create_issue with plain description converts to ADF", async () => {
+    let sentBody = "";
+    const client = makeClient({}, async (_url, init) => {
+      sentBody = init?.body as string;
+      return jsonResponse({ key: "PROJ-2", id: "10002", self: "https://x" }, { status: 201 });
+    });
+    const c = makeWriteConnector(client);
+    await c.fetch("create_issue", {
+      project_key: "PROJ",
+      issue_type: "Bug",
+      summary: "crash on login",
+      description: { format: "plain", value: "It crashes." },
+    });
+    const body = JSON.parse(sentBody);
+    expect(body.fields.description).toMatchObject({ type: "doc", version: 1 });
+  });
+
+  it("update_issue returns {key, updated: true}", async () => {
+    const client = makeClient({}, async () => new Response(null, { status: 204 }));
+    const c = makeWriteConnector(client);
+    const r = await c.fetch("update_issue", {
+      issue_key: "PROJ-1",
+      summary: "updated title",
+    });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      expect(r.data["key"]).toBe("PROJ-1");
+      expect(r.data["updated"]).toBe(true);
+    }
+  });
+
+  it("delete_issue returns {key, deleted: true}", async () => {
+    const client = makeClient({}, async () => new Response(null, { status: 204 }));
+    const c = makeWriteConnector(client);
+    const r = await c.fetch("delete_issue", { issue_key: "PROJ-1" });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      expect(r.data["key"]).toBe("PROJ-1");
+      expect(r.data["deleted"]).toBe(true);
+    }
+  });
+
+  it("add_comment returns {comment_id, created, author}", async () => {
+    const client = makeClient({}, async () =>
+      jsonResponse(
+        { id: "c42", author: { displayName: "Bob" }, created: "2026-01-01", updated: "2026-01-01" },
+        { status: 201 },
+      ),
+    );
+    const c = makeWriteConnector(client);
+    const r = await c.fetch("add_comment", {
+      issue_key: "PROJ-1",
+      body: { format: "plain", value: "Looks good." },
+    });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      expect(r.data["comment_id"]).toBe("c42");
+      expect(r.data["author"]).toBe("Bob");
+    }
+  });
+
+  it("update_comment returns {comment_id, updated, author}", async () => {
+    const client = makeClient({}, async () =>
+      jsonResponse(
+        { id: "c42", author: { displayName: "Alice" }, updated: "2026-02-01" },
+        { status: 200 },
+      ),
+    );
+    const c = makeWriteConnector(client);
+    const r = await c.fetch("update_comment", {
+      issue_key: "PROJ-1",
+      comment_id: "c42",
+      body: { format: "plain", value: "Updated." },
+    });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      expect(r.data["comment_id"]).toBe("c42");
+      expect(r.data["updated"]).toBe("2026-02-01");
+    }
+  });
+
+  it("delete_comment returns {comment_id, deleted: true}", async () => {
+    const client = makeClient({}, async () => new Response(null, { status: 204 }));
+    const c = makeWriteConnector(client);
+    const r = await c.fetch("delete_comment", {
+      issue_key: "PROJ-1",
+      comment_id: "c42",
+    });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      expect(r.data["comment_id"]).toBe("c42");
+      expect(r.data["deleted"]).toBe(true);
+    }
+  });
+
+  it("transition_issue returns {issue_key, transitioned: true}", async () => {
+    const client = makeClient({}, async () => new Response(null, { status: 204 }));
+    const c = makeWriteConnector(client);
+    const r = await c.fetch("transition_issue", {
+      issue_key: "PROJ-1",
+      transition_id: "21",
+    });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      expect(r.data["issue_key"]).toBe("PROJ-1");
+      expect(r.data["transitioned"]).toBe(true);
+    }
+  });
+
+  it("post_attachment (base64) returns {issue_key, attachments}", async () => {
+    const client = makeClient({}, async () =>
+      jsonResponse(
+        [{ id: "att1", filename: "doc.txt", mimeType: "text/plain", size: 3 }],
+        { status: 200 },
+      ),
+    );
+    const c = makeWriteConnector(client);
+    const r = await c.fetch("post_attachment", {
+      issue_key: "PROJ-1",
+      files: [
+        {
+          filename: "doc.txt",
+          content_base64: Buffer.from("hi!").toString("base64"),
+          mime_type: "text/plain",
+        },
+      ],
+    });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      expect(r.data["issue_key"]).toBe("PROJ-1");
+      const atts = r.data["attachments"] as Array<Record<string, unknown>>;
+      expect(atts).toHaveLength(1);
+      expect(atts[0]?.["attachment_id"]).toBe("att1");
+      expect(atts[0]?.["filename"]).toBe("doc.txt");
+    }
+  });
+
+  it("post_attachment with invalid base64 still passes bytes", async () => {
+    let capturedBody: unknown = null;
+    const client = makeClient({}, async (_url, init) => {
+      capturedBody = init?.body;
+      return jsonResponse(
+        [{ id: "att2", filename: "x.txt", mimeType: "application/octet-stream", size: 0 }],
+        { status: 200 },
+      );
+    });
+    const c = makeWriteConnector(client);
+    await c.fetch("post_attachment", {
+      issue_key: "PROJ-1",
+      files: [
+        {
+          filename: "x.txt",
+          content_base64: Buffer.from([0, 1, 2]).toString("base64"),
+        },
+      ],
+    });
+    // Body should be FormData
+    expect(capturedBody).toBeInstanceOf(FormData);
+  });
+
+  it("add_comment with markdown format → ADF body sent", async () => {
+    let sentBody = "";
+    const client = makeClient({}, async (_url, init) => {
+      sentBody = init?.body as string;
+      return jsonResponse(
+        { id: "c1", author: { displayName: "Alice" }, created: "2026-01-01" },
+        { status: 201 },
+      );
+    });
+    const c = makeWriteConnector(client);
+    await c.fetch("add_comment", {
+      issue_key: "PROJ-1",
+      body: { format: "markdown", value: "**hello**" },
+    });
+    const body = JSON.parse(sentBody);
+    expect(body.body).toMatchObject({ type: "doc", version: 1 });
+  });
+
+  it("create_issue returns VALIDATION_ERROR for invalid ADF", async () => {
+    const client = makeClient({}, async () =>
+      jsonResponse({ key: "X" }, { status: 201 }),
+    );
+    const c = makeWriteConnector(client);
+    const r = await c.fetch("create_issue", {
+      project_key: "PROJ",
+      issue_type: "Task",
+      summary: "test",
+      description: { format: "adf", value: { type: "not-doc", version: 1, content: [] } },
+    });
+    expect(r.status).toBe("error");
+    if (r.status === "error") expect(r.error_code).toBe("VALIDATION_ERROR");
   });
 });
