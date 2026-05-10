@@ -35,6 +35,14 @@ import { ConfluenceError } from "./lib/confluence_error.js";
 const MAX_RESULTS_DEFAULT = 25;
 const MAX_RESULTS_CAP = 500;
 
+const pageIdSchema = z.string().regex(/^\d+$/, "Invalid page_id — expected numeric string");
+const spaceKeySchema = z
+  .string()
+  .regex(
+    /^[A-Z][A-Z0-9]{1,19}$/,
+    "Invalid space_key — expected uppercase alphanumeric, max 20 chars",
+  );
+
 const cqlSearchParams = z.object({
   cql: z.string().min(1, "cql_search requires a non-empty 'cql' string"),
   max_results: z.coerce
@@ -53,12 +61,7 @@ const getPageParams = z.object({
 });
 
 const getSpaceParams = z.object({
-  space_key: z
-    .string()
-    .regex(
-      /^[A-Z][A-Z0-9]{1,19}$/,
-      "Invalid space_key — expected uppercase key like DEV",
-    ),
+  space_key: spaceKeySchema,
 });
 
 const pageIdOnly = z.object({
@@ -81,11 +84,6 @@ const getCommentsParams = pageIdOnly.extend({
 });
 
 // ── Write-action param schemas ───────────────────────────────────────────────
-
-const pageIdSchema = z.string().regex(/^\d+$/, "Invalid page_id — expected numeric string");
-const spaceKeySchema = z
-  .string()
-  .regex(/^[A-Z][A-Z0-9_]*$/, "Invalid space_key — expected uppercase alphanumeric");
 
 const contentInput = z.union([
   z.object({ format: z.literal("adf"), value: z.unknown() }),
