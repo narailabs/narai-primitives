@@ -16,6 +16,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { parsePluginConfig } from "./plugin-config.mjs";
 
 const VALID_EVENTS = new Set([
@@ -25,10 +26,17 @@ const VALID_EVENTS = new Set([
   "session-end",
 ]);
 
-main().catch((err) => {
-  process.stderr.write(`dispatcher: ${err?.message ?? err}\n`);
-  process.exit(1);
-});
+// Only run main() when invoked as a CLI, not when imported by tests.
+const isMainScript =
+  process.argv[1] !== undefined &&
+  process.argv[1] === fileURLToPath(import.meta.url);
+
+if (isMainScript) {
+  main().catch((err) => {
+    process.stderr.write(`dispatcher: ${err?.message ?? err}\n`);
+    process.exit(1);
+  });
+}
 
 async function main() {
   const event = process.argv[2];
