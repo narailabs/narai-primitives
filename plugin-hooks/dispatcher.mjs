@@ -324,9 +324,15 @@ async function onSessionEnd(cfg) {
     "session-summary.mjs",
   );
   if (!fs.existsSync(summaryPath)) return;
-  process.env.USAGE_CONNECTOR_NAME = cfg.name;
+  // session-summary.mjs only runs its `main()` when it's the CLI entry
+  // point (`import.meta.url === file://${process.argv[1]}`). Importing it
+  // here would be a no-op; spawn it as a subprocess so the guard passes.
   try {
-    await import(summaryPath);
+    const { spawnSync } = await import("node:child_process");
+    spawnSync("node", [summaryPath], {
+      stdio: "inherit",
+      env: { ...process.env, USAGE_CONNECTOR_NAME: cfg.name },
+    });
   } catch (err) {
     process.stderr.write(`dispatcher: session-summary failed (${err.message})\n`);
   }

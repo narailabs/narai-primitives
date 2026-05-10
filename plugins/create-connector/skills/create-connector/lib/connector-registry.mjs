@@ -14,10 +14,20 @@ export function registerConnector(scope, slug, entry) {
 
   let parsed = { connectors: {} };
   if (fs.existsSync(file)) {
+    let raw;
     try {
-      parsed = yaml.load(fs.readFileSync(file, "utf-8")) ?? {};
-    } catch {
-      parsed = {};
+      raw = fs.readFileSync(file, "utf-8");
+      parsed = yaml.load(raw) ?? {};
+    } catch (err) {
+      // Fail closed: a malformed config.yaml (often from in-progress
+      // user edits) must not silently overwrite existing entries. Throw
+      // so the caller can surface the parse error and let the user fix
+      // their YAML before we mutate anything.
+      throw new Error(
+        `registerConnector: refusing to overwrite '${file}' — parse failed (${
+          err instanceof Error ? err.message : String(err)
+        })`,
+      );
     }
     if (!parsed.connectors || typeof parsed.connectors !== "object") {
       parsed.connectors = {};

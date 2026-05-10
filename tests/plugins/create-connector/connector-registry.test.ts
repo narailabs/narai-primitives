@@ -61,4 +61,19 @@ describe("connector-registry", () => {
     const matches = cfg.match(/^\s+stripe:/gm) ?? [];
     expect(matches.length).toBe(1);
   });
+
+  it("fails closed when existing config.yaml is malformed (does not overwrite)", () => {
+    const cfgPath = path.join(scope, ".connectors", "config.yaml");
+    // Pre-existing entries the user cares about, plus a syntax error
+    // (an unclosed YAML flow sequence).
+    const original =
+      "connectors:\n  existing:\n    skill: /existing\n    enabled: true\nbroken: [\n";
+    fs.writeFileSync(cfgPath, original);
+    expect(() =>
+      registerConnector(scope, "stripe", { skill: "/abs", bin: "/abs/bin" }),
+    ).toThrow(/parse failed/);
+    // File contents unchanged — the malformed registry is preserved so
+    // the user can fix the YAML before retrying.
+    expect(fs.readFileSync(cfgPath, "utf-8")).toBe(original);
+  });
 });
