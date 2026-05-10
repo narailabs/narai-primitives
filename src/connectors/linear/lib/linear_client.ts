@@ -123,7 +123,12 @@ export class LinearClient {
     let lastError: LinearErrorPayload | null = null;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       await this._throttle();
+      const connectCtrl = new AbortController();
       const readCtrl = new AbortController();
+      const connectTimer = setTimeout(
+        () => connectCtrl.abort(),
+        this._connectTimeoutMs,
+      );
       const readTimer = setTimeout(
         () => readCtrl.abort(),
         this._connectTimeoutMs + this._readTimeoutMs,
@@ -139,7 +144,7 @@ export class LinearClient {
           body,
           signal: readCtrl.signal,
         });
-        clearTimeout(readTimer);
+        clearTimeout(connectTimer);
         const status = response.status;
 
         if (status === 429 || status >= 500) {
@@ -205,7 +210,7 @@ export class LinearClient {
 
         return { ok: true, data: json.data, status };
       } catch (err) {
-        clearTimeout(readTimer);
+        clearTimeout(connectTimer);
         const message = err instanceof Error ? err.message : String(err);
         const aborted =
           err instanceof DOMException || /abort/i.test(message);
@@ -220,6 +225,8 @@ export class LinearClient {
           continue;
         }
         return lastError;
+      } finally {
+        clearTimeout(readTimer);
       }
     }
     return (

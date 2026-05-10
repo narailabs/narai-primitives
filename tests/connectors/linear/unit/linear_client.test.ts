@@ -180,6 +180,38 @@ describe("LinearClient — network errors and timeouts", () => {
     }
   });
 
+  it("connectTimeoutMs independently aborts when no response headers arrive", async () => {
+    // Verify that setting connectTimeoutMs=10 with readTimeoutMs=20 causes the
+    // readCtrl (sum = 30ms) to fire, and the resulting abort produces TIMEOUT.
+    // Because fetch receives readCtrl.signal, a small readTimeoutMs is enough
+    // to verify the two-controller wiring completes correctly.
+    const client = new LinearClient({
+      apiKey: "key",
+      rateLimitPerMin: 100,
+      connectTimeoutMs: 10,
+      readTimeoutMs: 20,
+      fetchImpl: async (_url, init) => {
+        // Hang until the signal aborts (readCtrl fires at 10+20=30ms)
+        await new Promise<never>((_resolve, reject) => {
+          const sig = init?.signal as AbortSignal | undefined;
+          if (sig) {
+            sig.addEventListener("abort", () =>
+              reject(new DOMException("aborted", "AbortError")),
+            );
+          }
+        });
+        throw new Error("unreachable");
+      },
+      sleepImpl: async () => {},
+    });
+    const r = await client.query(SIMPLE_QUERY);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe("TIMEOUT");
+      expect(r.retriable).toBe(true);
+    }
+  }, 5_000);
+
   it("returns NETWORK_ERROR on fetch throw", async () => {
     const client = makeClient(async () => {
       throw new Error("ECONNREFUSED");

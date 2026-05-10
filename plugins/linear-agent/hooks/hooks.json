@@ -9,6 +9,10 @@
           },
           {
             "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/reminder.mjs\" 2>/dev/null || true"
+          },
+          {
+            "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/plugin-hooks/stale-summarize.mjs\" 2>/dev/null || true",
             "env": { "USAGE_CONNECTOR_NAME": "linear" }
           }

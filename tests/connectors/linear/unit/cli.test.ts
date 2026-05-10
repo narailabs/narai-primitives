@@ -167,6 +167,168 @@ describe("linear connector — get_team", () => {
       expect(r.data["name"]).toBe("Engineering");
     }
   });
+
+  it("returns team data by short key (TEAMS_BY_KEY path)", async () => {
+    const c = makeWriteConnector(async () =>
+      jsonResponse({
+        data: {
+          teams: {
+            nodes: [
+              {
+                id: VALID_UUID,
+                key: "ENG",
+                name: "Engineering",
+                description: "Core engineering team",
+              },
+            ],
+          },
+        },
+      }),
+    );
+    const r = await c.fetch("get_team", { key_or_id: "ENG" });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      expect(r.data["key"]).toBe("ENG");
+      expect(r.data["name"]).toBe("Engineering");
+    }
+  });
+
+  it("returns NOT_FOUND when key search yields empty nodes", async () => {
+    const c = makeWriteConnector(async () =>
+      jsonResponse({
+        data: {
+          teams: { nodes: [] },
+        },
+      }),
+    );
+    const r = await c.fetch("get_team", { key_or_id: "NOPE" });
+    expect(r.status).toBe("error");
+    if (r.status === "error") expect(r.error_code).toBe("NOT_FOUND");
+  });
+});
+
+// ── Additional read actions ─────────────────────────────────────────────────
+
+describe("linear connector — get_attachment", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("returns VALIDATION_ERROR with list_attachments guidance", async () => {
+    const c = makeWriteConnector(async () => jsonResponse({ data: {} }));
+    const r = await c.fetch("get_attachment", { attachment_id: VALID_UUID });
+    expect(r.status).toBe("error");
+    if (r.status === "error") {
+      expect(r.error_code).toBe("VALIDATION_ERROR");
+      expect(r.message).toContain("list_attachments");
+    }
+  });
+});
+
+describe("linear connector — get_comments", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("returns shaped comments envelope on success", async () => {
+    const c = makeWriteConnector(async () =>
+      jsonResponse({
+        data: {
+          issue: {
+            comments: {
+              nodes: [
+                {
+                  id: "comment-1",
+                  body: "Looks good!",
+                  createdAt: "2026-01-01T00:00:00Z",
+                  updatedAt: "2026-01-01T00:00:00Z",
+                  user: { id: "u1", name: "Alice", displayName: "Alice Smith", email: "alice@example.com" },
+                },
+              ],
+              pageInfo: { hasNextPage: false },
+            },
+          },
+        },
+      }),
+    );
+    const r = await c.fetch("get_comments", { issue_id: VALID_ISSUE_ID });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      expect(r.data["issue_id"]).toBe(VALID_ISSUE_ID);
+      const comments = r.data["comments"] as Array<Record<string, unknown>>;
+      expect(comments).toHaveLength(1);
+      expect(comments[0]?.["comment_id"]).toBe("comment-1");
+    }
+  });
+
+  it("returns NOT_FOUND when issue is null", async () => {
+    const c = makeWriteConnector(async () =>
+      jsonResponse({ data: { issue: null } }),
+    );
+    const r = await c.fetch("get_comments", { issue_id: VALID_ISSUE_ID });
+    expect(r.status).toBe("error");
+    if (r.status === "error") expect(r.error_code).toBe("NOT_FOUND");
+  });
+});
+
+describe("linear connector — list_attachments", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("returns shaped attachments envelope on success", async () => {
+    const c = makeWriteConnector(async () =>
+      jsonResponse({
+        data: {
+          issue: {
+            attachments: {
+              nodes: [
+                {
+                  id: VALID_UUID,
+                  title: "Design doc",
+                  subtitle: null,
+                  url: "https://figma.com/file/abc",
+                  createdAt: "2026-01-01T00:00:00Z",
+                  creator: { displayName: "Alice" },
+                },
+              ],
+            },
+          },
+        },
+      }),
+    );
+    const r = await c.fetch("list_attachments", { issue_id: VALID_ISSUE_ID });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      expect(r.data["issue_id"]).toBe(VALID_ISSUE_ID);
+      const attachments = r.data["attachments"] as Array<Record<string, unknown>>;
+      expect(attachments).toHaveLength(1);
+      expect(attachments[0]?.["title"]).toBe("Design doc");
+    }
+  });
+});
+
+describe("linear connector — get_project", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("returns shaped project envelope on success", async () => {
+    const c = makeWriteConnector(async () =>
+      jsonResponse({
+        data: {
+          project: {
+            id: VALID_UUID,
+            name: "Q3 Roadmap",
+            description: "All Q3 milestones",
+            state: "started",
+            startDate: "2026-07-01",
+            targetDate: "2026-09-30",
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-06-01T00:00:00Z",
+          },
+        },
+      }),
+    );
+    const r = await c.fetch("get_project", { id: VALID_UUID });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      expect(r.data["id"]).toBe(VALID_UUID);
+      expect(r.data["name"]).toBe("Q3 Roadmap");
+    }
+  });
 });
 
 // ── Write actions ───────────────────────────────────────────────────────────
