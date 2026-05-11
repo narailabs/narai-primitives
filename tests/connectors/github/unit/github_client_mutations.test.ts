@@ -12,6 +12,16 @@ import {
   type GithubClientOptions,
 } from "../../../../src/connectors/github/lib/github_client.js";
 
+type HttpUnderside = {
+  _http: {
+    request: (
+      m: string,
+      p: string,
+      o?: unknown,
+    ) => Promise<{ ok: boolean; code?: string }>;
+  };
+};
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -34,7 +44,7 @@ function makeClient(
   });
 }
 
-describe("GithubClient — allowedMethods baseline (GET + POST)", () => {
+describe("GithubClient — allowedMethods: GET, POST, PATCH, PUT, DELETE", () => {
   it("GET is allowed (getRepo reaches the fake fetch)", async () => {
     let observedMethod = "";
     const client = makeClient(async (_url, init) => {
@@ -66,11 +76,11 @@ describe("GithubClient — allowedMethods baseline (GET + POST)", () => {
       observedMethod = String(init?.method ?? "");
       return jsonResponse({ ok: true });
     });
-    const r = await (client as unknown as {
-      _http: {
-        request: (m: string, p: string, o?: unknown) => Promise<{ ok: boolean; code?: string }>;
-      };
-    })._http.request("PATCH", "/repos/a/b/issues/1", { body: { title: "x" } });
+    const r = await (client as unknown as HttpUnderside)._http.request(
+      "PATCH",
+      "/repos/a/b/issues/1",
+      { body: { title: "x" } },
+    );
     expect(r.ok).toBe(true);
     expect(observedMethod).toBe("PATCH");
   });
@@ -81,11 +91,11 @@ describe("GithubClient — allowedMethods baseline (GET + POST)", () => {
       observedMethod = String(init?.method ?? "");
       return jsonResponse({ ok: true });
     });
-    const r = await (client as unknown as {
-      _http: {
-        request: (m: string, p: string, o?: unknown) => Promise<{ ok: boolean; code?: string }>;
-      };
-    })._http.request("PUT", "/repos/a/b/pulls/1/merge", { body: { merge_method: "squash" } });
+    const r = await (client as unknown as HttpUnderside)._http.request(
+      "PUT",
+      "/repos/a/b/pulls/1/merge",
+      { body: { merge_method: "squash" } },
+    );
     expect(r.ok).toBe(true);
     expect(observedMethod).toBe("PUT");
   });
@@ -96,11 +106,10 @@ describe("GithubClient — allowedMethods baseline (GET + POST)", () => {
       observedMethod = String(init?.method ?? "");
       return new Response(null, { status: 204 });
     });
-    const r = await (client as unknown as {
-      _http: {
-        request: (m: string, p: string, o?: unknown) => Promise<{ ok: boolean; code?: string }>;
-      };
-    })._http.request("DELETE", "/repos/a/b/issues/comments/1");
+    const r = await (client as unknown as HttpUnderside)._http.request(
+      "DELETE",
+      "/repos/a/b/issues/comments/1",
+    );
     expect(r.ok).toBe(true);
     expect(observedMethod).toBe("DELETE");
   });

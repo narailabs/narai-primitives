@@ -1,5 +1,7 @@
 /**
- * github_client.ts — read-only GitHub REST + GraphQL client.
+ * github_client.ts — GitHub REST + GraphQL client. Supports read +
+ * write/admin operations; gating is enforced by the toolkit policy
+ * layer at the connector boundary, not by the HTTP surface itself.
  *
  * Thin wrapper over the shared `HttpClient` in `narai-primitives/toolkit`:
  * supplies Bearer auth + GitHub's API-version + Accept headers, surfaces
