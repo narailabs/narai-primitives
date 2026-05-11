@@ -342,6 +342,74 @@ export class GithubClient {
     );
   }
 
+  // ─── issues ─────────────────────────────────────────────────────────────
+  public async getIssue(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+  ): Promise<GithubResult<GithubIssueDetail>> {
+    return this._http.request<GithubIssueDetail>(
+      "GET",
+      `/repos/${owner}/${repo}/issues/${issueNumber}`,
+    );
+  }
+
+  public async createIssue(
+    owner: string,
+    repo: string,
+    body: {
+      title: string;
+      body?: string;
+      labels?: string[];
+      assignees?: string[];
+      milestone?: number;
+    },
+  ): Promise<GithubResult<GithubIssueDetail>> {
+    return this._http.request<GithubIssueDetail>(
+      "POST",
+      `/repos/${owner}/${repo}/issues`,
+      { body },
+    );
+  }
+
+  public async updateIssue(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    body: {
+      title?: string;
+      body?: string;
+      state?: "open";
+      labels?: string[];
+      assignees?: string[];
+      milestone?: number | null;
+    },
+  ): Promise<GithubResult<GithubIssueDetail>> {
+    return this._http.request<GithubIssueDetail>(
+      "PATCH",
+      `/repos/${owner}/${repo}/issues/${issueNumber}`,
+      { body },
+    );
+  }
+
+  public async closeIssue(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    body?: { state_reason?: "completed" | "not_planned" | "reopened" | null },
+  ): Promise<GithubResult<GithubIssueDetail>> {
+    const payload: { state: "closed"; state_reason?: string | null } = {
+      state: "closed",
+    };
+    if (body?.state_reason !== undefined)
+      payload.state_reason = body.state_reason;
+    return this._http.request<GithubIssueDetail>(
+      "PATCH",
+      `/repos/${owner}/${repo}/issues/${issueNumber}`,
+      { body: payload },
+    );
+  }
+
   /** List wiki pages via GraphQL (repository has hasWikiEnabled flag). */
   public async listWikiPages(
     owner: string,
@@ -384,6 +452,19 @@ export interface GithubIssue {
   user?: { login?: string };
   html_url?: string;
   updated_at?: string;
+}
+
+export interface GithubIssueDetail {
+  number: number;
+  title: string;
+  state: "open" | "closed";
+  user?: { login: string };
+  labels?: Array<string | { name?: string }>;
+  html_url?: string;
+  body?: string;
+  updated_at?: string;
+  state_reason?: string | null;
+  assignees?: Array<{ login: string }>;
 }
 
 export interface GithubPull {

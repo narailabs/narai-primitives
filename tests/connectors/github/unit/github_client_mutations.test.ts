@@ -200,3 +200,50 @@ describe("GithubClient — pull-request methods", () => {
     }
   });
 });
+
+describe("GithubClient — issue methods", () => {
+  it("getIssue issues GET /issues/{n}", async () => {
+    let observed = { url: "", method: "" };
+    const client = makeClient(async (url, init) => {
+      observed = { url, method: String(init?.method ?? "") };
+      return jsonResponse({ number: 1, title: "t", state: "open" });
+    });
+    const r = await client.getIssue("o", "r", 1);
+    expect(r.ok).toBe(true);
+    expect(observed.method).toBe("GET");
+    expect(observed.url).toMatch(/\/repos\/o\/r\/issues\/1$/);
+  });
+  it("createIssue issues POST /issues", async () => {
+    let bodySent = "";
+    const client = makeClient(async (_url, init) => {
+      bodySent = String(init?.body ?? "");
+      return jsonResponse({ number: 2, title: "t", state: "open" });
+    });
+    const r = await client.createIssue("o", "r", { title: "t" });
+    expect(r.ok).toBe(true);
+    expect(bodySent).toContain('"title":"t"');
+  });
+  it("updateIssue issues PATCH /issues/{n}", async () => {
+    let observed = { url: "", method: "" };
+    const client = makeClient(async (url, init) => {
+      observed = { url, method: String(init?.method ?? "") };
+      return jsonResponse({ number: 1, title: "t2", state: "open" });
+    });
+    const r = await client.updateIssue("o", "r", 1, { title: "t2" });
+    expect(r.ok).toBe(true);
+    expect(observed.method).toBe("PATCH");
+  });
+  it("closeIssue issues PATCH with state=closed", async () => {
+    let bodySent = "";
+    const client = makeClient(async (_url, init) => {
+      bodySent = String(init?.body ?? "");
+      return jsonResponse({ number: 1, title: "t", state: "closed" });
+    });
+    const r = await client.closeIssue("o", "r", 1, {
+      state_reason: "completed",
+    });
+    expect(r.ok).toBe(true);
+    expect(bodySent).toContain('"state":"closed"');
+    expect(bodySent).toContain('"state_reason":"completed"');
+  });
+});
