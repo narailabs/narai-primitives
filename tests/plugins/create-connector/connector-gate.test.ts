@@ -30,11 +30,12 @@ function stampGate(scope: string): string {
 async function runGate(
   scopeRoot: string,
   payload: object,
+  extraEnv: Record<string, string> = {},
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const gatePath = stampGate(scopeRoot);
   return new Promise((resolve, reject) => {
     const proc = spawn("node", [gatePath], {
-      env: { ...process.env, NARAI_GATE_SCOPE: scopeRoot },
+      env: { ...process.env, NARAI_GATE_SCOPE: scopeRoot, ...extraEnv },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";
@@ -131,5 +132,31 @@ describe("connector-gate template", () => {
     });
     const out = JSON.parse(r.stdout);
     expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+  });
+
+  it("NARAI_GATE_DISABLE skips named rules", async () => {
+    const dir = path.join(scope, ".connectors", "connectors", "test");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "gates.json"),
+      JSON.stringify({
+        rules: [
+          {
+            name: "noisy_rule",
+            decision: "deny",
+            reason: "should be skipped",
+            pattern: "^echo",
+          },
+        ],
+      }),
+    );
+    const r = await runGate(
+      scope,
+      { tool_name: "Bash", tool_input: { command: "echo hi" } },
+      { NARAI_GATE_DISABLE: "noisy_rule" },
+    );
+    // Rule disabled by env var — no decision emitted.
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("");
   });
 });

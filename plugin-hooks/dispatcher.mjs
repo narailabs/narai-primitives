@@ -16,7 +16,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parsePluginConfig } from "./plugin-config.mjs";
 
 const VALID_EVENTS = new Set([
@@ -168,7 +168,9 @@ async function onSessionStart(cfg) {
       "reminder.js",
     );
     if (fs.existsSync(reminderPath)) {
-      const mod = await import(reminderPath);
+      // pathToFileURL is required on Windows — Node refuses raw absolute
+      // paths as ESM specifiers (ERR_UNSUPPORTED_ESM_URL_SCHEME).
+      const mod = await import(pathToFileURL(reminderPath).href);
       const decision = mod.evaluateNudge({ connectors: [cfg.name] });
       if (decision.nudge) process.stdout.write(decision.banner + "\n");
     }
@@ -187,7 +189,7 @@ async function onSessionStart(cfg) {
     );
     if (fs.existsSync(stalePath)) {
       process.env.USAGE_CONNECTOR_NAME = cfg.name;
-      await import(stalePath);
+      await import(pathToFileURL(stalePath).href);
     }
   } catch (err) {
     process.stderr.write(`dispatcher: stale-summarize failed (${err.message})\n`);
@@ -319,7 +321,7 @@ async function onPostToolUse(cfg) {
   process.env.USAGE_CONNECTOR_NAME = cfg.name;
   if (cfg.binPath) process.env.USAGE_BIN_HINT = cfg.binPath;
   try {
-    await import(usagePath);
+    await import(pathToFileURL(usagePath).href);
   } catch (err) {
     process.stderr.write(`dispatcher: usage-record failed (${err.message})\n`);
   }

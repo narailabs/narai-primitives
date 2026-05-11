@@ -55,6 +55,16 @@ function resolveScope() {
 function scanConnectors(scope, command) {
   const root = path.join(scope, ".connectors", "connectors");
   if (!fs.existsSync(root)) return [];
+  // NARAI_GATE_DISABLE is a comma-separated list of rule names to skip.
+  // Documented in the shell-gate SKILL.md as the disable hatch; runtime
+  // honors it so operators can silence a noisy rule without editing
+  // gates.json.
+  const disabled = new Set(
+    (process.env.NARAI_GATE_DISABLE ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
   const out = [];
   for (const slug of fs.readdirSync(root)) {
     const file = path.join(root, slug, "gates.json");
@@ -66,6 +76,7 @@ function scanConnectors(scope, command) {
           !["deny", "ask", "allow"].includes(rule.decision) ||
           typeof rule.pattern !== "string"
         ) continue;
+        if (typeof rule.name === "string" && disabled.has(rule.name)) continue;
         let re;
         try { re = new RegExp(rule.pattern); } catch { continue; }
         for (const segment of splitCompound(command)) {
