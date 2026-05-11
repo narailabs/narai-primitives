@@ -174,7 +174,7 @@ describe("ConfluenceClient.request — retry & timeout branches", () => {
 
   it("rejects unrecognized HTTP method as METHOD_NOT_ALLOWED", async () => {
     const client = makeClient();
-    const r = await client.request("DELETE" as never, "/wiki/rest/api/content/x");
+    const r = await client.request("PATCH" as never, "/wiki/rest/api/content/x");
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe("METHOD_NOT_ALLOWED");
   });

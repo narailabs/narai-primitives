@@ -242,14 +242,20 @@ describe("NotionClient", () => {
     expect(bodyStr).toMatch(/"filter":\{"property":"object","value":"page"\}/);
   });
 
-  it("POST rejected on an unrelated path", async () => {
-    const client = makeClient();
+  it("POST_READ_ONLY on any path is now allowed (path whitelist removed)", async () => {
+    // After widening to full write support, POST_READ_ONLY is permitted on any
+    // path — the policy gate (not the HTTP layer) enforces read/write boundaries.
+    let calledMethod = "";
+    const client = makeClient({}, async (_url, init) => {
+      calledMethod = String(init?.method ?? "");
+      return jsonResponse({ id: "p1" });
+    });
     const r = await client.request("POST_READ_ONLY" as never, "/v1/pages", {
       foo: 1,
     });
-    expect(r).toEqual(
-      expect.objectContaining({ ok: false, code: "METHOD_NOT_ALLOWED" }),
-    );
+    // The request goes through; method maps to POST.
+    expect(r.ok).toBe(true);
+    expect(calledMethod).toBe("POST");
   });
 
   it("database query uses POST_READ_ONLY", async () => {
@@ -272,6 +278,11 @@ describe("notion connector — fetch()", () => {
   it("exposes validActions", () => {
     const c = buildNotionConnector();
     expect([...c.validActions].sort()).toEqual([
+      "append_blocks",
+      "archive_page",
+      "create_database_entry",
+      "create_page",
+      "delete_block",
       "get_attachment",
       "get_comments",
       "get_database",
@@ -279,6 +290,9 @@ describe("notion connector — fetch()", () => {
       "list_attachments",
       "query_database",
       "search",
+      "update_block",
+      "update_database_entry",
+      "update_page",
     ]);
   });
 
@@ -329,6 +343,7 @@ describe("notion connector — fetch()", () => {
         return jsonResponse({
           id: blockId,
           type: "file",
+          parent: { type: "page_id", page_id: pageId },
           file: {
             type: "external",
             external: { url: "https://example.com/report.txt" },
@@ -372,6 +387,7 @@ describe("notion connector — fetch()", () => {
       jsonResponse({
         id: blockId,
         type: "paragraph",
+        parent: { type: "page_id", page_id: pageId },
         paragraph: { rich_text: [] },
       }),
     );
@@ -382,6 +398,34 @@ describe("notion connector — fetch()", () => {
     });
     expect(r.status).toBe("error");
     if (r.status === "error") expect(r.error_code).toBe("VALIDATION_ERROR");
+  });
+
+  it("get_attachment rejects blocks not parented to the requested page", async () => {
+    const pageId = "a1b2c3d4e5f6789012345678901234ab";
+    const otherPageId = "c1c2c3c4c5c6789012345678901234cd";
+    const blockId = "b1b2c3d4e5f6789012345678901234ab";
+    const client = makeClient({}, async () =>
+      jsonResponse({
+        id: blockId,
+        type: "file",
+        // Parent points at a different page than the one in the request —
+        // the connector must reject as NOT_FOUND so callers can't fetch
+        // arbitrary blocks by guessing IDs.
+        parent: { type: "page_id", page_id: otherPageId },
+        file: {
+          type: "external",
+          external: { url: "https://example.com/file.txt" },
+          name: "file.txt",
+        },
+      }),
+    );
+    const c = makeConnector(client);
+    const r = await c.fetch("get_attachment", {
+      page_id: pageId,
+      block_id: blockId,
+    });
+    expect(r.status).toBe("error");
+    if (r.status === "error") expect(r.error_code).toBe("NOT_FOUND");
   });
 
   it("get_comments returns comment list", async () => {
@@ -509,6 +553,254 @@ describe("notion connector — fetch()", () => {
     expect(r.status).toBe("success");
     if (r.status === "success") {
       expect(r.data["mermaid"]).toBeUndefined();
+    }
+  });
+});
+
+// ── Write action tests ──────────────────────────────────────────────────────
+
+const VALID_PAGE_ID = "a1b2c3d4e5f6789012345678901234ab";
+const VALID_BLOCK_ID = "b1b2c3d4e5f6789012345678901234ab";
+const VALID_DB_ID = "c1b2c3d4e5f6789012345678901234ab";
+
+describe("notion connector — write actions", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /** Build a connector wired with write: "success" policy. */
+  function makeWriteConnector(fetchMock: (url: string, init?: RequestInit) => Promise<Response>) {
+    const client = makeClient({}, fetchMock);
+    return buildNotionConnector({
+      sdk: async () => client,
+      credentials: async () => ({ token: "secret_test" }),
+      defaultPolicy: { read: "success", write: "success", admin: "denied" },
+    });
+  }
+
+  it("create_page with format:markdown converts to blocks and POSTs /v1/pages", async () => {
+    let capturedBody: Record<string, unknown> = {};
+    let capturedMethod = "";
+    const md = "# Hello\n\nSome paragraph text.";
+    const c = makeWriteConnector(async (url, init) => {
+      capturedMethod = String(init?.method ?? "");
+      capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      return jsonResponse({
+        id: "new-page-id",
+        url: "https://notion.so/new-page",
+        created_time: "2026-01-01T00:00:00Z",
+      });
+    });
+    const r = await c.fetch("create_page", {
+      parent: { type: "page_id", page_id: VALID_PAGE_ID },
+      properties: {},
+      children: { format: "markdown", value: md },
+    });
+    expect(r.status).toBe("success");
+    expect(capturedMethod).toBe("POST");
+    expect(capturedBody["parent"]).toBeDefined();
+    expect(capturedBody["properties"]).toBeDefined();
+    const children = capturedBody["children"] as unknown[];
+    expect(Array.isArray(children)).toBe(true);
+    expect(children.length).toBeGreaterThanOrEqual(2);
+    // First child should be a heading_1, second a paragraph
+    const first = children[0] as Record<string, unknown>;
+    const second = children[1] as Record<string, unknown>;
+    expect(first["type"]).toBe("heading_1");
+    expect(second["type"]).toBe("paragraph");
+    if (r.status === "success") {
+      expect(r.data["id"]).toBe("new-page-id");
+      expect(r.data["url"]).toBe("https://notion.so/new-page");
+    }
+  });
+
+  it("archive_page PATCHes /v1/pages/{id} with {archived: true}", async () => {
+    let capturedUrl = "";
+    let capturedBody: Record<string, unknown> = {};
+    let capturedMethod = "";
+    const c = makeWriteConnector(async (url, init) => {
+      capturedUrl = url;
+      capturedMethod = String(init?.method ?? "");
+      capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      return jsonResponse({
+        id: VALID_PAGE_ID,
+        archived: true,
+      });
+    });
+    const r = await c.fetch("archive_page", { page_id: VALID_PAGE_ID });
+    expect(r.status).toBe("success");
+    expect(capturedMethod).toBe("PATCH");
+    expect(capturedUrl).toMatch(new RegExp(`/v1/pages/${VALID_PAGE_ID}$`));
+    expect(capturedBody["archived"]).toBe(true);
+    if (r.status === "success") {
+      expect(r.data["archived"]).toBe(true);
+      expect(r.data["id"]).toBe(VALID_PAGE_ID);
+    }
+  });
+
+  it("delete_block sends DELETE to /v1/blocks/{id}", async () => {
+    let capturedUrl = "";
+    let capturedMethod = "";
+    const c = makeWriteConnector(async (url, init) => {
+      capturedUrl = url;
+      capturedMethod = String(init?.method ?? "");
+      return jsonResponse({
+        id: VALID_BLOCK_ID,
+        archived: true,
+        type: "paragraph",
+      });
+    });
+    const r = await c.fetch("delete_block", { block_id: VALID_BLOCK_ID });
+    expect(r.status).toBe("success");
+    expect(capturedMethod).toBe("DELETE");
+    expect(capturedUrl).toMatch(new RegExp(`/v1/blocks/${VALID_BLOCK_ID}$`));
+    if (r.status === "success") {
+      expect(r.data["block_id"]).toBe(VALID_BLOCK_ID);
+      expect(r.data["archived"]).toBe(true);
+    }
+  });
+
+  it("append_blocks with format:blocks sends pre-built blocks", async () => {
+    let capturedBody: Record<string, unknown> = {};
+    const prebuilt = [
+      { type: "paragraph", paragraph: { rich_text: [{ type: "text", text: { content: "hi" } }] } },
+    ];
+    const c = makeWriteConnector(async (_url, init) => {
+      capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      return jsonResponse({
+        results: prebuilt,
+      });
+    });
+    const r = await c.fetch("append_blocks", {
+      block_id: VALID_BLOCK_ID,
+      children: { format: "blocks", value: prebuilt },
+    });
+    expect(r.status).toBe("success");
+    const sentChildren = capturedBody["children"] as unknown[];
+    expect(sentChildren).toHaveLength(1);
+    if (r.status === "success") {
+      expect(r.data["appended"]).toBe(true);
+      expect(r.data["results"]).toBe(1);
+    }
+  });
+
+  it("append_blocks with format:markdown converts to blocks", async () => {
+    let capturedBody: Record<string, unknown> = {};
+    const c = makeWriteConnector(async (_url, init) => {
+      capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      return jsonResponse({ results: [{}, {}] });
+    });
+    const r = await c.fetch("append_blocks", {
+      block_id: VALID_BLOCK_ID,
+      children: { format: "markdown", value: "- a\n- b" },
+    });
+    expect(r.status).toBe("success");
+    const sentChildren = capturedBody["children"] as unknown[];
+    expect(sentChildren).toHaveLength(2);
+    const first = sentChildren[0] as Record<string, unknown>;
+    expect(first["type"]).toBe("bulleted_list_item");
+  });
+
+  it("create_database_entry POSTs with database_id in parent", async () => {
+    let capturedBody: Record<string, unknown> = {};
+    const c = makeWriteConnector(async (_url, init) => {
+      capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      return jsonResponse({
+        id: "entry-id",
+        url: "https://notion.so/entry",
+      });
+    });
+    const r = await c.fetch("create_database_entry", {
+      database_id: VALID_DB_ID,
+      properties: { Name: { title: [{ text: { content: "Row 1" } }] } },
+    });
+    expect(r.status).toBe("success");
+    const parent = capturedBody["parent"] as Record<string, unknown>;
+    expect(parent?.["database_id"]).toBe(VALID_DB_ID);
+    if (r.status === "success") {
+      expect(r.data["id"]).toBe("entry-id");
+    }
+  });
+
+  it("update_database_entry PATCHes with properties body", async () => {
+    let capturedBody: Record<string, unknown> = {};
+    let capturedMethod = "";
+    const c = makeWriteConnector(async (_url, init) => {
+      capturedMethod = String(init?.method ?? "");
+      capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      return jsonResponse({
+        id: VALID_PAGE_ID,
+        last_edited_time: "2026-05-01T00:00:00Z",
+      });
+    });
+    const r = await c.fetch("update_database_entry", {
+      page_id: VALID_PAGE_ID,
+      properties: { Status: { select: { name: "Done" } } },
+    });
+    expect(r.status).toBe("success");
+    expect(capturedMethod).toBe("PATCH");
+    expect(capturedBody["properties"]).toBeDefined();
+    if (r.status === "success") {
+      expect(r.data["updated"]).toBe(true);
+      expect(r.data["id"]).toBe(VALID_PAGE_ID);
+    }
+  });
+
+  it("update_page PATCHes /v1/pages/{id} with properties body", async () => {
+    let capturedUrl = "";
+    let capturedBody: Record<string, unknown> = {};
+    let capturedMethod = "";
+    const c = makeWriteConnector(async (url, init) => {
+      capturedUrl = url;
+      capturedMethod = String(init?.method ?? "");
+      capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      return jsonResponse({
+        id: VALID_PAGE_ID,
+        last_edited_time: "2026-05-01T00:00:00Z",
+      });
+    });
+    const r = await c.fetch("update_page", {
+      page_id: VALID_PAGE_ID,
+      properties: { Name: { title: [{ text: { content: "X" } }] } },
+    });
+    expect(r.status).toBe("success");
+    expect(capturedMethod).toBe("PATCH");
+    expect(capturedUrl).toMatch(new RegExp(`/v1/pages/${VALID_PAGE_ID}$`));
+    const props = capturedBody["properties"] as Record<string, unknown>;
+    expect(props?.["Name"]).toBeDefined();
+    if (r.status === "success") {
+      expect(r.data["id"]).toBe(VALID_PAGE_ID);
+      expect(r.data["last_edited"]).toBe("2026-05-01T00:00:00Z");
+      expect(r.data["updated"]).toBe(true);
+    }
+  });
+
+  it("update_block PATCHes /v1/blocks/{id} with payload body", async () => {
+    let capturedUrl = "";
+    let capturedBody: Record<string, unknown> = {};
+    let capturedMethod = "";
+    const payload = {
+      paragraph: { rich_text: [{ type: "text", text: { content: "edited" } }] },
+    };
+    const c = makeWriteConnector(async (url, init) => {
+      capturedUrl = url;
+      capturedMethod = String(init?.method ?? "");
+      capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      return jsonResponse({
+        id: VALID_BLOCK_ID,
+        type: "paragraph",
+      });
+    });
+    const r = await c.fetch("update_block", {
+      block_id: VALID_BLOCK_ID,
+      payload,
+    });
+    expect(r.status).toBe("success");
+    expect(capturedMethod).toBe("PATCH");
+    expect(capturedUrl).toMatch(new RegExp(`/v1/blocks/${VALID_BLOCK_ID}$`));
+    expect(capturedBody).toEqual(payload);
+    if (r.status === "success") {
+      expect(r.data["block_id"]).toBe(VALID_BLOCK_ID);
+      expect(r.data["type"]).toBe("paragraph");
+      expect(r.data["updated"]).toBe(true);
     }
   });
 });

@@ -1,23 +1,27 @@
 /**
- * notion_client.ts — read-only Notion Public API client.
+ * notion_client.ts — Notion Public API client.
  *
- * Notion's API uses POST for `/v1/search` and `/v1/databases/{id}/query`
- * (body-bound filters) even though they are logically read-only; the
- * method whitelist therefore permits these two named endpoints via a
- * `POST_READ_ONLY` pseudo-method in addition to the standard GETs.
+ * Originally read-only (GET | POST_READ_ONLY), the HTTP whitelist has been
+ * widened to include POST, PATCH, and DELETE now that the connector exposes
+ * write actions. The path-level POST guard (which previously restricted POST
+ * to /v1/search and /v1/databases/{id}/query) has been removed because the
+ * universal policy gate in createConnector runs BEFORE any handler executes:
+ * a denied or escalated action never reaches the client, so the HTTP-layer
+ * guard adds complexity without adding meaningful safety.
+ *
+ * The POST_READ_ONLY pseudo-method is kept for backward compatibility with
+ * existing read-action callers (search, queryDatabase); it maps to HTTP POST.
  */
 import { validateUrl } from "narai-primitives/toolkit";
 import { resolveSecret } from "narai-primitives/credentials";
 
-type HttpMethod = "GET" | "POST_READ_ONLY";
+type HttpMethod = "GET" | "POST_READ_ONLY" | "POST" | "PATCH" | "DELETE";
 const ALLOWED_METHODS: ReadonlySet<HttpMethod> = new Set<HttpMethod>([
   "GET",
   "POST_READ_ONLY",
-]);
-
-const ALLOWED_POST_PATHS: ReadonlySet<string> = new Set([
-  "/v1/search",
-  // Database query paths match `/v1/databases/{id}/query` — checked via prefix/suffix.
+  "POST",
+  "PATCH",
+  "DELETE",
 ]);
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
@@ -62,11 +66,6 @@ export async function loadNotionCredentials(): Promise<
   return { token };
 }
 
-function isAllowedPostPath(path: string): boolean {
-  if (ALLOWED_POST_PATHS.has(path)) return true;
-  // Database query: /v1/databases/{id}/query
-  return /^\/v1\/databases\/[0-9a-fA-F-]{32,}\/query$/.test(path);
-}
 
 export class NotionClient {
   private readonly _apiBase: string;
@@ -140,6 +139,14 @@ export class NotionClient {
     this._requestTimestamps.push(Date.now());
   }
 
+  /**
+   * Make a request to the Notion API.
+   *
+   * The policy gate in createConnector runs before any handler, so denied or
+   * escalated actions never reach this method. Path-level enforcement is
+   * therefore not needed here; method-level allowlisting is kept as a
+   * light sanity check.
+   */
   public async request<T>(
     method: HttpMethod,
     relPath: string,
@@ -153,14 +160,6 @@ export class NotionClient {
         retriable: false,
       };
     }
-    if (method === "POST_READ_ONLY" && !isAllowedPostPath(relPath)) {
-      return {
-        ok: false,
-        code: "METHOD_NOT_ALLOWED",
-        message: `POST is only permitted on read-only endpoints; got ${relPath}`,
-        retriable: false,
-      };
-    }
     const url = `${this._apiBase}${relPath}`;
     if (!validateUrl(url)) {
       return {
@@ -170,6 +169,10 @@ export class NotionClient {
         retriable: false,
       };
     }
+
+    // Map pseudo-method to real HTTP verb.
+    const httpVerb =
+      method === "POST_READ_ONLY" ? "POST" : (method as string);
 
     let lastError: NotionErrorPayload | null = null;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
@@ -181,7 +184,7 @@ export class NotionClient {
       );
       try {
         const init: RequestInit = {
-          method: method === "POST_READ_ONLY" ? "POST" : "GET",
+          method: httpVerb,
           headers: {
             Authorization: `Bearer ${this._token}`,
             "Notion-Version": NOTION_VERSION,
@@ -341,6 +344,71 @@ export class NotionClient {
       data: { results, has_more: raw.data.has_more ?? false },
     };
   }
+
+  // ── Write methods ──────────────────────────────────────────────────────
+
+  public async createPage(
+    payload: Record<string, unknown>,
+  ): Promise<NotionResult<NotionPage>> {
+    return this.request<NotionPage>("POST", "/v1/pages", payload);
+  }
+
+  public async updatePage(
+    pageId: string,
+    payload: Record<string, unknown>,
+  ): Promise<NotionResult<NotionPage>> {
+    return this.request<NotionPage>("PATCH", `/v1/pages/${pageId}`, payload);
+  }
+
+  public async archivePage(pageId: string): Promise<NotionResult<NotionPage>> {
+    return this.request<NotionPage>("PATCH", `/v1/pages/${pageId}`, {
+      archived: true,
+    });
+  }
+
+  public async appendBlocks(
+    blockId: string,
+    children: unknown[],
+  ): Promise<NotionResult<NotionAppendBlocksResponse>> {
+    return this.request<NotionAppendBlocksResponse>(
+      "PATCH",
+      `/v1/blocks/${blockId}/children`,
+      { children },
+    );
+  }
+
+  public async updateBlock(
+    blockId: string,
+    payload: Record<string, unknown>,
+  ): Promise<NotionResult<NotionRawBlock>> {
+    return this.request<NotionRawBlock>("PATCH", `/v1/blocks/${blockId}`, payload);
+  }
+
+  public async deleteBlock(blockId: string): Promise<NotionResult<NotionRawBlock>> {
+    return this.request<NotionRawBlock>("DELETE", `/v1/blocks/${blockId}`);
+  }
+
+  public async createDatabaseEntry(
+    databaseId: string,
+    properties: Record<string, unknown>,
+    children?: unknown[],
+  ): Promise<NotionResult<NotionPage>> {
+    const payload: Record<string, unknown> = {
+      parent: { database_id: databaseId },
+      properties,
+    };
+    if (children && children.length > 0) payload["children"] = children;
+    return this.request<NotionPage>("POST", "/v1/pages", payload);
+  }
+
+  public async updateDatabaseEntry(
+    pageId: string,
+    properties: Record<string, unknown>,
+  ): Promise<NotionResult<NotionPage>> {
+    return this.request<NotionPage>("PATCH", `/v1/pages/${pageId}`, {
+      properties,
+    });
+  }
 }
 
 // ── File-block normalization ───────────────────────────────────────────
@@ -468,8 +536,15 @@ export interface NotionPage {
   id: string;
   parent?: { type?: string };
   last_edited_time?: string;
+  created_time?: string;
   properties?: Record<string, unknown>;
   url?: string;
+  archived?: boolean;
+}
+
+export interface NotionAppendBlocksResponse {
+  results: NotionRawBlock[];
+  block?: { id?: string };
 }
 
 export interface NotionDatabase {

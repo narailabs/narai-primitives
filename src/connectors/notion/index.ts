@@ -21,6 +21,7 @@ import {
   type NotionRawBlock,
 } from "./lib/notion_client.js";
 import { NotionError } from "./lib/notion_error.js";
+import { markdownToBlocks } from "./lib/markdown_to_blocks.js";
 
 // ───────────────────────────────────────────────────────────────────────────
 // Param schemas
@@ -84,6 +85,69 @@ const getAttachmentParams = z.object({
 const getCommentsParams = z.object({
   page_id: uuidField("page_id"),
 });
+
+// ── Write param schemas ──────────────────────────────────────────────────────
+
+// Children input: pass pre-built blocks or raw markdown (auto-converted).
+const childrenInput = z.union([
+  z.object({ format: z.literal("blocks"), value: z.array(z.unknown()) }),
+  z.object({ format: z.literal("markdown"), value: z.string() }),
+]);
+
+const createPageParams = z.object({
+  parent: z.union([
+    z.object({ type: z.literal("page_id"), page_id: uuidField("page_id") }),
+    z.object({ type: z.literal("database_id"), database_id: uuidField("database_id") }),
+    z.object({ type: z.literal("workspace"), workspace: z.literal(true) }),
+  ]),
+  properties: z.record(z.string(), z.unknown()).default({}),
+  children: childrenInput.optional(),
+});
+
+const updatePageParams = z.object({
+  page_id: uuidField("page_id"),
+  properties: z.record(z.string(), z.unknown()).optional(),
+  archived: z.boolean().optional(),
+});
+
+const archivePageParams = z.object({
+  page_id: uuidField("page_id"),
+});
+
+const appendBlocksParams = z.object({
+  block_id: uuidField("block_id"),
+  children: childrenInput,
+});
+
+const updateBlockParams = z.object({
+  block_id: uuidField("block_id"),
+  payload: z.record(z.string(), z.unknown()),
+});
+
+const deleteBlockParams = z.object({
+  block_id: uuidField("block_id"),
+});
+
+const createDatabaseEntryParams = z.object({
+  database_id: uuidField("database_id"),
+  properties: z.record(z.string(), z.unknown()),
+  children: childrenInput.optional(),
+});
+
+const updateDatabaseEntryParams = z.object({
+  page_id: uuidField("page_id"),
+  properties: z.record(z.string(), z.unknown()),
+});
+
+// ── Children resolver ─────────────────────────────────────────────────────────
+
+type ChildrenInput = z.infer<typeof childrenInput>;
+
+function toBlocks(input?: ChildrenInput): unknown[] {
+  if (!input) return [];
+  if (input.format === "blocks") return input.value;
+  return markdownToBlocks(input.value);
+}
 
 // ───────────────────────────────────────────────────────────────────────────
 // Error-code translation: Notion client codes → toolkit canonical codes
@@ -163,6 +227,7 @@ function normalizeFileBlockForFetch(
 export interface BuildOptions {
   sdk?: () => Promise<NotionClient>;
   credentials?: () => Promise<Record<string, unknown>>;
+  defaultPolicy?: import("narai-primitives/toolkit").PolicyRules;
 }
 
 export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
@@ -192,6 +257,9 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
     scope: (ctx) => ctx.sdk.workspaceId,
     credentials: overrides.credentials ?? defaultCredentials,
     sdk: overrides.sdk ?? defaultSdk,
+    ...(overrides.defaultPolicy !== undefined
+      ? { defaultPolicy: overrides.defaultPolicy }
+      : {}),
     actions: {
       search: {
         description: "Search Notion for pages or databases by text query",
@@ -313,6 +381,21 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
         handler: async (p: z.infer<typeof getAttachmentParams>, ctx) => {
           const blockRes = await ctx.sdk.getBlock(p.block_id);
           throwIfError(blockRes);
+          // Verify the block actually belongs to the requested page so
+          // callers can't fetch arbitrary block content by guessing IDs.
+          // Notion exposes parent as {type: "page_id"|"block_id"|..., page_id?, ...}.
+          // We require a direct page_id parent — nested blocks (parent.type ===
+          // "block_id") are rejected here because verifying the page ancestor
+          // would require an unbounded walk.
+          const parent = (blockRes.data as { parent?: { type?: string; page_id?: string } }).parent;
+          if (parent?.page_id !== p.page_id) {
+            throw new NotionError(
+              "NOT_FOUND",
+              `Block '${p.block_id}' is not a direct child of page '${p.page_id}'`,
+              false,
+              404,
+            );
+          }
           const normalized = normalizeFileBlockForFetch(blockRes.data);
           if (!normalized) {
             throw new NotionError(
@@ -322,7 +405,23 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
               400,
             );
           }
-          const attachment = await fetchAttachment(normalized.url);
+          let attachment: Awaited<ReturnType<typeof fetchAttachment>>;
+          try {
+            attachment = await fetchAttachment(normalized.url);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            // Deterministic failures (invalid URL scheme, size cap) stay
+            // non-retriable; transient / network failures retriable.
+            const isDeterministic =
+              message.includes("invalid URL scheme") ||
+              (err instanceof Error &&
+                err.constructor?.name === "FetchCapExceeded");
+            throw new NotionError(
+              isDeterministic ? "BAD_REQUEST" : "HTTP_ERROR",
+              `Failed to fetch attachment URL: ${message}`,
+              !isDeterministic,
+            );
+          }
           return {
             attachment_id: p.block_id,
             page_id: p.page_id,
@@ -358,6 +457,143 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
               parent_page_id: c.parent_page_id,
             })),
             truncated: result.data.has_more,
+          };
+        },
+      },
+
+      // ── Write actions ──────────────────────────────────────────────────
+
+      create_page: {
+        description: "Create a new Notion page under a page, database, or workspace parent",
+        params: createPageParams,
+        classify: { kind: "write" },
+        handler: async (p: z.infer<typeof createPageParams>, ctx) => {
+          const children = toBlocks(p.children);
+          const payload: Record<string, unknown> = {
+            parent: p.parent,
+            properties: p.properties,
+          };
+          if (children.length > 0) payload["children"] = children;
+          const result = await ctx.sdk.createPage(payload);
+          throwIfError(result);
+          return {
+            id: result.data.id,
+            url: result.data.url ?? null,
+            created_time: result.data.created_time ?? null,
+          };
+        },
+      },
+
+      update_page: {
+        description: "Update properties or archive state of a Notion page",
+        params: updatePageParams,
+        classify: { kind: "write" },
+        handler: async (p: z.infer<typeof updatePageParams>, ctx) => {
+          const payload: Record<string, unknown> = {};
+          if (p.properties !== undefined) payload["properties"] = p.properties;
+          if (p.archived !== undefined) payload["archived"] = p.archived;
+          const result = await ctx.sdk.updatePage(p.page_id, payload);
+          throwIfError(result);
+          return {
+            id: result.data.id,
+            last_edited: result.data.last_edited_time ?? null,
+            updated: true,
+          };
+        },
+      },
+
+      archive_page: {
+        description: "Archive a Notion page (Notion has no hard delete via public API)",
+        params: archivePageParams,
+        classify: { kind: "write", aspects: ["delete"] },
+        handler: async (p: z.infer<typeof archivePageParams>, ctx) => {
+          const result = await ctx.sdk.archivePage(p.page_id);
+          throwIfError(result);
+          return {
+            id: result.data.id,
+            archived: true,
+          };
+        },
+      },
+
+      append_blocks: {
+        description: "Append block children to a Notion block or page",
+        params: appendBlocksParams,
+        classify: { kind: "write" },
+        handler: async (p: z.infer<typeof appendBlocksParams>, ctx) => {
+          const children = toBlocks(p.children);
+          const result = await ctx.sdk.appendBlocks(p.block_id, children);
+          throwIfError(result);
+          return {
+            block_id: p.block_id,
+            results: result.data.results.length,
+            appended: true,
+          };
+        },
+      },
+
+      update_block: {
+        description: "Update the content of an existing Notion block",
+        params: updateBlockParams,
+        classify: { kind: "write" },
+        handler: async (p: z.infer<typeof updateBlockParams>, ctx) => {
+          const result = await ctx.sdk.updateBlock(p.block_id, p.payload);
+          throwIfError(result);
+          return {
+            block_id: result.data.id,
+            type: result.data.type ?? null,
+            updated: true,
+          };
+        },
+      },
+
+      delete_block: {
+        description: "Delete (archive) a Notion block",
+        params: deleteBlockParams,
+        classify: { kind: "write", aspects: ["delete"] },
+        handler: async (p: z.infer<typeof deleteBlockParams>, ctx) => {
+          const result = await ctx.sdk.deleteBlock(p.block_id);
+          throwIfError(result);
+          return {
+            block_id: result.data.id,
+            archived: result.data.archived ?? true,
+          };
+        },
+      },
+
+      create_database_entry: {
+        description: "Create a new entry (page) in a Notion database",
+        params: createDatabaseEntryParams,
+        classify: { kind: "write" },
+        handler: async (p: z.infer<typeof createDatabaseEntryParams>, ctx) => {
+          const children = toBlocks(p.children);
+          const result = await ctx.sdk.createDatabaseEntry(
+            p.database_id,
+            p.properties,
+            children.length > 0 ? children : undefined,
+          );
+          throwIfError(result);
+          return {
+            id: result.data.id,
+            url: result.data.url ?? null,
+          };
+        },
+      },
+
+      update_database_entry: {
+        description: "Update properties of a Notion database entry (page)",
+        params: updateDatabaseEntryParams,
+        classify: { kind: "write" },
+        handler: async (p: z.infer<typeof updateDatabaseEntryParams>, ctx) => {
+          const result = await ctx.sdk.updateDatabaseEntry(
+            p.page_id,
+            p.properties,
+          );
+          throwIfError(result);
+          return {
+            id: result.data.id,
+            last_edited: result.data.last_edited_time ?? null,
+            updated: true,
           };
         },
       },
