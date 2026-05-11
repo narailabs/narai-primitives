@@ -430,6 +430,17 @@ describe("GithubClient — workflow methods", () => {
     }
   });
 
+  it("getRunLogsRedirect returns HTTP_ERROR when 200 has no Location header", async () => {
+    const client = makeClient(async () =>
+      new Response(null, { status: 200 }),
+    );
+    const r = await client.getRunLogsRedirect("o", "r", 5);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe("HTTP_ERROR");
+    }
+  });
+
   it("getRunLogsRedirect returns TIMEOUT when fetch never resolves within readTimeoutMs", async () => {
     const client = makeClient(
       async (_url, init) =>

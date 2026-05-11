@@ -259,6 +259,30 @@ describe("trigger_workflow_dispatch", () => {
     expect(bodySent).toMatchObject({ ref: "main", inputs: { foo: "bar" } });
   });
 
+  it("accepts string, number, and boolean inputs", async () => {
+    let bodySent: Record<string, unknown> = {};
+    const sdk = fakeSdk({
+      triggerWorkflowDispatch: async (_o, _r, _wf, body) => {
+        bodySent = body;
+        return { ok: true, status: 204, data: undefined as unknown };
+      },
+    });
+    const a = buildWorkflowsActions({ behavior: { requireDraftPr: false } });
+    const r = (await runHandler(
+      a["trigger_workflow_dispatch"]!,
+      {
+        owner: "o",
+        repo: "r",
+        workflow_id_or_filename: "ci.yml",
+        ref: "main",
+        inputs: { foo: "x", count: 3, enabled: true },
+      },
+      sdk,
+    )) as { triggered: boolean };
+    expect(r.triggered).toBe(true);
+    expect(bodySent).toMatchObject({ ref: "main", inputs: { foo: "x", count: 3, enabled: true } });
+  });
+
   it("schema rejects an invalid workflow id", () => {
     const a = buildWorkflowsActions({ behavior: { requireDraftPr: false } });
     expect(() =>

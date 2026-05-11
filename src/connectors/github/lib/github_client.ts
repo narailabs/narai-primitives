@@ -678,7 +678,16 @@ export class GithubClient {
         retriable: false,
       };
     }
-    const location = resp.headers.get("location") ?? "";
+    const location = resp.headers.get("location");
+    if (!location) {
+      return {
+        ok: false,
+        code: "HTTP_ERROR",
+        status: resp.status,
+        message: `Logs endpoint returned ${resp.status} without a Location header`,
+        retriable: false,
+      };
+    }
     const lenHdr = resp.headers.get("content-length");
     return {
       ok: true,
@@ -727,7 +736,7 @@ export class GithubClient {
     owner: string,
     repo: string,
     workflowIdOrFilename: string,
-    body: { ref: string; inputs?: Record<string, string> },
+    body: { ref: string; inputs?: Record<string, string | number | boolean> },
   ): Promise<GithubResult<unknown>> {
     return this._http.request<unknown>(
       "POST",

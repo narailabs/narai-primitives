@@ -72,7 +72,7 @@ const dispatchParams = z.object({
   repo: ownerRepoField,
   workflow_id_or_filename: workflowIdField,
   ref: refField,
-  inputs: z.record(z.string()).optional(),
+  inputs: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
 });
 
 function runEnvelope(r: {
@@ -227,7 +227,7 @@ export function buildWorkflowsActions(_deps: GithubActionDeps): GithubActions {
       params: dispatchParams,
       classify: { kind: "write" },
       handler: async (p, ctx) => {
-        const body: { ref: string; inputs?: Record<string, string> } = {
+        const body: { ref: string; inputs?: Record<string, string | number | boolean> } = {
           ref: p.ref,
         };
         if (p.inputs !== undefined) body.inputs = p.inputs;
