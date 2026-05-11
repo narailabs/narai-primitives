@@ -202,6 +202,65 @@ describe("policy defaults & floors", () => {
   });
 });
 
+describe("action surface — count + classifications", () => {
+  it("exposes exactly 36 actions", () => {
+    const c = buildGithubConnector({
+      sdk: async () => makeClient({}, async () => jsonResponse({})),
+      credentials: async () => ({ token: "ghp_test" }),
+    });
+    expect(c.validActions.size).toBe(36);
+  });
+
+  it("spot-checks classifications for representative actions", () => {
+    const c = buildGithubConnector({
+      sdk: async () => makeClient({}, async () => jsonResponse({})),
+      credentials: async () => ({ token: "ghp_test" }),
+    });
+    expect(c.validActions.has("merge_pull_request")).toBe(true);
+    expect(c.validActions.has("close_pull_request")).toBe(true);
+    expect(c.validActions.has("close_issue")).toBe(true);
+    expect(c.validActions.has("delete_issue_comment")).toBe(true);
+    expect(c.validActions.has("delete_pr_review_comment")).toBe(true);
+    expect(c.validActions.has("delete_release")).toBe(true);
+    expect(c.validActions.has("delete_release_asset")).toBe(true);
+  });
+
+  it("merge_pull_request denies under default policy (no operator config)", async () => {
+    const c = buildGithubConnector({
+      sdk: async () =>
+        makeClient({}, async () =>
+          jsonResponse({ sha: "x", merged: true, message: "ok" }),
+        ),
+      credentials: async () => ({ token: "ghp_test" }),
+    });
+    const r = await c.fetch("merge_pull_request", {
+      owner: "o",
+      repo: "r",
+      pull_number: 1,
+      merge_method: "merge",
+    });
+    expect(r.status).toBe("denied");
+  });
+
+  it("merge_pull_request can be enabled by operator YAML", async () => {
+    writeRepoPolicy("policy:\n  admin: escalate\n");
+    const c = buildGithubConnector({
+      sdk: async () =>
+        makeClient({}, async () =>
+          jsonResponse({ sha: "x", merged: true, message: "ok" }),
+        ),
+      credentials: async () => ({ token: "ghp_test" }),
+    });
+    const r = await c.fetch("merge_pull_request", {
+      owner: "o",
+      repo: "r",
+      pull_number: 1,
+      merge_method: "merge",
+    });
+    expect(r.status).toBe("escalate");
+  });
+});
+
 describe("--curate flag", () => {
   it("prints a JSON snapshot and exits 0", async () => {
     const c = buildGithubConnector({
