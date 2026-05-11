@@ -27,9 +27,20 @@ const VALID_EVENTS = new Set([
 ]);
 
 // Only run main() when invoked as a CLI, not when imported by tests.
-const isMainScript =
-  process.argv[1] !== undefined &&
-  process.argv[1] === fileURLToPath(import.meta.url);
+// Resolve symlinks on both sides so the smart-bootstrap dedup path
+// (where `node_modules/narai-primitives` is symlinked from a sibling
+// plugin) still recognizes itself as the CLI entrypoint.
+const isMainScript = (() => {
+  if (process.argv[1] === undefined) return false;
+  try {
+    const realArgv = fs.realpathSync(process.argv[1]);
+    const realSelf = fs.realpathSync(fileURLToPath(import.meta.url));
+    return realArgv === realSelf;
+  } catch {
+    // Fall back to literal comparison if realpath can't resolve.
+    return process.argv[1] === fileURLToPath(import.meta.url);
+  }
+})();
 
 if (isMainScript) {
   main().catch((err) => {
