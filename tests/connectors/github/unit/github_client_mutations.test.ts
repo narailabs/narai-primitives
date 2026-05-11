@@ -247,3 +247,79 @@ describe("GithubClient — issue methods", () => {
     expect(bodySent).toContain('"state_reason":"completed"');
   });
 });
+
+describe("GithubClient — comment methods", () => {
+  it("addIssueComment POSTs to /issues/{n}/comments", async () => {
+    let observed = { url: "", method: "" };
+    const client = makeClient(async (url, init) => {
+      observed = { url, method: String(init?.method ?? "") };
+      return jsonResponse({ id: 1, user: { login: "a" }, body: "x" });
+    });
+    const r = await client.addIssueComment("o", "r", 9, { body: "x" });
+    expect(r.ok).toBe(true);
+    expect(observed.method).toBe("POST");
+    expect(observed.url).toMatch(/\/repos\/o\/r\/issues\/9\/comments$/);
+  });
+
+  it("updateIssueComment PATCHes /issues/comments/{id}", async () => {
+    let observed = { url: "", method: "" };
+    const client = makeClient(async (url, init) => {
+      observed = { url, method: String(init?.method ?? "") };
+      return jsonResponse({ id: 1, user: { login: "a" }, body: "y" });
+    });
+    const r = await client.updateIssueComment("o", "r", 1, { body: "y" });
+    expect(r.ok).toBe(true);
+    expect(observed.method).toBe("PATCH");
+    expect(observed.url).toMatch(/\/repos\/o\/r\/issues\/comments\/1$/);
+  });
+
+  it("deleteIssueComment DELETEs /issues/comments/{id}", async () => {
+    let observed = { url: "", method: "" };
+    const client = makeClient(async (url, init) => {
+      observed = { url, method: String(init?.method ?? "") };
+      return new Response(null, { status: 204 });
+    });
+    const r = await client.deleteIssueComment("o", "r", 1);
+    expect(r.ok).toBe(true);
+    expect(observed.method).toBe("DELETE");
+  });
+
+  it("addPrReviewComment POSTs to /pulls/{n}/comments", async () => {
+    let observedBody = "";
+    const client = makeClient(async (_url, init) => {
+      observedBody = String(init?.body ?? "");
+      return jsonResponse({ id: 1, user: { login: "a" }, body: "x", path: "p", line: 1 });
+    });
+    const r = await client.addPrReviewComment("o", "r", 9, {
+      body: "x",
+      commit_id: "abcdef0",
+      path: "p",
+      line: 1,
+    });
+    expect(r.ok).toBe(true);
+    expect(observedBody).toContain('"commit_id":"abcdef0"');
+  });
+
+  it("updatePrReviewComment PATCHes /pulls/comments/{id}", async () => {
+    let observed = { method: "" };
+    const client = makeClient(async (_url, init) => {
+      observed = { method: String(init?.method ?? "") };
+      return jsonResponse({ id: 1, user: { login: "a" }, body: "y", path: "p", line: 1 });
+    });
+    const r = await client.updatePrReviewComment("o", "r", 1, { body: "y" });
+    expect(r.ok).toBe(true);
+    expect(observed.method).toBe("PATCH");
+  });
+
+  it("deletePrReviewComment DELETEs /pulls/comments/{id}", async () => {
+    let observed = { method: "", url: "" };
+    const client = makeClient(async (url, init) => {
+      observed = { url, method: String(init?.method ?? "") };
+      return new Response(null, { status: 204 });
+    });
+    const r = await client.deletePrReviewComment("o", "r", 1);
+    expect(r.ok).toBe(true);
+    expect(observed.method).toBe("DELETE");
+    expect(observed.url).toMatch(/\/repos\/o\/r\/pulls\/comments\/1$/);
+  });
+});

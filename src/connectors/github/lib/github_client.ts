@@ -429,6 +429,90 @@ export class GithubClient {
     const enabled = res.data?.data?.repository?.hasWikiEnabled ?? false;
     return { ok: true, data: { hasWikiEnabled: enabled }, status: res.status };
   }
+
+  // ─── comments — issue-conversation ──────────────────────────────────────
+  public async addIssueComment(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    body: { body: string },
+  ): Promise<GithubResult<GithubRawIssueComment>> {
+    return this._http.request<GithubRawIssueComment>(
+      "POST",
+      `/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
+      { body },
+    );
+  }
+
+  public async updateIssueComment(
+    owner: string,
+    repo: string,
+    commentId: number,
+    body: { body: string },
+  ): Promise<GithubResult<GithubRawIssueComment>> {
+    return this._http.request<GithubRawIssueComment>(
+      "PATCH",
+      `/repos/${owner}/${repo}/issues/comments/${commentId}`,
+      { body },
+    );
+  }
+
+  public async deleteIssueComment(
+    owner: string,
+    repo: string,
+    commentId: number,
+  ): Promise<GithubResult<unknown>> {
+    return this._http.request<unknown>(
+      "DELETE",
+      `/repos/${owner}/${repo}/issues/comments/${commentId}`,
+    );
+  }
+
+  // ─── comments — PR review-inline ────────────────────────────────────────
+  public async addPrReviewComment(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    body: {
+      body: string;
+      commit_id: string;
+      path: string;
+      line: number;
+      side?: "LEFT" | "RIGHT";
+      start_line?: number;
+      start_side?: "LEFT" | "RIGHT";
+    },
+  ): Promise<GithubResult<GithubRawPullReviewComment>> {
+    return this._http.request<GithubRawPullReviewComment>(
+      "POST",
+      `/repos/${owner}/${repo}/pulls/${prNumber}/comments`,
+      { body },
+    );
+  }
+
+  public async updatePrReviewComment(
+    owner: string,
+    repo: string,
+    commentId: number,
+    body: { body: string },
+  ): Promise<GithubResult<GithubRawPullReviewComment>> {
+    return this._http.request<GithubRawPullReviewComment>(
+      "PATCH",
+      `/repos/${owner}/${repo}/pulls/comments/${commentId}`,
+      { body },
+    );
+  }
+
+  public async deletePrReviewComment(
+    owner: string,
+    repo: string,
+    commentId: number,
+  ): Promise<GithubResult<unknown>> {
+    return this._http.request<unknown>(
+      "DELETE",
+      `/repos/${owner}/${repo}/pulls/comments/${commentId}`,
+    );
+  }
 }
 
 // ── Response types (partial; only fields we surface) ──────────────────
@@ -523,7 +607,7 @@ export interface GithubIssueCommentList {
   results: GithubIssueComment[];
 }
 
-interface GithubRawIssueComment {
+export interface GithubRawIssueComment {
   id: number;
   user?: { login?: string };
   created_at?: string;
@@ -563,7 +647,7 @@ export interface GithubPullInlineComment {
   diff_hunk: string;
 }
 
-interface GithubRawPullReviewComment {
+export interface GithubRawPullReviewComment {
   id: number;
   user?: { login?: string };
   path?: string;
