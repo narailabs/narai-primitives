@@ -9,8 +9,10 @@
  *      `<narai-primitives root>/dist/connectors/<name>/cli.js`. The
  *      resolver derives that root from its own file path via
  *      `import.meta.url`, so the lookup works regardless of install layout.
- *   3. `~/.claude/plugins/cache/<name>-agent-plugin*` — populated by Claude
- *      Code's plugin manager.
+ *   3. `~/.claude/plugins/cache/<name>-connector-plugin*` or
+ *      `<name>-agent-plugin*` — populated by Claude Code's plugin manager.
+ *      Both the post-rename and pre-rename forms are checked so users with
+ *      mixed plugin caches resolve correctly during migration.
  *   4. `${CLAUDE_PLUGIN_DATA}/node_modules/<package>/<cliRelativePath>` —
  *      where the connector's `SessionStart` hook installs it.
  *   5. `~/src/connectors/<name>-agent-connector/<cliRelativePath>` — the
@@ -35,8 +37,12 @@ export interface ResolveAgentCliOptions {
   name: string;
   /** Override env-var name. Default: `<NAME>_AGENT_CLI` (uppercased + underscores for hyphens). */
   envVar?: string;
-  /** Substring matched against entries in `~/.claude/plugins/cache/`. Default: `<name>-agent-plugin`. */
-  pluginNameContains?: string;
+  /**
+   * Substring(s) matched against entries in `~/.claude/plugins/cache/`.
+   * Default: `["<name>-connector-plugin", "<name>-agent-plugin"]` (both
+   * post-rename and pre-rename forms).
+   */
+  pluginNameContains?: string | string[];
   /** npm package the connector is published as. Default: `@narai/<name>-agent-connector`. */
   packageName?: string;
   /** CLI path within the package. Default: `dist/cli.js`. */
@@ -80,8 +86,13 @@ function defaultEnvVar(name: string): string {
   return `${name.toUpperCase().replace(/-/g, "_")}_AGENT_CLI`;
 }
 
-function defaultPluginNameContains(name: string): string {
-  return `${name}-agent-plugin`;
+/**
+ * Default substrings matched against entries in ~/.claude/plugins/cache/.
+ * Returns both the post-rename and pre-rename forms so users with mixed
+ * plugin caches resolve correctly during migration.
+ */
+function defaultPluginNameSubstrings(name: string): string[] {
+  return [`${name}-connector-plugin`, `${name}-agent-plugin`];
 }
 
 function defaultPackageName(name: string): string {
@@ -127,7 +138,11 @@ export function resolveAgentCli(opts: ResolveAgentCliOptions): ResolvedAgentCli 
   const env = opts.envOverride ?? process.env;
   const home = opts.homeOverride ?? os.homedir();
   const envVar = opts.envVar ?? defaultEnvVar(opts.name);
-  const pluginContains = opts.pluginNameContains ?? defaultPluginNameContains(opts.name);
+  const pluginContainsList: string[] = Array.isArray(opts.pluginNameContains)
+    ? opts.pluginNameContains
+    : opts.pluginNameContains !== undefined
+      ? [opts.pluginNameContains]
+      : defaultPluginNameSubstrings(opts.name);
   const packageName = opts.packageName ?? defaultPackageName(opts.name);
   const cliRelative = opts.cliRelativePath ?? "dist/cli.js";
   const devRoot = opts.devRoot ?? defaultDevRoot(home);
@@ -176,7 +191,7 @@ export function resolveAgentCli(opts: ResolveAgentCliOptions): ResolvedAgentCli 
       entries = [];
     }
     for (const entry of entries) {
-      if (!entry.includes(pluginContains)) continue;
+      if (!pluginContainsList.some((sub) => entry.includes(sub))) continue;
       const candidate = path.join(pluginCache, entry, "node_modules", packageName, cliRelative);
       if (fs.existsSync(candidate)) {
         debugLog(env, `'${opts.name}' resolved via plugin-cache: ${candidate}`);

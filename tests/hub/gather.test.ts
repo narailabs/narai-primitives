@@ -196,6 +196,47 @@ describe("gather end-to-end with stubs", () => {
     expect(capturedSystemPrompt).toContain("aws bundled skill");
   });
 
+  it("falls back to pre-rename plugins/<name>-agent/skills/<name>-agent/SKILL.md when new bundled path is absent", async () => {
+    // Users who installed before the connector → plugin rename may have
+    // plugins/<name>-agent/... in their package cache. The resolver must
+    // still find SKILL.md there as a middle fallback.
+    const pkgRoot = path.join(tmpDir, "narai-primitives");
+    // Set up CLI at the bundled-2.x location.
+    const cliPath = path.join(pkgRoot, "dist", "connectors", "jira", "cli.js");
+    fs.mkdirSync(path.dirname(cliPath), { recursive: true });
+    fs.writeFileSync(
+      cliPath,
+      `process.stdout.write(JSON.stringify({status:"success",action:"x",data:{name:"jira"}}));\n`,
+    );
+    // Only write SKILL.md at the pre-rename bundled path (not the current connector path).
+    const preRenameSkillPath = path.join(
+      pkgRoot, "plugins", "jira-agent", "skills", "jira-agent", "SKILL.md",
+    );
+    fs.mkdirSync(path.dirname(preRenameSkillPath), { recursive: true });
+    fs.writeFileSync(preRenameSkillPath, "# jira pre-rename bundled skill — only pre-rename path produces this");
+
+    let capturedSystemPrompt = "";
+    const planner: Planner = {
+      plan: async (systemPrompt) => {
+        capturedSystemPrompt = systemPrompt;
+        return JSON.stringify([{ connector: "jira", action: "x", params: {} }]);
+      },
+    };
+    const loader = stubLoader({ jira: { skill: "jira-agent-connector" } });
+    const cliResolver: CliResolver = (name) =>
+      name === "jira"
+        ? { command: "node", args: [cliPath], source: "bundled-self", resolvedPath: cliPath }
+        : null;
+    const out = await gather(
+      { prompt: "?" },
+      { planner, configLoader: loader, cliResolver },
+    );
+    expect(
+      out.results.every((r) => r.error?.code !== "SKILL_NOT_FOUND"),
+    ).toBe(true);
+    expect(capturedSystemPrompt).toContain("jira pre-rename bundled skill");
+  });
+
   it("falls back to the legacy plugin/skills/<name>-agent/SKILL.md layout when the bundled path is absent", async () => {
     // Existing pre-2.0 packages still ship the legacy `plugin/skills/...`
     // path. The hub must keep finding SKILL.md there too.
