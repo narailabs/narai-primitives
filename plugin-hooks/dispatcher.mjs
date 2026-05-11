@@ -240,7 +240,15 @@ async function onPreToolUse(cfg) {
     }
   }
 
-  // 2. user-connector gates from $HOME and cwd
+  // 2. user-connector gates from $HOME and cwd. Mirror connector-gate.mjs:
+  // honor NARAI_GATE_DISABLE (comma-separated rule names) so operators
+  // can silence a noisy rule without editing gates.json.
+  const disabled = new Set(
+    (process.env.NARAI_GATE_DISABLE ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
   const home = process.env.HOME ?? "";
   const cwd = process.cwd();
   for (const root of [home, cwd]) {
@@ -266,6 +274,7 @@ async function onPreToolUse(cfg) {
             !["deny", "ask", "allow"].includes(rule.decision) ||
             typeof rule.pattern !== "string"
           ) continue;
+          if (typeof rule.name === "string" && disabled.has(rule.name)) continue;
           let re;
           try { re = new RegExp(rule.pattern); } catch { continue; }
           // Match against each compound segment so anchored rules
