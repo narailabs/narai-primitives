@@ -278,8 +278,11 @@ describe("github connector — fetch()", () => {
       "close_pull_request",
       "create_issue",
       "create_pull_request",
+      "create_release",
       "delete_issue_comment",
       "delete_pr_review_comment",
+      "delete_release",
+      "delete_release_asset",
       "get_file",
       "get_issue",
       "get_issue_comments",
@@ -296,6 +299,7 @@ describe("github connector — fetch()", () => {
       "update_issue_comment",
       "update_pr_review_comment",
       "update_pull_request",
+      "update_release",
     ]);
   });
 

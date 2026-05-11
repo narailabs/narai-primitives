@@ -323,3 +323,53 @@ describe("GithubClient — comment methods", () => {
     expect(observed.url).toMatch(/\/repos\/o\/r\/pulls\/comments\/1$/);
   });
 });
+
+describe("GithubClient — release methods", () => {
+  it("createRelease POSTs to /releases", async () => {
+    let observed = { method: "", url: "", body: "" };
+    const client = makeClient(async (url, init) => {
+      observed = {
+        method: String(init?.method ?? ""),
+        url,
+        body: String(init?.body ?? ""),
+      };
+      return jsonResponse({ id: 1, tag_name: "v1" });
+    });
+    const r = await client.createRelease("o", "r", { tag_name: "v1", draft: true });
+    expect(r.ok).toBe(true);
+    expect(observed.method).toBe("POST");
+    expect(observed.url).toMatch(/\/repos\/o\/r\/releases$/);
+    expect(observed.body).toContain('"draft":true');
+  });
+  it("updateRelease PATCHes /releases/{id}", async () => {
+    let observed = { method: "" };
+    const client = makeClient(async (_url, init) => {
+      observed = { method: String(init?.method ?? "") };
+      return jsonResponse({ id: 1, tag_name: "v1" });
+    });
+    const r = await client.updateRelease("o", "r", 1, { name: "x" });
+    expect(r.ok).toBe(true);
+    expect(observed.method).toBe("PATCH");
+  });
+  it("deleteRelease DELETEs /releases/{id}", async () => {
+    let observed = { method: "", url: "" };
+    const client = makeClient(async (url, init) => {
+      observed = { method: String(init?.method ?? ""), url };
+      return new Response(null, { status: 204 });
+    });
+    const r = await client.deleteRelease("o", "r", 1);
+    expect(r.ok).toBe(true);
+    expect(observed.method).toBe("DELETE");
+    expect(observed.url).toMatch(/\/repos\/o\/r\/releases\/1$/);
+  });
+  it("deleteReleaseAsset DELETEs /releases/assets/{id}", async () => {
+    let observed = { url: "" };
+    const client = makeClient(async (url) => {
+      observed = { url };
+      return new Response(null, { status: 204 });
+    });
+    const r = await client.deleteReleaseAsset("o", "r", 7);
+    expect(r.ok).toBe(true);
+    expect(observed.url).toMatch(/\/repos\/o\/r\/releases\/assets\/7$/);
+  });
+});

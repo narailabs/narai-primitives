@@ -513,6 +513,69 @@ export class GithubClient {
       `/repos/${owner}/${repo}/pulls/comments/${commentId}`,
     );
   }
+
+  // ─── releases (mutations) ───────────────────────────────────────────────
+  public async createRelease(
+    owner: string,
+    repo: string,
+    body: {
+      tag_name: string;
+      name?: string;
+      body?: string;
+      draft?: boolean;
+      prerelease?: boolean;
+      target_commitish?: string;
+      make_latest?: "true" | "false" | "legacy";
+    },
+  ): Promise<GithubResult<GithubReleaseDetail>> {
+    return this._http.request<GithubReleaseDetail>(
+      "POST",
+      `/repos/${owner}/${repo}/releases`,
+      { body },
+    );
+  }
+
+  public async updateRelease(
+    owner: string,
+    repo: string,
+    releaseId: number,
+    body: {
+      tag_name?: string;
+      name?: string;
+      body?: string;
+      draft?: boolean;
+      prerelease?: boolean;
+      target_commitish?: string;
+    },
+  ): Promise<GithubResult<GithubReleaseDetail>> {
+    return this._http.request<GithubReleaseDetail>(
+      "PATCH",
+      `/repos/${owner}/${repo}/releases/${releaseId}`,
+      { body },
+    );
+  }
+
+  public async deleteRelease(
+    owner: string,
+    repo: string,
+    releaseId: number,
+  ): Promise<GithubResult<unknown>> {
+    return this._http.request<unknown>(
+      "DELETE",
+      `/repos/${owner}/${repo}/releases/${releaseId}`,
+    );
+  }
+
+  public async deleteReleaseAsset(
+    owner: string,
+    repo: string,
+    assetId: number,
+  ): Promise<GithubResult<unknown>> {
+    return this._http.request<unknown>(
+      "DELETE",
+      `/repos/${owner}/${repo}/releases/assets/${assetId}`,
+    );
+  }
 }
 
 // ── Response types (partial; only fields we surface) ──────────────────
@@ -684,4 +747,16 @@ export interface GithubReleaseWithAssets {
   published_at?: string;
   author?: { login?: string };
   assets: GithubReleaseAsset[];
+}
+
+export interface GithubReleaseDetail {
+  id: number;
+  tag_name: string;
+  name?: string | null;
+  body?: string | null;
+  draft?: boolean;
+  prerelease?: boolean;
+  html_url?: string;
+  published_at?: string | null;
+  target_commitish?: string;
 }
