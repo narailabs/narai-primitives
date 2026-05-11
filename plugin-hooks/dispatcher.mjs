@@ -249,6 +249,21 @@ async function onPreToolUse(cfg) {
       .map((s) => s.trim())
       .filter(Boolean),
   );
+  // 3. plugin-shipped gates.json at CLAUDE_PLUGIN_ROOT/gates.json — lets
+  // hook-only plugins (e.g. git-plugin) ship default rules out-of-the-box.
+  const pluginGatesFile = path.join(process.env.CLAUDE_PLUGIN_ROOT, "gates.json");
+  if (fs.existsSync(pluginGatesFile)) {
+    try {
+      const gateCfg = JSON.parse(fs.readFileSync(pluginGatesFile, "utf-8"));
+      applyGatesManifest(gateCfg, cfg.name, command, disabled, decisions);
+    } catch (err) {
+      process.stderr.write(
+        `dispatcher: plugin-root gate scan failed (${err.message})\n`,
+      );
+    }
+  }
+
+  // 4. user-connector gates from $HOME and cwd.
   const home = process.env.HOME ?? "";
   const cwd = process.cwd();
   for (const root of [home, cwd]) {
@@ -269,27 +284,7 @@ async function onPreToolUse(cfg) {
       if (!fs.existsSync(gatesFile)) continue;
       try {
         const gateCfg = JSON.parse(fs.readFileSync(gatesFile, "utf-8"));
-        for (const rule of gateCfg.rules ?? []) {
-          if (
-            !["deny", "ask", "allow"].includes(rule.decision) ||
-            typeof rule.pattern !== "string"
-          ) continue;
-          if (typeof rule.name === "string" && disabled.has(rule.name)) continue;
-          let re;
-          try { re = new RegExp(rule.pattern); } catch { continue; }
-          // Match against each compound segment so anchored rules
-          // (`^psql`) can't be bypassed by chaining (`echo ok; psql ...`).
-          // Mirrors the standalone connector-gate.mjs behavior.
-          for (const segment of splitCompound(command)) {
-            if (re.test(segment)) {
-              decisions.push({
-                decision: rule.decision,
-                reason: rule.reason ?? `${slug} gate: ${rule.name ?? "rule"}`,
-              });
-              break;
-            }
-          }
-        }
+        applyGatesManifest(gateCfg, slug, command, disabled, decisions);
       } catch (err) {
         process.stderr.write(
           `dispatcher: gate scan failed for ${gatesFile} (${err.message})\n`,
@@ -422,6 +417,32 @@ async function ensureBootstrap(pluginRoot, pluginData) {
     cwd: pluginData,
     stdio: "inherit",
   });
+}
+
+/**
+ * Apply a parsed gates.json manifest to a command. Rules with invalid
+ * shape, disabled names, or uncompilable patterns are skipped. Anchored
+ * patterns match per-segment so chaining (`echo ok; psql ...`) can't bypass.
+ */
+function applyGatesManifest(manifest, source, command, disabled, decisions) {
+  for (const rule of manifest.rules ?? []) {
+    if (
+      !["deny", "ask", "allow"].includes(rule.decision) ||
+      typeof rule.pattern !== "string"
+    ) continue;
+    if (typeof rule.name === "string" && disabled.has(rule.name)) continue;
+    let re;
+    try { re = new RegExp(rule.pattern); } catch { continue; }
+    for (const segment of splitCompound(command)) {
+      if (re.test(segment)) {
+        decisions.push({
+          decision: rule.decision,
+          reason: rule.reason ?? `${source} gate: ${rule.name ?? "rule"}`,
+        });
+        break;
+      }
+    }
+  }
 }
 
 /**

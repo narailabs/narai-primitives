@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "name": "git",
+  "rules": [
+    {
+      "name": "push_main",
+      "decision": "deny",
+      "reason": "Pushing to main/master is denied by policy. Open a PR instead.",
+      "pattern": "^git\\s+push\\b.*\\b(main|master)\\b"
+    },
+    {
+      "name": "force_push",
+      "decision": "ask",
+      "reason": "Force push rewrites remote history. Confirm before proceeding.",
+      "pattern": "^git\\s+push\\b.*\\s(--force\\b|--force-with-lease\\b|-f\\b)"
+    },
+    {
+      "name": "delete_branch_remote",
+      "decision": "ask",
+      "reason": "Deleting a remote branch is irreversible. Confirm.",
+      "pattern": "^git\\s+push\\b.*(\\s(--delete\\b|-d\\b)|\\s\\S+\\s+:[\\w./-]+)"
+    },
+    {
+      "name": "push",
+      "decision": "ask",
+      "reason": "Pushing publishes commits. Confirm before proceeding.",
+      "pattern": "^git\\s+push(\\s|$)"
+    },
+    {
+      "name": "delete_branch_local",
+      "decision": "ask",
+      "reason": "Force-deleting a local branch can lose unmerged commits.",
+      "pattern": "^git\\s+branch\\s+(?:.*\\s)?(-D\\b|--delete\\s+--force\\b|-Df\\b|-fD\\b)"
+    },
+    {
+      "name": "reset_hard",
+      "decision": "ask",
+      "reason": "git reset --hard discards working-tree and index changes.",
+      "pattern": "^git\\s+reset\\s+(?:.*\\s)?--hard\\b"
+    },
+    {
+      "name": "checkout_discard",
+      "decision": "ask",
+      "reason": "This checkout/restore discards working-tree changes.",
+      "pattern": "^git\\s+checkout\\s+(?:--\\s+|\\.|[^\\s-]\\S*\\.\\S*)|^git\\s+checkout\\s+\\S+\\s+--\\s+\\S|^git\\s+restore\\s+(?:.*\\s)?(--worktree\\b|-W\\b)|^git\\s+restore\\s+\\.$"
+    },
+    {
+      "name": "clean_force",
+      "decision": "ask",
+      "reason": "git clean -f removes untracked files (and -fdx removes ignored too).",
+      "pattern": "^git\\s+clean\\s+(?:.*\\s)?-[a-zA-Z]*f"
+    }
+  ]
+}

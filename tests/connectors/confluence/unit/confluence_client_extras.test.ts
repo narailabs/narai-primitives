@@ -201,7 +201,7 @@ describe("ConfluenceClient.request — retry & timeout branches", () => {
           fetchImpl: globalThis.fetch,
           sleepImpl: async () => {},
         }),
-    ).toThrow(/Invalid Confluence site URL/);
+    ).toThrow(/Invalid base URL/);
   });
 
   it("authHeader getter returns the Basic header", () => {
@@ -248,11 +248,11 @@ describe("classifyHttpStatus — covered via request() error branches", () => {
 
   it.each([
     [401, "UNAUTHORIZED"],
-    [403, "UNAUTHORIZED"],
+    [403, "FORBIDDEN"],
     [404, "NOT_FOUND"],
     [400, "BAD_REQUEST"],
     [418, "HTTP_ERROR"],
-    [422, "HTTP_ERROR"],
+    [422, "UNPROCESSABLE"],
   ])("status %i maps to %s", async (status, code) => {
     const client = makeClient({}, async () =>
       jsonResponse({ message: "x" }, { status }),
@@ -320,13 +320,13 @@ describe("getAttachmentDownload — error branches", () => {
     }
   });
 
-  it("marks 503 as retriable=true and SERVER_ERROR via classifier fallback", async () => {
+  it("marks 503 as retriable=true and SERVER_ERROR (after retries are exhausted)", async () => {
     const client = makeClient({}, async () => new Response("", { status: 503 }));
     const r = await client.getAttachmentDownload("/download/attachments/9/x.pdf");
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.retriable).toBe(true);
-      expect(r.code).toBe("HTTP_ERROR");
+      expect(r.code).toBe("SERVER_ERROR");
     }
   });
 

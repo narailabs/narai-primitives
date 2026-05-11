@@ -11,11 +11,14 @@ import * as path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import {
   createConnector,
+  ConnectorError,
   extractBinary,
   FORMAT_MAP,
+  mapHttpError,
   sanitizeLabel,
   assertValidAdf,
   checkPathContainment,
+  throwIfHttpError,
   type Connector,
   type ErrorCode,
 } from "narai-primitives/toolkit";
@@ -24,9 +27,7 @@ import { z } from "zod";
 import {
   JiraClient,
   loadJiraCredentials,
-  type JiraResult,
 } from "./lib/jira_client.js";
-import { JiraError } from "./lib/jira_error.js";
 
 // ───────────────────────────────────────────────────────────────────────────
 // Param schemas
@@ -151,31 +152,20 @@ const postAttachmentParams = z.object({
 
 const CODE_MAP: Record<string, ErrorCode> = {
   UNAUTHORIZED: "AUTH_ERROR",
+  FORBIDDEN: "AUTH_ERROR",
   NOT_FOUND: "NOT_FOUND",
   RATE_LIMITED: "RATE_LIMITED",
   TIMEOUT: "TIMEOUT",
   NETWORK_ERROR: "CONNECTION_ERROR",
   SERVER_ERROR: "CONNECTION_ERROR",
   BAD_REQUEST: "VALIDATION_ERROR",
+  UNPROCESSABLE: "VALIDATION_ERROR",
   INVALID_URL: "VALIDATION_ERROR",
   METHOD_NOT_ALLOWED: "VALIDATION_ERROR",
   VALIDATION_ERROR: "VALIDATION_ERROR",
   HTTP_ERROR: "CONNECTION_ERROR",
   CONFIG_ERROR: "CONFIG_ERROR",
 };
-
-function throwIfError<T>(
-  result: JiraResult<T>,
-): asserts result is Extract<JiraResult<T>, { ok: true }> {
-  if (!result.ok) {
-    throw new JiraError(
-      result.code,
-      result.message,
-      result.retriable,
-      result.status,
-    );
-  }
-}
 
 // ───────────────────────────────────────────────────────────────────────────
 // ADF conversion helper
@@ -203,13 +193,13 @@ function resolveContentToAdf(input: ContentInput): unknown {
   };
 }
 
-/** Convert contentInput to ADF, asserting validity. Throws JiraError on bad ADF. */
+/** Convert contentInput to ADF, asserting validity. Throws ConnectorError on bad ADF. */
 function toAdf(input: ContentInput): unknown {
   const doc = resolveContentToAdf(input);
   try {
     assertValidAdf(doc);
   } catch (e) {
-    throw new JiraError(
+    throw new ConnectorError(
       "VALIDATION_ERROR",
       e instanceof Error ? e.message : String(e),
       false,
@@ -251,7 +241,7 @@ export function buildJiraConnector(overrides: BuildOptions = {}): Connector {
   const defaultSdk = async (): Promise<JiraClient> => {
     const creds = await loadJiraCredentials();
     if (!creds) {
-      throw new JiraError(
+      throw new ConnectorError(
         "CONFIG_ERROR",
         "Jira credentials not configured. Set JIRA_SITE_URL, JIRA_EMAIL, and " +
           "JIRA_API_TOKEN (or register a credential provider via " +
@@ -279,7 +269,7 @@ export function buildJiraConnector(overrides: BuildOptions = {}): Connector {
         handler: async (p: z.infer<typeof jqlSearchParams>, ctx) => {
           const limit = Math.min(p.max_results, MAX_RESULTS_CAP);
           const result = await ctx.sdk.searchJql(p.jql, limit);
-          throwIfError(result);
+          throwIfHttpError(result);
           const total = typeof result.data.total === "number" ? result.data.total : 0;
           const issues = Array.isArray(result.data.issues)
             ? result.data.issues
@@ -304,7 +294,7 @@ export function buildJiraConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "read" },
         handler: async (p: z.infer<typeof getIssueParams>, ctx) => {
           const result = await ctx.sdk.getIssue(p.issue_key, p.expand);
-          throwIfError(result);
+          throwIfHttpError(result);
           const fields = result.data.fields ?? {};
           return {
             key: result.data.key,
@@ -322,7 +312,7 @@ export function buildJiraConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "read" },
         handler: async (p: z.infer<typeof getProjectParams>, ctx) => {
           const result = await ctx.sdk.getProject(p.project_key);
-          throwIfError(result);
+          throwIfHttpError(result);
           return {
             key: result.data.key,
             name: result.data.name ?? "",
@@ -338,7 +328,7 @@ export function buildJiraConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "read" },
         handler: async (p: z.infer<typeof listAttachmentsParams>, ctx) => {
           const result = await ctx.sdk.listAttachments(p.issue_key);
-          throwIfError(result);
+          throwIfHttpError(result);
           return {
             issue_key: result.data.issueKey,
             total: result.data.results.length,
@@ -359,10 +349,10 @@ export function buildJiraConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "read" },
         handler: async (p: z.infer<typeof getAttachmentParams>, ctx) => {
           const list = await ctx.sdk.listAttachments(p.issue_key);
-          throwIfError(list);
+          throwIfHttpError(list);
           const match = list.data.results.find((a) => a.id === p.attachment_id);
           if (!match) {
-            throw new JiraError(
+            throw new ConnectorError(
               "NOT_FOUND",
               `Attachment ${p.attachment_id} not found on issue ${p.issue_key}`,
               false,
@@ -370,7 +360,7 @@ export function buildJiraConnector(overrides: BuildOptions = {}): Connector {
             );
           }
           const dl = await ctx.sdk.getAttachmentDownload(p.attachment_id);
-          throwIfError(dl);
+          throwIfHttpError(dl);
           const { bytes, contentType } = dl.data;
           const filename = dl.data.filename || match.filename;
           const ext = path.extname(filename).toLowerCase();
@@ -433,7 +423,7 @@ export function buildJiraConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "read" },
         handler: async (p: z.infer<typeof getCommentsParams>, ctx) => {
           const result = await ctx.sdk.getComments(p.issue_key, p.max_results);
-          throwIfError(result);
+          throwIfHttpError(result);
           return {
             issue_key: result.data.issueKey,
             total: result.data.total,
@@ -468,7 +458,7 @@ export function buildJiraConnector(overrides: BuildOptions = {}): Connector {
             fields["parent"] = { key: p.parent_key };
           }
           const result = await ctx.sdk.createIssue({ fields });
-          throwIfError(result);
+          throwIfHttpError(result);
           return {
             key: result.data.key,
             id: result.data.id,
@@ -491,7 +481,7 @@ export function buildJiraConnector(overrides: BuildOptions = {}): Connector {
             fields["assignee"] = { accountId: p.assignee_account_id };
           }
           const result = await ctx.sdk.updateIssue(p.issue_key, { fields });
-          throwIfError(result);
+          throwIfHttpError(result);
           return { key: p.issue_key, updated: true };
         },
       },
@@ -501,7 +491,7 @@ export function buildJiraConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "write", aspects: ["delete"] },
         handler: async (p: z.infer<typeof deleteIssueParams>, ctx) => {
           const result = await ctx.sdk.deleteIssue(p.issue_key);
-          throwIfError(result);
+          throwIfHttpError(result);
           return { key: p.issue_key, deleted: true };
         },
       },
@@ -512,7 +502,7 @@ export function buildJiraConnector(overrides: BuildOptions = {}): Connector {
         handler: async (p: z.infer<typeof addCommentParams>, ctx) => {
           const body = toAdf(p.body);
           const result = await ctx.sdk.addComment(p.issue_key, { body });
-          throwIfError(result);
+          throwIfHttpError(result);
           const r = result.data;
           return {
             comment_id: r.id,
@@ -530,7 +520,7 @@ export function buildJiraConnector(overrides: BuildOptions = {}): Connector {
           const result = await ctx.sdk.updateComment(p.issue_key, p.comment_id, {
             body,
           });
-          throwIfError(result);
+          throwIfHttpError(result);
           const r = result.data;
           return {
             comment_id: r.id,
@@ -545,7 +535,7 @@ export function buildJiraConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "write", aspects: ["delete"] },
         handler: async (p: z.infer<typeof deleteCommentParams>, ctx) => {
           const result = await ctx.sdk.deleteComment(p.issue_key, p.comment_id);
-          throwIfError(result);
+          throwIfHttpError(result);
           return { comment_id: p.comment_id, deleted: true };
         },
       },
@@ -563,7 +553,7 @@ export function buildJiraConnector(overrides: BuildOptions = {}): Connector {
             };
           }
           const result = await ctx.sdk.transitionIssue(p.issue_key, payload);
-          throwIfError(result);
+          throwIfHttpError(result);
           return { issue_key: p.issue_key, transitioned: true };
         },
       },
@@ -587,7 +577,7 @@ export function buildJiraConnector(overrides: BuildOptions = {}): Connector {
               files.push(entry);
             } else {
               if (!checkPathContainment(f.path, process.cwd())) {
-                throw new JiraError(
+                throw new ConnectorError(
                   "VALIDATION_ERROR",
                   `Path '${f.path}' escapes working directory`,
                   false,
@@ -607,7 +597,7 @@ export function buildJiraConnector(overrides: BuildOptions = {}): Connector {
             }
           }
           const result = await ctx.sdk.postAttachment(p.issue_key, files);
-          throwIfError(result);
+          throwIfHttpError(result);
           const attachments = Array.isArray(result.data) ? result.data : [];
           return {
             issue_key: p.issue_key,
@@ -621,16 +611,7 @@ export function buildJiraConnector(overrides: BuildOptions = {}): Connector {
         },
       },
     },
-    mapError: (err) => {
-      if (err instanceof JiraError) {
-        return {
-          error_code: CODE_MAP[err.code] ?? "CONNECTION_ERROR",
-          message: err.message,
-          retriable: err.retriable,
-        };
-      }
-      return undefined;
-    },
+    mapError: mapHttpError(CODE_MAP),
   });
 }
 
@@ -645,4 +626,4 @@ export {
   type JiraClientOptions,
   type JiraResult,
 } from "./lib/jira_client.js";
-export { JiraError } from "./lib/jira_error.js";
+export { ConnectorError as JiraError } from "narai-primitives/toolkit";

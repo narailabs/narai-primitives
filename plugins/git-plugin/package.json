@@ -1,8 +1,9 @@
 {
-  "name": "git-plugin",
+  "name": "git-plugin-runtime",
   "version": "1.0.0",
-  "description": "Claude Code plugin: PreToolUse hook gating risky git commands.",
-  "type": "module",
   "private": true,
-  "license": "MIT"
+  "description": "Runtime manifest for git-plugin. SessionStart copies this manifest and runs npm install to fetch the shared dispatcher.",
+  "dependencies": {
+    "narai-primitives": "^2.1.3"
+  }
 }

@@ -424,3 +424,162 @@ describe("dispatcher pre-tool-use user-connector gates", () => {
     }
   });
 });
+
+describe("dispatcher pre-tool-use plugin-root gates", () => {
+  it("applies gates from CLAUDE_PLUGIN_ROOT/gates.json", async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ptu-pr-root-"));
+    const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), "ptu-pr-data-"));
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "ptu-pr-home-"));
+    try {
+      fs.writeFileSync(
+        path.join(tmpRoot, "plugin-config.json"),
+        JSON.stringify({ name: "git", kind: "hook-only" }),
+      );
+      fs.writeFileSync(
+        path.join(tmpRoot, "gates.json"),
+        JSON.stringify({
+          rules: [
+            {
+              name: "deny_push_main",
+              decision: "deny",
+              reason: "no pushing to main",
+              pattern: "^git\\s+push\\b.*\\b(main|master)\\b",
+            },
+          ],
+        }),
+      );
+      const payload = JSON.stringify({
+        tool_name: "Bash",
+        tool_input: { command: "git push origin main" },
+      });
+      const proc = spawn("node", [DISPATCHER, "pre-tool-use"], {
+        env: {
+          ...process.env,
+          HOME: tmpHome,
+          CLAUDE_PLUGIN_ROOT: tmpRoot,
+          CLAUDE_PLUGIN_DATA: tmpData,
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stdout = "";
+      proc.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
+      proc.stdin.write(payload);
+      proc.stdin.end();
+      await new Promise<void>((resolve) =>
+        proc.on("close", () => resolve()),
+      );
+      const out = JSON.parse(stdout);
+      expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+      expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(
+        /no pushing to main/,
+      );
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      fs.rmSync(tmpData, { recursive: true, force: true });
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  it("NARAI_GATE_DISABLE silences a plugin-root rule by name", async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ptu-prd-root-"));
+    const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), "ptu-prd-data-"));
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "ptu-prd-home-"));
+    try {
+      fs.writeFileSync(
+        path.join(tmpRoot, "plugin-config.json"),
+        JSON.stringify({ name: "git", kind: "hook-only" }),
+      );
+      fs.writeFileSync(
+        path.join(tmpRoot, "gates.json"),
+        JSON.stringify({
+          rules: [
+            {
+              name: "push",
+              decision: "ask",
+              reason: "confirm push",
+              pattern: "^git\\s+push\\b",
+            },
+          ],
+        }),
+      );
+      const payload = JSON.stringify({
+        tool_name: "Bash",
+        tool_input: { command: "git push" },
+      });
+      const proc = spawn("node", [DISPATCHER, "pre-tool-use"], {
+        env: {
+          ...process.env,
+          HOME: tmpHome,
+          CLAUDE_PLUGIN_ROOT: tmpRoot,
+          CLAUDE_PLUGIN_DATA: tmpData,
+          NARAI_GATE_DISABLE: "push",
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stdout = "";
+      proc.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
+      proc.stdin.write(payload);
+      proc.stdin.end();
+      await new Promise<void>((resolve) =>
+        proc.on("close", () => resolve()),
+      );
+      expect(stdout).toBe("");
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      fs.rmSync(tmpData, { recursive: true, force: true });
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  it("plugin-root deny + user-gate ask: strictest wins", async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ptu-prs-root-"));
+    const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), "ptu-prs-data-"));
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "ptu-prs-home-"));
+    try {
+      fs.writeFileSync(
+        path.join(tmpRoot, "plugin-config.json"),
+        JSON.stringify({ name: "git", kind: "hook-only" }),
+      );
+      fs.writeFileSync(
+        path.join(tmpRoot, "gates.json"),
+        JSON.stringify({
+          rules: [{ name: "d", decision: "deny", reason: "!", pattern: "^echo" }],
+        }),
+      );
+      const userDir = path.join(tmpHome, ".connectors", "connectors", "c");
+      fs.mkdirSync(userDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(userDir, "gates.json"),
+        JSON.stringify({
+          rules: [{ name: "a", decision: "ask", reason: "?", pattern: "^echo" }],
+        }),
+      );
+      const payload = JSON.stringify({
+        tool_name: "Bash",
+        tool_input: { command: "echo hi" },
+      });
+      const proc = spawn("node", [DISPATCHER, "pre-tool-use"], {
+        env: {
+          ...process.env,
+          HOME: tmpHome,
+          CLAUDE_PLUGIN_ROOT: tmpRoot,
+          CLAUDE_PLUGIN_DATA: tmpData,
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stdout = "";
+      proc.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
+      proc.stdin.write(payload);
+      proc.stdin.end();
+      await new Promise<void>((resolve) =>
+        proc.on("close", () => resolve()),
+      );
+      const out = JSON.parse(stdout);
+      expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      fs.rmSync(tmpData, { recursive: true, force: true });
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+});

@@ -24,21 +24,22 @@ permission flow continues.
 
 ## Disabling rules
 
-Set `GIT_GATE_DISABLE` to a comma-separated list of rule names:
+Set `NARAI_GATE_DISABLE` to a comma-separated list of rule names:
 
 ```sh
-export GIT_GATE_DISABLE=push,push_main
+export NARAI_GATE_DISABLE=push,push_main
 ```
 
 …disables both the plain-`push` ask and the protected-branch deny.
 
 ## Adding rules
 
-Create `~/.connectors/git-gate.json`:
+Drop extra rules at `~/.connectors/connectors/<slug>/gates.json` — the
+shared dispatcher scans this path and layers the rules on top of the
+defaults shipped with this plugin:
 
 ```json
 {
-  "disabled": ["push"],
   "rules": [
     {
       "name": "deny_release",
@@ -60,15 +61,16 @@ Create `~/.connectors/git-gate.json`:
 (after splitting on `&&`, `||`, `;`, `|`). `decision` must be one of
 `allow`, `ask`, `deny`. `reason` is shown to the user in the prompt.
 
-Custom rules are evaluated **after** the defaults; the strictest match
+Custom rules are evaluated alongside the defaults; the strictest match
 across all rules wins.
 
 ## How it works
 
-`PreToolUse` hooks fire before any Bash invocation. The hook reads
-Claude Code's stdin payload, classifies the `tool_input.command` against
-the rules in `hooks/rules.mjs`, and writes a JSON decision to stdout per
-the [hook contract](https://code.claude.com/docs/en/hooks.md).
+`PreToolUse` hooks fire before any Bash invocation. The plugin wires
+this event to the shared `plugin-hooks/dispatcher.mjs` from
+`narai-primitives`, which loads this plugin's `gates.json` (the default
+rules), applies them to `tool_input.command`, and writes a JSON decision
+to stdout per the [hook contract](https://code.claude.com/docs/en/hooks.md).
 
 Compound commands (`cd repo && git push origin main`) split on `&&`, `||`,
 `;`, `|` and each segment is classified independently — the strictest
@@ -82,7 +84,7 @@ common prefixes (`sudo`, `nice`, `time`) are stripped before matching.
   intended bias for a safety gate.
 - `push_main` matches any `main` or `master` token in the push args.
   A branch literally named `feature/main` would trip this. Disable
-  `push_main` via env var or config if your repo has such names.
+  `push_main` via `NARAI_GATE_DISABLE=push_main` if your repo has such names.
 - The hook runs on every Bash call. Performance is dominated by Node
   startup (~30ms cold). The hook itself is O(rules × segments) regex
   matching — negligible.

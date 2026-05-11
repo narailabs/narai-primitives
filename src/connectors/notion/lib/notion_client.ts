@@ -1,33 +1,24 @@
 /**
  * notion_client.ts — Notion Public API client.
  *
- * Originally read-only (GET | POST_READ_ONLY), the HTTP whitelist has been
- * widened to include POST, PATCH, and DELETE now that the connector exposes
- * write actions. The path-level POST guard (which previously restricted POST
- * to /v1/search and /v1/databases/{id}/query) has been removed because the
- * universal policy gate in createConnector runs BEFORE any handler executes:
- * a denied or escalated action never reaches the client, so the HTTP-layer
- * guard adds complexity without adding meaningful safety.
+ * Thin wrapper over the shared `HttpClient` in `narai-primitives/toolkit`:
+ * supplies Bearer auth, the `Notion-Version` default header, and the
+ * Notion-specific endpoint methods. All retry, throttle, timeout, and
+ * URL-validation logic comes from the shared client.
  *
- * The POST_READ_ONLY pseudo-method is kept for backward compatibility with
- * existing read-action callers (search, queryDatabase); it maps to HTTP POST.
+ * The `POST_READ_ONLY` pseudo-method is preserved (it maps to POST) for
+ * backward compatibility with existing read-action callers.
  */
-import { validateUrl } from "narai-primitives/toolkit";
+import {
+  HttpClient,
+  type HttpResult,
+  type HttpResultErr,
+  type HttpResultOk,
+} from "narai-primitives/toolkit";
 import { resolveSecret } from "narai-primitives/credentials";
 
-type HttpMethod = "GET" | "POST_READ_ONLY" | "POST" | "PATCH" | "DELETE";
-const ALLOWED_METHODS: ReadonlySet<HttpMethod> = new Set<HttpMethod>([
-  "GET",
-  "POST_READ_ONLY",
-  "POST",
-  "PATCH",
-  "DELETE",
-]);
+type NotionMethod = "GET" | "POST" | "POST_READ_ONLY" | "PATCH" | "DELETE";
 
-const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
-const DEFAULT_READ_TIMEOUT_MS = 30_000;
-const DEFAULT_RATE_LIMIT_PER_MIN = 60;
-const MAX_ATTEMPTS = 4;
 const NOTION_API_BASE = "https://api.notion.com";
 const NOTION_VERSION = "2022-06-28";
 
@@ -41,19 +32,10 @@ export interface NotionClientOptions {
   sleepImpl?: (ms: number) => Promise<void>;
 }
 
-export interface NotionErrorPayload {
-  ok: false;
-  code: string;
-  message: string;
-  retriable: boolean;
-  status?: number;
-}
-export interface NotionSuccessPayload<T> {
-  ok: true;
-  data: T;
-  status: number;
-}
-export type NotionResult<T> = NotionSuccessPayload<T> | NotionErrorPayload;
+// Back-compat type aliases — same shape as HttpResult.
+export type NotionErrorPayload = HttpResultErr;
+export type NotionSuccessPayload<T> = HttpResultOk<T>;
+export type NotionResult<T> = HttpResult<T>;
 
 export async function loadNotionCredentials(): Promise<
   { token: string } | null
@@ -66,20 +48,27 @@ export async function loadNotionCredentials(): Promise<
   return { token };
 }
 
-
 export class NotionClient {
-  private readonly _apiBase: string;
-  private readonly _token: string;
-  private readonly _rateLimitPerMin: number;
-  private readonly _connectTimeoutMs: number;
-  private readonly _readTimeoutMs: number;
-  private readonly _fetch: typeof globalThis.fetch;
-  private readonly _sleep: (ms: number) => Promise<void>;
-  private _requestTimestamps: number[] = [];
+  private readonly _http: HttpClient;
   private _workspaceId: string | null = null;
 
   get workspaceId(): string | null {
     return this._workspaceId;
+  }
+
+  constructor(opts: NotionClientOptions) {
+    this._http = new HttpClient({
+      baseUrl: opts.apiBase ?? NOTION_API_BASE,
+      authHeader: `Bearer ${opts.token}`,
+      serviceName: "Notion",
+      allowedMethods: new Set(["GET", "POST", "PATCH", "DELETE"]),
+      defaultHeaders: { "Notion-Version": NOTION_VERSION },
+      rateLimitPerMin: opts.rateLimitPerMin,
+      connectTimeoutMs: opts.connectTimeoutMs,
+      readTimeoutMs: opts.readTimeoutMs,
+      fetchImpl: opts.fetchImpl,
+      sleepImpl: opts.sleepImpl,
+    });
   }
 
   /**
@@ -103,157 +92,25 @@ export class NotionClient {
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[notion] init: workspaceId lookup threw (${msg})\n`);
+      process.stderr.write(
+        `[notion] init: workspaceId lookup threw (${msg})\n`,
+      );
       this._workspaceId = null;
     }
   }
 
-  constructor(opts: NotionClientOptions) {
-    const base = opts.apiBase ?? NOTION_API_BASE;
-    if (!validateUrl(base)) {
-      throw new Error(`Invalid Notion API base: ${base}`);
-    }
-    this._apiBase = base.replace(/\/+$/, "");
-    this._token = opts.token;
-    this._rateLimitPerMin = opts.rateLimitPerMin ?? DEFAULT_RATE_LIMIT_PER_MIN;
-    this._connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
-    this._readTimeoutMs = opts.readTimeoutMs ?? DEFAULT_READ_TIMEOUT_MS;
-    this._fetch = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
-    this._sleep =
-      opts.sleepImpl ??
-      ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  }
-
-  private async _throttle(): Promise<void> {
-    const now = Date.now();
-    const cutoff = now - 60_000;
-    this._requestTimestamps = this._requestTimestamps.filter((t) => t > cutoff);
-    if (this._requestTimestamps.length >= this._rateLimitPerMin) {
-      const oldest = this._requestTimestamps[0] ?? now;
-      const waitMs = Math.max(0, 60_000 - (now - oldest));
-      if (waitMs > 0) await this._sleep(waitMs);
-      this._requestTimestamps = this._requestTimestamps.filter(
-        (t) => t > Date.now() - 60_000,
-      );
-    }
-    this._requestTimestamps.push(Date.now());
-  }
-
-  /**
-   * Make a request to the Notion API.
-   *
-   * The policy gate in createConnector runs before any handler, so denied or
-   * escalated actions never reach this method. Path-level enforcement is
-   * therefore not needed here; method-level allowlisting is kept as a
-   * light sanity check.
-   */
   public async request<T>(
-    method: HttpMethod,
+    method: NotionMethod,
     relPath: string,
     body: Record<string, unknown> | null = null,
   ): Promise<NotionResult<T>> {
-    if (!ALLOWED_METHODS.has(method)) {
-      return {
-        ok: false,
-        code: "METHOD_NOT_ALLOWED",
-        message: `Method ${method} not allowed`,
-        retriable: false,
-      };
-    }
-    const url = `${this._apiBase}${relPath}`;
-    if (!validateUrl(url)) {
-      return {
-        ok: false,
-        code: "INVALID_URL",
-        message: `URL rejected: ${url}`,
-        retriable: false,
-      };
-    }
-
-    // Map pseudo-method to real HTTP verb.
-    const httpVerb =
-      method === "POST_READ_ONLY" ? "POST" : (method as string);
-
-    let lastError: NotionErrorPayload | null = null;
-    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-      await this._throttle();
-      const readCtrl = new AbortController();
-      const readTimer = setTimeout(
-        () => readCtrl.abort(),
-        this._connectTimeoutMs + this._readTimeoutMs,
-      );
-      try {
-        const init: RequestInit = {
-          method: httpVerb,
-          headers: {
-            Authorization: `Bearer ${this._token}`,
-            "Notion-Version": NOTION_VERSION,
-            Accept: "application/json",
-            ...(body ? { "Content-Type": "application/json" } : {}),
-          },
-          signal: readCtrl.signal,
-        };
-        if (body) init.body = JSON.stringify(body);
-
-        const response = await this._fetch(url, init);
-        const status = response.status;
-        if (status === 429 || status >= 500) {
-          const retryAfter = parseRetryAfter(response.headers.get("retry-after"));
-          lastError = {
-            ok: false,
-            code: status === 429 ? "RATE_LIMITED" : "SERVER_ERROR",
-            message: `Notion returned HTTP ${status}`,
-            retriable: true,
-            status,
-          };
-          if (attempt < MAX_ATTEMPTS - 1) {
-            await this._sleep(retryAfter ?? Math.min(30_000, 500 * 2 ** attempt));
-            continue;
-          }
-          return lastError;
-        }
-        if (!response.ok) {
-          let bodyText = "";
-          try {
-            bodyText = await response.text();
-          } catch { /* ignore */ }
-          return {
-            ok: false,
-            code: classifyHttpStatus(status),
-            message: `Notion HTTP ${status}: ${truncate(bodyText, 200)}`,
-            retriable: false,
-            status,
-          };
-        }
-        const data = (await response.json()) as T;
-        return { ok: true, data, status };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const aborted = err instanceof DOMException || /abort/i.test(message);
-        lastError = {
-          ok: false,
-          code: aborted ? "TIMEOUT" : "NETWORK_ERROR",
-          message: aborted ? "Request timed out" : message,
-          retriable: true,
-        };
-        if (attempt < MAX_ATTEMPTS - 1) {
-          await this._sleep(Math.min(30_000, 500 * 2 ** attempt));
-          continue;
-        }
-        return lastError;
-      } finally {
-        clearTimeout(readTimer);
-      }
-    }
-    return (
-      lastError ?? {
-        ok: false,
-        code: "UNKNOWN",
-        message: "Exhausted retries without a response",
-        retriable: true,
-      }
-    );
+    const httpMethod = method === "POST_READ_ONLY" ? "POST" : method;
+    return this._http.request<T>(httpMethod, relPath, {
+      body: body ?? undefined,
+    });
   }
+
+  // ── Read methods ───────────────────────────────────────────────────────
 
   public async search(
     query: string,
@@ -262,7 +119,11 @@ export class NotionClient {
   ): Promise<NotionResult<NotionSearchResponse>> {
     const body: Record<string, unknown> = { query, page_size: pageSize };
     if (filterType) body["filter"] = { property: "object", value: filterType };
-    return this.request<NotionSearchResponse>("POST_READ_ONLY", "/v1/search", body);
+    return this.request<NotionSearchResponse>(
+      "POST_READ_ONLY",
+      "/v1/search",
+      body,
+    );
   }
 
   public async getPage(pageId: string): Promise<NotionResult<NotionPage>> {
@@ -381,10 +242,16 @@ export class NotionClient {
     blockId: string,
     payload: Record<string, unknown>,
   ): Promise<NotionResult<NotionRawBlock>> {
-    return this.request<NotionRawBlock>("PATCH", `/v1/blocks/${blockId}`, payload);
+    return this.request<NotionRawBlock>(
+      "PATCH",
+      `/v1/blocks/${blockId}`,
+      payload,
+    );
   }
 
-  public async deleteBlock(blockId: string): Promise<NotionResult<NotionRawBlock>> {
+  public async deleteBlock(
+    blockId: string,
+  ): Promise<NotionResult<NotionRawBlock>> {
     return this.request<NotionRawBlock>("DELETE", `/v1/blocks/${blockId}`);
   }
 
@@ -565,26 +432,6 @@ export interface NotionDatabaseQueryResponse {
   results: NotionPage[];
   has_more?: boolean;
   next_cursor?: string | null;
-}
-
-function parseRetryAfter(value: string | null): number | null {
-  if (!value) return null;
-  const seconds = Number(value);
-  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
-  return null;
-}
-
-function classifyHttpStatus(status: number): string {
-  if (status === 401) return "UNAUTHORIZED";
-  if (status === 403) return "FORBIDDEN";
-  if (status === 404) return "NOT_FOUND";
-  if (status === 400) return "BAD_REQUEST";
-  if (status === 422) return "UNPROCESSABLE";
-  return "HTTP_ERROR";
-}
-
-function truncate(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n) + "…" : s;
 }
 
 export function extractTitleFromPage(page: NotionPage): string {

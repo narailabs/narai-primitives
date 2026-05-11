@@ -1,24 +1,23 @@
 /**
  * github_client.ts — read-only GitHub REST + GraphQL client.
  *
- * Uses a Personal Access Token via `Authorization: Bearer`. Only GET (REST)
- * and POST against `/graphql` (read-only queries) are permitted.
+ * Thin wrapper over the shared `HttpClient` in `narai-primitives/toolkit`:
+ * supplies Bearer auth + GitHub's API-version + Accept headers, surfaces
+ * GitHub's primary-rate-limit signal (`x-ratelimit-remaining: 0` on a 403
+ * — usually a rate-limit in disguise), and exposes both REST GETs and
+ * POSTs against `/graphql`.
  */
-import { validateUrl } from "narai-primitives/toolkit";
+import {
+  HttpClient,
+  type BinaryResponse,
+  type HttpResult,
+  type HttpResultErr,
+  type HttpResultOk,
+} from "narai-primitives/toolkit";
 import { resolveSecret } from "narai-primitives/credentials";
 
-type HttpMethod = "GET" | "POST_GRAPHQL";
-const ALLOWED_METHODS: ReadonlySet<HttpMethod> = new Set<HttpMethod>([
-  "GET",
-  "POST_GRAPHQL",
-]);
-
-const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
-const DEFAULT_READ_TIMEOUT_MS = 30_000;
-const DEFAULT_RATE_LIMIT_PER_MIN = 60;
-const MAX_ATTEMPTS = 4;
-
 const GITHUB_API_BASE = "https://api.github.com";
+const GITHUB_API_VERSION = "2022-11-28";
 
 export interface GithubClientOptions {
   token: string;
@@ -31,19 +30,9 @@ export interface GithubClientOptions {
   sleepImpl?: (ms: number) => Promise<void>;
 }
 
-export interface GithubErrorPayload {
-  ok: false;
-  code: string;
-  message: string;
-  retriable: boolean;
-  status?: number;
-}
-export interface GithubSuccessPayload<T> {
-  ok: true;
-  data: T;
-  status: number;
-}
-export type GithubResult<T> = GithubSuccessPayload<T> | GithubErrorPayload;
+export type GithubErrorPayload = HttpResultErr;
+export type GithubSuccessPayload<T> = HttpResultOk<T>;
+export type GithubResult<T> = HttpResult<T>;
 
 export async function loadGithubCredentials(): Promise<
   { token: string; defaultOwner: string | null } | null
@@ -61,31 +50,32 @@ export async function loadGithubCredentials(): Promise<
 }
 
 export class GithubClient {
-  private readonly _apiBase: string;
+  private readonly _http: HttpClient;
   private _defaultOwner: string | null = null;
-  private readonly _token: string;
-  private readonly _rateLimitPerMin: number;
-  private readonly _connectTimeoutMs: number;
-  private readonly _readTimeoutMs: number;
-  private readonly _fetch: typeof globalThis.fetch;
-  private readonly _sleep: (ms: number) => Promise<void>;
-  private _requestTimestamps: number[] = [];
 
   constructor(opts: GithubClientOptions) {
-    const base = opts.apiBase ?? GITHUB_API_BASE;
-    if (!validateUrl(base)) {
-      throw new Error(`Invalid GitHub API base: ${base}`);
-    }
-    this._apiBase = base.replace(/\/+$/, "");
+    const apiBase = opts.apiBase ?? GITHUB_API_BASE;
     this._defaultOwner = opts.defaultOwner ?? null;
-    this._token = opts.token;
-    this._rateLimitPerMin = opts.rateLimitPerMin ?? DEFAULT_RATE_LIMIT_PER_MIN;
-    this._connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
-    this._readTimeoutMs = opts.readTimeoutMs ?? DEFAULT_READ_TIMEOUT_MS;
-    this._fetch = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
-    this._sleep =
-      opts.sleepImpl ??
-      ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    this._http = new HttpClient({
+      baseUrl: apiBase,
+      authHeader: `Bearer ${opts.token}`,
+      serviceName: "GitHub",
+      allowedMethods: new Set(["GET", "POST"]),
+      defaultHeaders: {
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": GITHUB_API_VERSION,
+      },
+      rateLimitPerMin: opts.rateLimitPerMin,
+      connectTimeoutMs: opts.connectTimeoutMs,
+      readTimeoutMs: opts.readTimeoutMs,
+      fetchImpl: opts.fetchImpl,
+      sleepImpl: opts.sleepImpl,
+      // GitHub's primary rate limit surfaces as 403 + `x-ratelimit-remaining: 0`.
+      // The shared client treats this as a 429 (retry with backoff).
+      shouldRetryResponse: (r) =>
+        r.status === 403 &&
+        r.headers.get("x-ratelimit-remaining") === "0",
+    });
   }
 
   public get defaultOwner(): string | null {
@@ -93,174 +83,23 @@ export class GithubClient {
   }
 
   public get host(): string {
-    return new URL(this._apiBase).host;
-  }
-
-  private async _throttle(): Promise<void> {
-    const now = Date.now();
-    const cutoff = now - 60_000;
-    this._requestTimestamps = this._requestTimestamps.filter((t) => t > cutoff);
-    if (this._requestTimestamps.length >= this._rateLimitPerMin) {
-      const oldest = this._requestTimestamps[0] ?? now;
-      const waitMs = Math.max(0, 60_000 - (now - oldest));
-      if (waitMs > 0) await this._sleep(waitMs);
-      this._requestTimestamps = this._requestTimestamps.filter(
-        (t) => t > Date.now() - 60_000,
-      );
-    }
-    this._requestTimestamps.push(Date.now());
-  }
-
-  private buildUrl(relPath: string, query?: Record<string, unknown>): string {
-    const rel = relPath.startsWith("/") ? relPath : `/${relPath}`;
-    const base = `${this._apiBase}${rel}`;
-    if (!query) return base;
-    const params = new URLSearchParams();
-    for (const [k, v] of Object.entries(query)) {
-      if (v === undefined || v === null) continue;
-      params.append(k, String(v));
-    }
-    const qs = params.toString();
-    return qs ? `${base}?${qs}` : base;
+    return this._http.host;
   }
 
   public async get<T = unknown>(
     relPath: string,
-    query?: Record<string, unknown>,
+    query?: Record<string, string | number | boolean | undefined | null>,
   ): Promise<GithubResult<T>> {
-    return this._send<T>("GET", this.buildUrl(relPath, query), null);
+    return this._http.request<T>("GET", relPath, { query });
   }
 
   public async graphql<T = unknown>(
     queryDoc: string,
     variables: Record<string, unknown> = {},
   ): Promise<GithubResult<T>> {
-    const url = `${this._apiBase}/graphql`;
-    return this._send<T>("POST_GRAPHQL", url, {
-      query: queryDoc,
-      variables,
+    return this._http.request<T>("POST", "/graphql", {
+      body: { query: queryDoc, variables },
     });
-  }
-
-  private async _send<T>(
-    method: HttpMethod,
-    url: string,
-    body: Record<string, unknown> | null,
-  ): Promise<GithubResult<T>> {
-    if (!ALLOWED_METHODS.has(method)) {
-      return {
-        ok: false,
-        code: "METHOD_NOT_ALLOWED",
-        message: `Method ${method} not allowed`,
-        retriable: false,
-      };
-    }
-    if (!validateUrl(url)) {
-      return {
-        ok: false,
-        code: "INVALID_URL",
-        message: `URL rejected: ${url}`,
-        retriable: false,
-      };
-    }
-
-    let lastError: GithubErrorPayload | null = null;
-    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-      await this._throttle();
-      const readCtrl = new AbortController();
-      const readTimer = setTimeout(
-        () => readCtrl.abort(),
-        this._connectTimeoutMs + this._readTimeoutMs,
-      );
-      try {
-        const init: RequestInit = {
-          method: method === "POST_GRAPHQL" ? "POST" : "GET",
-          headers: {
-            Authorization: `Bearer ${this._token}`,
-            Accept: "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            ...(body ? { "Content-Type": "application/json" } : {}),
-          },
-          signal: readCtrl.signal,
-        };
-        if (body) init.body = JSON.stringify(body);
-
-        const response = await this._fetch(url, init);
-        const status = response.status;
-
-        if (status === 429 || status === 403 && response.headers.get("x-ratelimit-remaining") === "0") {
-          const retryAfter = parseRetryAfter(response.headers.get("retry-after"));
-          lastError = {
-            ok: false,
-            code: "RATE_LIMITED",
-            message: "GitHub rate limit hit",
-            retriable: true,
-            status,
-          };
-          if (attempt < MAX_ATTEMPTS - 1) {
-            await this._sleep(retryAfter ?? Math.min(30_000, 500 * 2 ** attempt));
-            continue;
-          }
-          return lastError;
-        }
-
-        if (status >= 500) {
-          lastError = {
-            ok: false,
-            code: "SERVER_ERROR",
-            message: `GitHub returned HTTP ${status}`,
-            retriable: true,
-            status,
-          };
-          if (attempt < MAX_ATTEMPTS - 1) {
-            await this._sleep(Math.min(30_000, 500 * 2 ** attempt));
-            continue;
-          }
-          return lastError;
-        }
-
-        if (!response.ok) {
-          let bodyText = "";
-          try {
-            bodyText = await response.text();
-          } catch { /* ignore */ }
-          return {
-            ok: false,
-            code: classifyHttpStatus(status),
-            message: `GitHub HTTP ${status}: ${truncate(bodyText, 200)}`,
-            retriable: false,
-            status,
-          };
-        }
-
-        const data = (await response.json()) as T;
-        return { ok: true, data, status };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const aborted = err instanceof DOMException || /abort/i.test(message);
-        lastError = {
-          ok: false,
-          code: aborted ? "TIMEOUT" : "NETWORK_ERROR",
-          message: aborted ? "Request timed out" : message,
-          retriable: true,
-        };
-        if (attempt < MAX_ATTEMPTS - 1) {
-          await this._sleep(Math.min(30_000, 500 * 2 ** attempt));
-          continue;
-        }
-        return lastError;
-      } finally {
-        clearTimeout(readTimer);
-      }
-    }
-    return (
-      lastError ?? {
-        ok: false,
-        code: "UNKNOWN",
-        message: "Exhausted retries without a response",
-        retriable: true,
-      }
-    );
   }
 
   public async getRepo(
@@ -273,7 +112,12 @@ export class GithubClient {
   public async listIssues(
     owner: string,
     repo: string,
-    opts: { state?: string; labels?: string[]; perPage?: number; page?: number } = {},
+    opts: {
+      state?: string;
+      labels?: string[];
+      perPage?: number;
+      page?: number;
+    } = {},
   ): Promise<GithubResult<GithubIssue[]>> {
     return this.get<GithubIssue[]>(`/repos/${owner}/${repo}/issues`, {
       state: opts.state ?? "open",
@@ -404,69 +248,16 @@ export class GithubClient {
     owner: string,
     repo: string,
     assetId: number,
-  ): Promise<
-    GithubResult<{
-      bytes: Uint8Array;
-      contentType: string;
-      filename: string;
-    }>
-  > {
-    const url = `${this._apiBase}/repos/${owner}/${repo}/releases/assets/${assetId}`;
-    if (!validateUrl(url)) {
-      return {
-        ok: false,
-        code: "INVALID_URL",
-        message: `URL rejected: ${url}`,
-        retriable: false,
-      };
-    }
-    await this._throttle();
-    const ctrl = new AbortController();
-    const timer = setTimeout(
-      () => ctrl.abort(),
-      this._connectTimeoutMs + this._readTimeoutMs,
+  ): Promise<GithubResult<BinaryResponse>> {
+    return this._http.request<BinaryResponse>(
+      "GET",
+      `/repos/${owner}/${repo}/releases/assets/${assetId}`,
+      {
+        responseType: "binary",
+        headers: { Accept: "application/octet-stream" },
+        filenameFallback: `asset-${assetId}`,
+      },
     );
-    try {
-      const response = await this._fetch(url, {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${this._token}`,
-          Accept: "application/octet-stream",
-          "X-GitHub-Api-Version": "2022-11-28",
-        },
-        signal: ctrl.signal,
-      });
-      const status = response.status;
-      if (!response.ok) {
-        return {
-          ok: false,
-          code: classifyHttpStatus(status),
-          message: `GitHub HTTP ${status} downloading asset ${assetId}`,
-          retriable: status === 429 || status >= 500,
-          status,
-        };
-      }
-      const buf = await response.arrayBuffer();
-      const bytes = new Uint8Array(buf);
-      const contentType =
-        response.headers.get("content-type") ?? "application/octet-stream";
-      const filename =
-        parseContentDispositionFilename(
-          response.headers.get("content-disposition"),
-        ) ?? `asset-${assetId}`;
-      return { ok: true, data: { bytes, contentType, filename }, status };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const aborted = err instanceof DOMException || /abort/i.test(message);
-      return {
-        ok: false,
-        code: aborted ? "TIMEOUT" : "NETWORK_ERROR",
-        message: aborted ? "Request timed out" : message,
-        retriable: true,
-      };
-    } finally {
-      clearTimeout(timer);
-    }
   }
 
   /** List wiki pages via GraphQL (repository has hasWikiEnabled flag). */
@@ -481,15 +272,16 @@ export class GithubClient {
         }
       }
     `;
-    const res = await this.graphql<{ data?: { repository?: { hasWikiEnabled: boolean } } }>(
-      query,
-      { owner, repo },
-    );
+    const res = await this.graphql<{
+      data?: { repository?: { hasWikiEnabled: boolean } };
+    }>(query, { owner, repo });
     if (!res.ok) return res;
     const enabled = res.data?.data?.repository?.hasWikiEnabled ?? false;
     return { ok: true, data: { hasWikiEnabled: enabled }, status: res.status };
   }
 }
+
+// ── Response types (partial; only fields we surface) ──────────────────
 
 export interface GithubRepo {
   full_name: string;
@@ -629,30 +421,4 @@ export interface GithubReleaseWithAssets {
   published_at?: string;
   author?: { login?: string };
   assets: GithubReleaseAsset[];
-}
-
-function parseContentDispositionFilename(header: string | null): string | null {
-  if (!header) return null;
-  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(header);
-  return match && match[1] ? match[1].trim() : null;
-}
-
-function parseRetryAfter(value: string | null): number | null {
-  if (!value) return null;
-  const seconds = Number(value);
-  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
-  return null;
-}
-
-function classifyHttpStatus(status: number): string {
-  if (status === 401) return "UNAUTHORIZED";
-  if (status === 403) return "FORBIDDEN";
-  if (status === 404) return "NOT_FOUND";
-  if (status === 422) return "UNPROCESSABLE";
-  if (status === 400) return "BAD_REQUEST";
-  return "HTTP_ERROR";
-}
-
-function truncate(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n) + "…" : s;
 }

@@ -12,9 +12,12 @@
  * - No native attachment hosting; `attachment_link` creates URL pointers
  */
 import {
+  ConnectorError,
   createConnector,
   fetchAttachment,
+  mapHttpError,
   sanitizeLabel,
+  throwIfHttpError,
   type Connector,
   type ErrorCode,
 } from "narai-primitives/toolkit";
@@ -22,9 +25,7 @@ import { z } from "zod";
 import {
   LinearClient,
   loadLinearCredentials,
-  type LinearResult,
 } from "./lib/linear_client.js";
-import { LinearError } from "./lib/linear_error.js";
 
 // ───────────────────────────────────────────────────────────────────────────
 // Param schemas
@@ -120,29 +121,20 @@ const attachmentLinkParams = z.object({
 
 const CODE_MAP: Record<string, ErrorCode> = {
   UNAUTHORIZED: "AUTH_ERROR",
+  FORBIDDEN: "AUTH_ERROR",
   NOT_FOUND: "NOT_FOUND",
   RATE_LIMITED: "RATE_LIMITED",
   TIMEOUT: "TIMEOUT",
   NETWORK_ERROR: "CONNECTION_ERROR",
   SERVER_ERROR: "CONNECTION_ERROR",
   BAD_REQUEST: "VALIDATION_ERROR",
+  UNPROCESSABLE: "VALIDATION_ERROR",
+  INVALID_URL: "VALIDATION_ERROR",
+  METHOD_NOT_ALLOWED: "VALIDATION_ERROR",
   HTTP_ERROR: "CONNECTION_ERROR",
   CONFIG_ERROR: "CONFIG_ERROR",
   GRAPHQL_ERROR: "VALIDATION_ERROR",
 };
-
-function throwIfError<T>(
-  result: LinearResult<T>,
-): asserts result is Extract<LinearResult<T>, { ok: true }> {
-  if (!result.ok) {
-    throw new LinearError(
-      result.code,
-      result.message,
-      result.retriable,
-      result.status,
-    );
-  }
-}
 
 // ───────────────────────────────────────────────────────────────────────────
 // Connector factory
@@ -163,7 +155,7 @@ export function buildLinearConnector(overrides: BuildOptions = {}): Connector {
   const defaultSdk = async (): Promise<LinearClient> => {
     const creds = await loadLinearCredentials();
     if (!creds) {
-      throw new LinearError(
+      throw new ConnectorError(
         "CONFIG_ERROR",
         "Linear credentials not configured. Set LINEAR_API_KEY or register a " +
           "credential provider via narai-primitives/credentials.",
@@ -192,10 +184,10 @@ export function buildLinearConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "read" },
         handler: async (p: z.infer<typeof getIssueParams>, ctx) => {
           const result = await ctx.sdk.getIssue(p.id);
-          throwIfError(result);
+          throwIfHttpError(result);
           const issue = result.data.issue;
           if (!issue) {
-            throw new LinearError("NOT_FOUND", `Issue '${p.id}' not found`, false, 404);
+            throw new ConnectorError("NOT_FOUND", `Issue '${p.id}' not found`, false, 404);
           }
           return {
             id: issue.id,
@@ -232,7 +224,7 @@ export function buildLinearConnector(overrides: BuildOptions = {}): Connector {
           if (p.assignee_email !== undefined) searchFilter.assignee_email = p.assignee_email;
           if (p.text !== undefined) searchFilter.text = p.text;
           const result = await ctx.sdk.searchIssues(searchFilter);
-          throwIfError(result);
+          throwIfHttpError(result);
           const nodes = result.data.issues.nodes;
           return {
             total: nodes.length,
@@ -259,10 +251,10 @@ export function buildLinearConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "read" },
         handler: async (p: z.infer<typeof getProjectParams>, ctx) => {
           const result = await ctx.sdk.getProject(p.id);
-          throwIfError(result);
+          throwIfHttpError(result);
           const project = result.data.project;
           if (!project) {
-            throw new LinearError("NOT_FOUND", `Project '${p.id}' not found`, false, 404);
+            throw new ConnectorError("NOT_FOUND", `Project '${p.id}' not found`, false, 404);
           }
           return {
             id: project.id,
@@ -283,10 +275,10 @@ export function buildLinearConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "read" },
         handler: async (p: z.infer<typeof getTeamParams>, ctx) => {
           const result = await ctx.sdk.getTeam(p.key_or_id);
-          throwIfError(result);
+          throwIfHttpError(result);
           const team = result.data.team;
           if (!team) {
-            throw new LinearError(
+            throw new ConnectorError(
               "NOT_FOUND",
               `Team '${p.key_or_id}' not found`,
               false,
@@ -308,9 +300,9 @@ export function buildLinearConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "read" },
         handler: async (p: z.infer<typeof getCommentsParams>, ctx) => {
           const result = await ctx.sdk.getComments(p.issue_id, p.max_results);
-          throwIfError(result);
+          throwIfHttpError(result);
           if (!result.data.issue) {
-            throw new LinearError("NOT_FOUND", `Issue '${p.issue_id}' not found`, false, 404);
+            throw new ConnectorError("NOT_FOUND", `Issue '${p.issue_id}' not found`, false, 404);
           }
           const { nodes, pageInfo } = result.data.issue.comments;
           return {
@@ -334,9 +326,9 @@ export function buildLinearConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "read" },
         handler: async (p: z.infer<typeof listAttachmentsParams>, ctx) => {
           const result = await ctx.sdk.listAttachments(p.issue_id);
-          throwIfError(result);
+          throwIfHttpError(result);
           if (!result.data.issue) {
-            throw new LinearError("NOT_FOUND", `Issue '${p.issue_id}' not found`, false, 404);
+            throw new ConnectorError("NOT_FOUND", `Issue '${p.issue_id}' not found`, false, 404);
           }
           const nodes = result.data.issue.attachments.nodes;
           return {
@@ -361,9 +353,9 @@ export function buildLinearConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "read" },
         handler: async (p: z.infer<typeof getAttachmentParams>, ctx) => {
           const list = await ctx.sdk.listAttachments(p.issue_id);
-          throwIfError(list);
+          throwIfHttpError(list);
           if (!list.data.issue) {
-            throw new LinearError(
+            throw new ConnectorError(
               "NOT_FOUND",
               `Issue '${p.issue_id}' not found`,
               false,
@@ -374,7 +366,7 @@ export function buildLinearConnector(overrides: BuildOptions = {}): Connector {
             (a) => a.id === p.attachment_id,
           );
           if (!match) {
-            throw new LinearError(
+            throw new ConnectorError(
               "NOT_FOUND",
               `Attachment '${p.attachment_id}' not found on issue '${p.issue_id}'`,
               false,
@@ -394,7 +386,7 @@ export function buildLinearConnector(overrides: BuildOptions = {}): Connector {
               message.includes("invalid URL scheme") ||
               (err instanceof Error &&
                 err.constructor?.name === "FetchCapExceeded");
-            throw new LinearError(
+            throw new ConnectorError(
               isDeterministic ? "BAD_REQUEST" : "HTTP_ERROR",
               `Failed to fetch attachment URL: ${message}`,
               !isDeterministic,
@@ -431,10 +423,10 @@ export function buildLinearConnector(overrides: BuildOptions = {}): Connector {
           if (p.priority !== undefined) input["priority"] = p.priority;
           if (p.parent_id !== undefined) input["parentId"] = p.parent_id;
           const result = await ctx.sdk.createIssue(input as Parameters<LinearClient["createIssue"]>[0]);
-          throwIfError(result);
+          throwIfHttpError(result);
           const { success, issue } = result.data.issueCreate;
           if (!success || !issue) {
-            throw new LinearError("SERVER_ERROR", "issueCreate returned success=false", false);
+            throw new ConnectorError("SERVER_ERROR", "issueCreate returned success=false", false);
           }
           return {
             id: issue.id,
@@ -458,10 +450,10 @@ export function buildLinearConnector(overrides: BuildOptions = {}): Connector {
           if (p.state_id !== undefined) input["stateId"] = p.state_id;
           if (p.priority !== undefined) input["priority"] = p.priority;
           const result = await ctx.sdk.updateIssue(p.id, input as Parameters<LinearClient["updateIssue"]>[1]);
-          throwIfError(result);
+          throwIfHttpError(result);
           const { success, issue } = result.data.issueUpdate;
           if (!success) {
-            throw new LinearError("SERVER_ERROR", "issueUpdate returned success=false", false);
+            throw new ConnectorError("SERVER_ERROR", "issueUpdate returned success=false", false);
           }
           return {
             id: issue.id,
@@ -478,10 +470,10 @@ export function buildLinearConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "write", aspects: ["delete"] },
         handler: async (p: z.infer<typeof archiveIssueParams>, ctx) => {
           const result = await ctx.sdk.archiveIssue(p.id);
-          throwIfError(result);
+          throwIfHttpError(result);
           const { success } = result.data.issueArchive;
           if (!success) {
-            throw new LinearError("SERVER_ERROR", "issueArchive returned success=false", false);
+            throw new ConnectorError("SERVER_ERROR", "issueArchive returned success=false", false);
           }
           return { id: p.id, archived: true };
         },
@@ -496,10 +488,10 @@ export function buildLinearConnector(overrides: BuildOptions = {}): Connector {
             issueId: p.issue_id,
             body: p.body,
           });
-          throwIfError(result);
+          throwIfHttpError(result);
           const { success, comment } = result.data.commentCreate;
           if (!success || !comment) {
-            throw new LinearError("SERVER_ERROR", "commentCreate returned success=false", false);
+            throw new ConnectorError("SERVER_ERROR", "commentCreate returned success=false", false);
           }
           return {
             comment_id: comment.id,
@@ -516,10 +508,10 @@ export function buildLinearConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "write" },
         handler: async (p: z.infer<typeof updateCommentParams>, ctx) => {
           const result = await ctx.sdk.updateComment(p.comment_id, { body: p.body });
-          throwIfError(result);
+          throwIfHttpError(result);
           const { success, comment } = result.data.commentUpdate;
           if (!success) {
-            throw new LinearError("SERVER_ERROR", "commentUpdate returned success=false", false);
+            throw new ConnectorError("SERVER_ERROR", "commentUpdate returned success=false", false);
           }
           return {
             comment_id: comment.id,
@@ -536,10 +528,10 @@ export function buildLinearConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "write", aspects: ["delete"] },
         handler: async (p: z.infer<typeof deleteCommentParams>, ctx) => {
           const result = await ctx.sdk.deleteComment(p.comment_id);
-          throwIfError(result);
+          throwIfHttpError(result);
           const { success } = result.data.commentDelete;
           if (!success) {
-            throw new LinearError("SERVER_ERROR", "commentDelete returned success=false", false);
+            throw new ConnectorError("SERVER_ERROR", "commentDelete returned success=false", false);
           }
           return { comment_id: p.comment_id, deleted: true };
         },
@@ -558,10 +550,10 @@ export function buildLinearConnector(overrides: BuildOptions = {}): Connector {
           if (p.subtitle !== undefined) input["subtitle"] = p.subtitle;
           if (p.metadata !== undefined) input["metadata"] = p.metadata;
           const result = await ctx.sdk.attachmentLink(input as Parameters<LinearClient["attachmentLink"]>[0]);
-          throwIfError(result);
+          throwIfHttpError(result);
           const { success, attachment } = result.data.attachmentCreate;
           if (!success || !attachment) {
-            throw new LinearError("SERVER_ERROR", "attachmentCreate returned success=false", false);
+            throw new ConnectorError("SERVER_ERROR", "attachmentCreate returned success=false", false);
           }
           return {
             attachment_id: attachment.id,
@@ -572,16 +564,7 @@ export function buildLinearConnector(overrides: BuildOptions = {}): Connector {
         },
       },
     },
-    mapError: (err) => {
-      if (err instanceof LinearError) {
-        return {
-          error_code: CODE_MAP[err.code] ?? "CONNECTION_ERROR",
-          message: err.message,
-          retriable: err.retriable,
-        };
-      }
-      return undefined;
-    },
+    mapError: mapHttpError(CODE_MAP),
   });
 }
 
@@ -597,4 +580,4 @@ export {
   type LinearClientOptions,
   type LinearResult,
 } from "./lib/linear_client.js";
-export { LinearError } from "./lib/linear_error.js";
+export { ConnectorError as LinearError } from "narai-primitives/toolkit";

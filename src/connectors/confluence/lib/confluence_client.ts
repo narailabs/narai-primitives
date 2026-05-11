@@ -1,22 +1,22 @@
 /**
- * confluence_client.ts — read-only Atlassian Confluence REST v1 HTTP client.
- * Shares the Basic-auth + rate-limit + retry design with jira_client.ts.
+ * confluence_client.ts — Atlassian Confluence REST v1 HTTP client.
+ *
+ * Thin wrapper over the shared `HttpClient` in `narai-primitives/toolkit`:
+ * supplies Basic-auth + the Atlassian-Token header on multipart uploads,
+ * normalizes attachment-download paths, and exposes the Confluence endpoint
+ * surface. All retry/throttle/timeout/URL-validation logic comes from the
+ * shared client.
  */
-import { validateUrl } from "narai-primitives/toolkit";
+import {
+  HttpClient,
+  type BinaryResponse,
+  type HttpResult,
+  type HttpResultErr,
+  type HttpResultOk,
+} from "narai-primitives/toolkit";
 import { resolveSecret } from "narai-primitives/credentials";
 
 type HttpMethod = "GET" | "POST" | "PUT" | "DELETE";
-const ALLOWED_METHODS: ReadonlySet<HttpMethod> = new Set<HttpMethod>([
-  "GET",
-  "POST",
-  "PUT",
-  "DELETE",
-]);
-
-const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
-const DEFAULT_READ_TIMEOUT_MS = 30_000;
-const DEFAULT_RATE_LIMIT_PER_MIN = 60;
-const MAX_ATTEMPTS = 4;
 
 export interface ConfluenceClientOptions {
   siteUrl: string;
@@ -29,23 +29,9 @@ export interface ConfluenceClientOptions {
   sleepImpl?: (ms: number) => Promise<void>;
 }
 
-export interface ConfluenceErrorPayload {
-  ok: false;
-  code: string;
-  message: string;
-  retriable: boolean;
-  status?: number;
-}
-
-export interface ConfluenceSuccessPayload<T> {
-  ok: true;
-  data: T;
-  status: number;
-}
-
-export type ConfluenceResult<T> =
-  | ConfluenceSuccessPayload<T>
-  | ConfluenceErrorPayload;
+export type ConfluenceErrorPayload = HttpResultErr;
+export type ConfluenceSuccessPayload<T> = HttpResultOk<T>;
+export type ConfluenceResult<T> = HttpResult<T>;
 
 export async function loadConfluenceCredentials(): Promise<
   { siteUrl: string; email: string; apiToken: string } | null
@@ -64,183 +50,52 @@ export async function loadConfluenceCredentials(): Promise<
 }
 
 export class ConfluenceClient {
-  private readonly _site: string;
+  private readonly _http: HttpClient;
   private readonly _authHeader: string;
-  private readonly _rateLimitPerMin: number;
-  private readonly _connectTimeoutMs: number;
-  private readonly _readTimeoutMs: number;
-  private readonly _fetch: typeof globalThis.fetch;
-  private readonly _sleep: (ms: number) => Promise<void>;
-  private _requestTimestamps: number[] = [];
+  private readonly _site: string;
 
   constructor(opts: ConfluenceClientOptions) {
-    if (!validateUrl(opts.siteUrl)) {
-      throw new Error(`Invalid Confluence site URL: ${opts.siteUrl}`);
-    }
-    this._site = opts.siteUrl.replace(/\/+$/, "");
     const basic = Buffer.from(
       `${opts.email}:${opts.apiToken}`,
       "utf-8",
     ).toString("base64");
     this._authHeader = `Basic ${basic}`;
-    this._rateLimitPerMin = opts.rateLimitPerMin ?? DEFAULT_RATE_LIMIT_PER_MIN;
-    this._connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
-    this._readTimeoutMs = opts.readTimeoutMs ?? DEFAULT_READ_TIMEOUT_MS;
-    this._fetch = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
-    this._sleep =
-      opts.sleepImpl ??
-      ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    this._site = opts.siteUrl.replace(/\/+$/, "");
+    this._http = new HttpClient({
+      baseUrl: opts.siteUrl,
+      authHeader: this._authHeader,
+      serviceName: "Confluence",
+      allowedMethods: new Set<HttpMethod>(["GET", "POST", "PUT", "DELETE"]),
+      rateLimitPerMin: opts.rateLimitPerMin,
+      connectTimeoutMs: opts.connectTimeoutMs,
+      readTimeoutMs: opts.readTimeoutMs,
+      fetchImpl: opts.fetchImpl,
+      sleepImpl: opts.sleepImpl,
+    });
   }
 
-  private async _throttle(): Promise<void> {
-    const now = Date.now();
-    const cutoff = now - 60_000;
-    this._requestTimestamps = this._requestTimestamps.filter((t) => t > cutoff);
-    if (this._requestTimestamps.length >= this._rateLimitPerMin) {
-      const oldest = this._requestTimestamps[0] ?? now;
-      const waitMs = Math.max(0, 60_000 - (now - oldest));
-      if (waitMs > 0) await this._sleep(waitMs);
-      this._requestTimestamps = this._requestTimestamps.filter(
-        (t) => t > Date.now() - 60_000,
-      );
-    }
-    this._requestTimestamps.push(Date.now());
+  public get siteUrl(): string {
+    return this._site;
   }
 
-  public buildUrl(path: string, query?: Record<string, unknown>): string {
-    const relative = path.startsWith("/") ? path : `/${path}`;
-    const base = `${this._site}${relative}`;
-    if (!query) return base;
-    const params = new URLSearchParams();
-    for (const [k, v] of Object.entries(query)) {
-      if (v === undefined || v === null) continue;
-      params.append(k, String(v));
-    }
-    const qs = params.toString();
-    return qs ? `${base}?${qs}` : base;
+  public get authHeader(): string {
+    return this._authHeader;
   }
 
   public async request<T = unknown>(
     method: HttpMethod,
     path: string,
     init: {
-      query?: Record<string, unknown>;
+      query?: Record<string, string | number | boolean | undefined | null>;
       headers?: Record<string, string>;
       body?: object | FormData;
     } = {},
   ): Promise<ConfluenceResult<T>> {
-    if (!ALLOWED_METHODS.has(method)) {
-      return {
-        ok: false,
-        code: "METHOD_NOT_ALLOWED",
-        message: `Method ${method} is not permitted`,
-        retriable: false,
-      };
-    }
-    const url = this.buildUrl(path, init.query);
-    if (!validateUrl(url)) {
-      return {
-        ok: false,
-        code: "INVALID_URL",
-        message: `URL rejected: ${url}`,
-        retriable: false,
-      };
-    }
-
-    // Build the request body and any body-specific headers.
-    let fetchBody: string | FormData | undefined;
-    const bodyHeaders: Record<string, string> = {};
-    if (init.body !== undefined) {
-      if (init.body instanceof FormData) {
-        fetchBody = init.body;
-        // Do NOT set Content-Type: let fetch set the multipart boundary.
-      } else {
-        fetchBody = JSON.stringify(init.body);
-        bodyHeaders["Content-Type"] = "application/json";
-      }
-    }
-
-    let lastError: ConfluenceErrorPayload | null = null;
-    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-      await this._throttle();
-      const readCtrl = new AbortController();
-      const readTimer = setTimeout(
-        () => readCtrl.abort(),
-        this._connectTimeoutMs + this._readTimeoutMs,
-      );
-      try {
-        const response = await this._fetch(url, {
-          method,
-          headers: {
-            Authorization: this._authHeader,
-            Accept: "application/json",
-            ...bodyHeaders,
-            ...(init.headers ?? {}),
-          },
-          ...(fetchBody !== undefined ? { body: fetchBody } : {}),
-          signal: readCtrl.signal,
-        });
-        const status = response.status;
-        if (status === 429 || status >= 500) {
-          const retryAfter = parseRetryAfter(response.headers.get("retry-after"));
-          lastError = {
-            ok: false,
-            code: status === 429 ? "RATE_LIMITED" : "SERVER_ERROR",
-            message: `Confluence returned HTTP ${status}`,
-            retriable: true,
-            status,
-          };
-          if (attempt < MAX_ATTEMPTS - 1) {
-            await this._sleep(retryAfter ?? Math.min(30_000, 500 * 2 ** attempt));
-            continue;
-          }
-          return lastError;
-        }
-        if (!response.ok) {
-          let body = "";
-          try {
-            body = await response.text();
-          } catch { /* ignore */ }
-          return {
-            ok: false,
-            code: classifyHttpStatus(status),
-            message: `Confluence HTTP ${status}: ${truncate(body, 200)}`,
-            retriable: false,
-            status,
-          };
-        }
-        // 204 No Content — no body to parse.
-        if (status === 204) {
-          return { ok: true, data: {} as T, status };
-        }
-        const data = (await response.json()) as T;
-        return { ok: true, data, status };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const aborted = err instanceof DOMException || /abort/i.test(message);
-        lastError = {
-          ok: false,
-          code: aborted ? "TIMEOUT" : "NETWORK_ERROR",
-          message: aborted ? "Request timed out" : message,
-          retriable: true,
-        };
-        if (attempt < MAX_ATTEMPTS - 1) {
-          await this._sleep(Math.min(30_000, 500 * 2 ** attempt));
-          continue;
-        }
-        return lastError;
-      } finally {
-        clearTimeout(readTimer);
-      }
-    }
-    return (
-      lastError ?? {
-        ok: false,
-        code: "UNKNOWN",
-        message: "Exhausted retries without a response",
-        retriable: true,
-      }
-    );
+    return this._http.request<T>(method, path, {
+      query: init.query,
+      headers: init.headers,
+      body: init.body,
+    });
   }
 
   public async searchCql(
@@ -319,13 +174,7 @@ export class ConfluenceClient {
 
   public async getAttachmentDownload(
     downloadPath: string,
-  ): Promise<
-    ConfluenceResult<{
-      bytes: Uint8Array;
-      contentType: string;
-      filename: string;
-    }>
-  > {
+  ): Promise<ConfluenceResult<BinaryResponse>> {
     // Atlassian Cloud serves Confluence at `/wiki/...`; the `_links.download`
     // value the API returns is relative to that mount, e.g.
     // `/download/attachments/65859/file.txt?...`. Prepend `/wiki` if missing
@@ -336,97 +185,52 @@ export class ConfluenceClient {
     const withMount = normalized.startsWith("/wiki/")
       ? normalized
       : `/wiki${normalized}`;
-    const url = this.buildUrl(withMount);
-    if (!validateUrl(url)) {
-      return {
-        ok: false,
-        code: "INVALID_URL",
-        message: `URL rejected: ${url}`,
-        retriable: false,
-      };
-    }
-
-    await this._throttle();
-    const ctrl = new AbortController();
-    const timer = setTimeout(
-      () => ctrl.abort(),
-      this._connectTimeoutMs + this._readTimeoutMs,
-    );
-    try {
-      const response = await this._fetch(url, {
-        method: "GET",
-        headers: {
-          Authorization: this._authHeader,
-          Accept: "*/*",
-        },
-        signal: ctrl.signal,
-      });
-      const status = response.status;
-      if (!response.ok) {
-        return {
-          ok: false,
-          code: classifyHttpStatus(status),
-          message: `Confluence HTTP ${status} while downloading ${downloadPath}`,
-          retriable: status === 429 || status >= 500,
-          status,
-        };
+    // Derive the fallback filename from the *original* downloadPath so a
+    // download of "/foo/bar.png" still gets `bar.png` when the server
+    // omits Content-Disposition. Default to "attachment" when the path
+    // has no tail segment (e.g. "/" or "").
+    const tail = downloadPath.split("/").filter(Boolean).pop();
+    let fallback = "attachment";
+    if (tail) {
+      try {
+        fallback = decodeURIComponent(tail);
+      } catch {
+        fallback = tail;
       }
-      const buf = await response.arrayBuffer();
-      const bytes = new Uint8Array(buf);
-      const contentType =
-        response.headers.get("content-type") ?? "application/octet-stream";
-      const filename =
-        parseContentDispositionFilename(
-          response.headers.get("content-disposition"),
-        ) ?? filenameFromPath(downloadPath);
-      return { ok: true, data: { bytes, contentType, filename }, status };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const aborted = err instanceof DOMException || /abort/i.test(message);
-      return {
-        ok: false,
-        code: aborted ? "TIMEOUT" : "NETWORK_ERROR",
-        message: aborted ? "Request timed out" : message,
-        retriable: true,
-      };
-    } finally {
-      clearTimeout(timer);
     }
+    return this._http.request<BinaryResponse>("GET", withMount, {
+      responseType: "binary",
+      filenameFallback: fallback,
+    });
   }
 
-  /** POST /wiki/rest/api/content — create a new page */
   public async createPage(
     payload: object,
   ): Promise<ConfluenceResult<ConfluenceContent>> {
     return this.request("POST", "/wiki/rest/api/content", { body: payload });
   }
 
-  /** PUT /wiki/rest/api/content/{id} — update an existing page */
   public async updatePage(
     id: string,
     payload: object,
   ): Promise<ConfluenceResult<ConfluenceContent>> {
-    return this.request("PUT", `/wiki/rest/api/content/${id}`, { body: payload });
+    return this.request("PUT", `/wiki/rest/api/content/${id}`, {
+      body: payload,
+    });
   }
 
-  /** DELETE /wiki/rest/api/content/{id} — returns 204 */
   public async deletePage(
     id: string,
   ): Promise<ConfluenceResult<Record<string, never>>> {
     return this.request("DELETE", `/wiki/rest/api/content/${id}`);
   }
 
-  /** POST /wiki/rest/api/content — create a comment (type=comment) */
   public async addComment(
     payload: object,
   ): Promise<ConfluenceResult<ConfluenceRawCreatedContent>> {
     return this.request("POST", "/wiki/rest/api/content", { body: payload });
   }
 
-  /**
-   * POST /wiki/rest/api/content/{pageId}/child/attachment — multipart upload.
-   * Each file becomes a `file` part. X-Atlassian-Token: no-check required.
-   */
   public async postAttachment(
     pageId: string,
     files: Array<{ filename: string; bytes: Uint8Array; mimeType?: string }>,
@@ -447,15 +251,9 @@ export class ConfluenceClient {
       },
     );
   }
-
-  public get siteUrl(): string {
-    return this._site;
-  }
-
-  public get authHeader(): string {
-    return this._authHeader;
-  }
 }
+
+// ── Response interfaces (unchanged) ────────────────────────────────────
 
 export interface ConfluenceContent {
   id: string;
@@ -538,39 +336,6 @@ interface ConfluenceRawCommentList {
   size?: number;
   start?: number;
   limit?: number;
-}
-
-function parseRetryAfter(value: string | null): number | null {
-  if (!value) return null;
-  const seconds = Number(value);
-  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
-  return null;
-}
-
-function classifyHttpStatus(status: number): string {
-  if (status === 401 || status === 403) return "UNAUTHORIZED";
-  if (status === 404) return "NOT_FOUND";
-  if (status === 400) return "BAD_REQUEST";
-  return "HTTP_ERROR";
-}
-
-function truncate(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n) + "…" : s;
-}
-
-function parseContentDispositionFilename(header: string | null): string | null {
-  if (!header) return null;
-  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(header);
-  return match && match[1] ? match[1].trim() : null;
-}
-
-function filenameFromPath(p: string): string {
-  const tail = p.split("/").filter(Boolean).pop() ?? "attachment";
-  try {
-    return decodeURIComponent(tail);
-  } catch {
-    return tail;
-  }
 }
 
 const BLOCK_TAGS_RE =

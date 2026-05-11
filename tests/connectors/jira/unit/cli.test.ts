@@ -156,7 +156,7 @@ describe("JiraClient", () => {
           email: "a",
           apiToken: "b",
         }),
-    ).toThrow(/Invalid Jira site URL/);
+    ).toThrow(/Invalid base URL/);
   });
 
   it("builds URLs with query params and attaches Basic auth", async () => {

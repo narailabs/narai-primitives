@@ -10,20 +10,22 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import {
+  ConnectorError,
   createConnector,
   extractBinary,
   FORMAT_MAP,
+  mapHttpError,
   sanitizeLabel,
+  throwIfHttpError,
   type Connector,
   type ErrorCode,
+  type HttpResult,
 } from "narai-primitives/toolkit";
 import { z } from "zod";
 import {
   GithubClient,
   loadGithubCredentials,
-  type GithubResult,
 } from "./lib/github_client.js";
-import { GithubError } from "./lib/github_error.js";
 
 // ───────────────────────────────────────────────────────────────────────────
 // Param schemas
@@ -148,34 +150,22 @@ const CODE_MAP: Record<string, ErrorCode> = {
   CONFIG_ERROR: "CONFIG_ERROR",
 };
 
-function throwIfError<T>(
-  result: GithubResult<T>,
-): asserts result is Extract<GithubResult<T>, { ok: true }> {
-  if (!result.ok) {
-    throw new GithubError(
-      result.code,
-      result.message,
-      result.retriable,
-      result.status,
-    );
-  }
-}
 
 /**
  * Paginate a listing endpoint: walks `page=1, 2, 3…` until `maxResults`
- * is reached or a short page terminates the listing. Throws `GithubError`
+ * is reached or a short page terminates the listing. Throws `ConnectorError`
  * on any HTTP error so the factory's mapError sees the canonical code.
  */
 async function paginate<T>(
   maxResults: number,
-  fetchPage: (page: number, perPage: number) => Promise<GithubResult<T[]>>,
+  fetchPage: (page: number, perPage: number) => Promise<HttpResult<T[]>>,
 ): Promise<{ items: T[]; truncated: boolean }> {
   const perPage = Math.min(GITHUB_MAX_PER_PAGE, Math.max(1, maxResults));
   const acc: T[] = [];
   let truncated = false;
   for (let page = 1; ; page++) {
     const result = await fetchPage(page, perPage);
-    throwIfError(result);
+    throwIfHttpError(result);
     const chunk = Array.isArray(result.data) ? result.data : [];
     acc.push(...chunk);
     if (chunk.length < perPage) break;
@@ -220,7 +210,7 @@ export function buildGithubConnector(overrides: BuildOptions = {}): Connector {
   const defaultSdk = async (): Promise<GithubClient> => {
     const creds = await loadGithubCredentials();
     if (!creds) {
-      throw new GithubError(
+      throw new ConnectorError(
         "CONFIG_ERROR",
         "GitHub credentials not configured. Set GITHUB_TOKEN (personal access " +
           "token) or register a credential provider via narai-primitives/credentials.",
@@ -246,7 +236,7 @@ export function buildGithubConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "read" },
         handler: async (p: z.infer<typeof repoInfoParams>, ctx) => {
           const result = await ctx.sdk.getRepo(p.owner, p.repo);
-          throwIfError(result);
+          throwIfHttpError(result);
           const data = result.data;
           return {
             full_name: data.full_name,
@@ -267,7 +257,7 @@ export function buildGithubConnector(overrides: BuildOptions = {}): Connector {
         handler: async (p: z.infer<typeof searchCodeParams>, ctx) => {
           const limit = Math.min(p.max_results, MAX_RESULTS_CAP);
           const result = await ctx.sdk.searchCode(p.owner, p.repo, p.query, limit);
-          throwIfError(result);
+          throwIfHttpError(result);
           const data = result.data;
           return {
             total: data.total_count ?? 0,
@@ -344,7 +334,7 @@ export function buildGithubConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "read" },
         handler: async (p: z.infer<typeof getFileParams>, ctx) => {
           const result = await ctx.sdk.getFile(p.owner, p.repo, p.path, p.ref);
-          throwIfError(result);
+          throwIfHttpError(result);
           const data = result.data;
           let decoded = "";
           if (data.encoding === "base64" && data.content) {
@@ -369,7 +359,7 @@ export function buildGithubConnector(overrides: BuildOptions = {}): Connector {
             p.repo,
             p.issue_number,
           );
-          throwIfError(result);
+          throwIfHttpError(result);
           return {
             owner: p.owner,
             repo: p.repo,
@@ -397,13 +387,13 @@ export function buildGithubConnector(overrides: BuildOptions = {}): Connector {
             p.repo,
             p.pr_number,
           );
-          throwIfError(reviewsRes);
+          throwIfHttpError(reviewsRes);
           const inlineRes = await ctx.sdk.getPullReviewComments(
             p.owner,
             p.repo,
             p.pr_number,
           );
-          throwIfError(inlineRes);
+          throwIfHttpError(inlineRes);
           return {
             owner: p.owner,
             repo: p.repo,
@@ -441,7 +431,7 @@ export function buildGithubConnector(overrides: BuildOptions = {}): Connector {
             p.repo,
             p.tag,
           );
-          throwIfError(result);
+          throwIfHttpError(result);
           const rel = result.data;
           return {
             owner: p.owner,
@@ -480,7 +470,7 @@ export function buildGithubConnector(overrides: BuildOptions = {}): Connector {
             p.repo,
             p.asset_id,
           );
-          throwIfError(dl);
+          throwIfHttpError(dl);
           const { bytes, contentType, filename } = dl.data;
           const ext = path.extname(filename).toLowerCase();
           const fmt = FORMAT_MAP[ext];
@@ -537,16 +527,7 @@ export function buildGithubConnector(overrides: BuildOptions = {}): Connector {
         },
       },
     },
-    mapError: (err) => {
-      if (err instanceof GithubError) {
-        return {
-          error_code: CODE_MAP[err.code] ?? "CONNECTION_ERROR",
-          message: err.message,
-          retriable: err.retriable,
-        };
-      }
-      return undefined;
-    },
+    mapError: mapHttpError(CODE_MAP),
   });
 }
 
@@ -561,4 +542,4 @@ export {
   type GithubClientOptions,
   type GithubResult,
 } from "./lib/github_client.js";
-export { GithubError } from "./lib/github_error.js";
+export { ConnectorError as GithubError } from "narai-primitives/toolkit";

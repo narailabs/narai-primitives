@@ -224,11 +224,11 @@ describe("classifyHttpStatus — covered via request() error branches", () => {
 
   it.each([
     [401, "UNAUTHORIZED"],
-    [403, "UNAUTHORIZED"],
+    [403, "FORBIDDEN"],
     [404, "NOT_FOUND"],
     [400, "BAD_REQUEST"],
     [418, "HTTP_ERROR"],
-    [422, "HTTP_ERROR"],
+    [422, "UNPROCESSABLE"],
   ])("status %i maps to %s", async (status, code) => {
     const client = makeClient({}, async () =>
       jsonResponse({ message: "x" }, { status }),
@@ -296,13 +296,13 @@ describe("getAttachmentDownload — error branches", () => {
     }
   });
 
-  it("marks 503 as retriable=true via classifier fallback", async () => {
+  it("marks 503 as retriable=true (after retries exhausted)", async () => {
     const client = makeClient({}, async () => new Response("", { status: 503 }));
     const r = await client.getAttachmentDownload("10001");
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.retriable).toBe(true);
-      expect(r.code).toBe("HTTP_ERROR");
+      expect(r.code).toBe("SERVER_ERROR");
     }
   });
 
@@ -575,7 +575,7 @@ describe("listAttachments / getComments — optional fields branches", () => {
     const client = makeClient({}, async () => jsonResponse({}, { status: 403 }));
     const r = await client.getComments("DEV-1");
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.code).toBe("UNAUTHORIZED");
+    if (!r.ok) expect(r.code).toBe("FORBIDDEN");
   });
 });
 

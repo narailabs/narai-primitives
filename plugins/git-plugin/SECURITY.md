@@ -25,8 +25,9 @@ the plugin trivially by:
 - Toggling permission mode to `bypassPermissions` — that mode skips the
   hook entirely.
 - Accepting the `ask` prompt at the moment it appears.
-- Editing `~/.connectors/git-gate.json` to disable rules (the plugin
-  trusts that file unconditionally — see "Config file trust" below).
+- Setting `NARAI_GATE_DISABLE` to silence rules by name, or dropping
+  a custom `~/.connectors/connectors/<slug>/gates.json` (the dispatcher
+  trusts both unconditionally — see "Config file trust" below).
 - Writing a bash command that evades pattern matching (see
   "Pattern-matching limits" below).
 
@@ -48,7 +49,7 @@ checks instead — those run on infrastructure outside the user's control.
 
 ## Pattern-matching limits
 
-The classifier in `hooks/rules.mjs` works on the literal command string.
+The classifier in [`gates.json`](gates.json) works on the literal command string.
 Several constructs can evade matching:
 
 - **Quoted operators**: a literal `&&` inside single quotes splits the
@@ -67,7 +68,7 @@ Several constructs can evade matching:
 - **Custom branch names**: the `push_main` rule matches any
   `\bmain\b` or `\bmaster\b` token in the push args. A literal branch
   named `feature/main` will trip the rule. Disable via
-  `GIT_GATE_DISABLE=push_main` if your repo uses such names.
+  `NARAI_GATE_DISABLE=push_main` if your repo uses such names.
 
 If you need defense-in-depth against these, add **server-side branch
 protection** on the remote and require status checks before merge. The
@@ -75,23 +76,25 @@ plugin handles the local-side speed bump; the server enforces the rule.
 
 ## Config file trust
 
-The plugin reads `~/.connectors/git-gate.json` if present. The file is
-trusted unconditionally — if an attacker can write to that path, they
-can:
+The dispatcher reads any `~/.connectors/connectors/<slug>/gates.json`
+files if present (and the same under the current working directory).
+Those files are trusted unconditionally — if an attacker can write to
+that path, they can:
 
-- Add a `disabled: [...]` entry to silence any default rule.
 - Add a custom rule with `decision: "allow"` to short-circuit a default
   `ask` (note: `allow` cannot beat a `deny` due to precedence, but it
   can beat an `ask`).
+- Layer a rule with the same regex as a default but a softer decision,
+  effectively muffling the prompt with a less alarming reason.
 
 Mitigations:
 
-- Keep the file's parent directory (`~/.connectors/`) writable only by
-  the owner (`chmod 700`).
-- Treat write access to `~/.connectors/git-gate.json` as equivalent to
-  shell access. If your threat model includes someone who can modify
-  files in `$HOME` but not run git directly, this plugin's config
-  surface is one of many they could weaponise.
+- Keep the parent directory (`~/.connectors/`) writable only by the
+  owner (`chmod 700`).
+- Treat write access to `~/.connectors/` as equivalent to shell access.
+  If your threat model includes someone who can modify files in `$HOME`
+  but not run git directly, the gate surface is one of many they could
+  weaponise.
 
 ## Hook contract assumptions
 
@@ -103,9 +106,10 @@ stop gating. Track the [hooks
 documentation](https://code.claude.com/docs/en/hooks.md) and verify
 behavior after Claude Code upgrades.
 
-The hook script itself is dependency-free Node ESM and reads only the
-stdin payload + optional config file. It does not invoke `git`, write
-files, or make network requests.
+The hook script itself is the shared `plugin-hooks/dispatcher.mjs` from
+`narai-primitives`. It reads only the stdin payload + on-disk gate
+manifests (`CLAUDE_PLUGIN_ROOT/gates.json`, `~/.connectors/connectors/*/gates.json`, and the same under cwd). It does not invoke `git`, write
+files in the gate path, or make network requests.
 
 ## Reporting a vulnerability
 

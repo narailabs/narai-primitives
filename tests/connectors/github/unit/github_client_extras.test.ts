@@ -202,17 +202,9 @@ describe("GithubClient._send — retry & timeout branches", () => {
 
   it("rejects an unrecognized HTTP method as METHOD_NOT_ALLOWED", async () => {
     const client = makeClient();
-    // Use bracket-access to bypass private + reach `_send` directly.
-    const send = (
-      client as unknown as {
-        _send: (
-          method: string,
-          url: string,
-          body: unknown,
-        ) => Promise<{ ok: boolean; code?: string }>;
-      }
-    )._send.bind(client);
-    const r = await send("DELETE" as never, "https://api.github.com/x", null);
+    // Reach the underlying HttpClient to exercise an allow-list miss.
+    const http = (client as unknown as { _http: { request: (m: string, p: string) => Promise<{ ok: boolean; code?: string }> } })._http;
+    const r = await http.request("DELETE" as never, "/x");
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe("METHOD_NOT_ALLOWED");
   });
@@ -226,7 +218,7 @@ describe("GithubClient._send — retry & timeout branches", () => {
           fetchImpl: globalThis.fetch,
           sleepImpl: async () => {},
         }),
-    ).toThrow(/Invalid GitHub API base/);
+    ).toThrow(/Invalid base URL/);
   });
 });
 
@@ -373,24 +365,19 @@ describe("GithubClient — _throttle()", () => {
     let now = 1_000_000;
     const dateSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
     try {
+      const fetchMock = (async () =>
+        jsonResponse({ full_name: "a/b" })) as unknown as typeof globalThis.fetch;
       const client = makeClient({
         rateLimitPerMin: 2,
+        fetchImpl: fetchMock,
         sleepImpl: async (ms) => {
           sleeps.push(ms);
           now += ms; // advance the mocked clock by the sleep duration
         },
       });
-      const stub = vi
-        .spyOn(client as unknown as { _fetch: typeof globalThis.fetch }, "_fetch")
-        .mockImplementation((async () =>
-          jsonResponse({ full_name: "a/b" })) as never);
-      try {
-        await client.getRepo("a", "b");
-        await client.getRepo("a", "c");
-        await client.getRepo("a", "d");
-      } finally {
-        stub.mockRestore();
-      }
+      await client.getRepo("a", "b");
+      await client.getRepo("a", "c");
+      await client.getRepo("a", "d");
       expect(sleeps.length).toBeGreaterThanOrEqual(1);
     } finally {
       dateSpy.mockRestore();

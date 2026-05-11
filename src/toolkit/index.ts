@@ -253,3 +253,26 @@ export {
   type GuardrailManifest,
   type BlockMatch,
 } from "./guardrail.js";
+
+// ─── HTTP client (added in 3.4) ──────────────────────────────────────────
+
+export { ConnectorError } from "./connector_error.js";
+export {
+  HttpClient,
+  DEFAULT_HTTP_CODE_MAP,
+  classifyHttpStatus,
+  throwIfHttpError,
+  mapHttpError,
+  parseRetryAfter,
+  truncate,
+  parseContentDispositionFilename,
+  filenameFromPath,
+  type BinaryResponse,
+  type HttpClientOptions,
+  type HttpMethod,
+  type HttpRequestOptions,
+  type HttpResult,
+  type HttpResultErr,
+  type HttpResultOk,
+  type ResponseType,
+} from "./http_client.js";

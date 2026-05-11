@@ -6,9 +6,12 @@
  * for tests that want to inject a fake Notion client.
  */
 import {
+  ConnectorError,
   createConnector,
   fetchAttachment,
+  mapHttpError,
   sanitizeLabel,
+  throwIfHttpError,
   type Connector,
   type ErrorCode,
 } from "narai-primitives/toolkit";
@@ -17,10 +20,8 @@ import {
   NotionClient,
   extractTitleFromPage,
   loadNotionCredentials,
-  type NotionResult,
   type NotionRawBlock,
 } from "./lib/notion_client.js";
-import { NotionError } from "./lib/notion_error.js";
 import { markdownToBlocks } from "./lib/markdown_to_blocks.js";
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -169,18 +170,6 @@ const CODE_MAP: Record<string, ErrorCode> = {
   CONFIG_ERROR: "CONFIG_ERROR",
 };
 
-function throwIfError<T>(
-  result: NotionResult<T>,
-): asserts result is Extract<NotionResult<T>, { ok: true }> {
-  if (!result.ok) {
-    throw new NotionError(
-      result.code,
-      result.message,
-      result.retriable,
-      result.status,
-    );
-  }
-}
 
 const FILE_BLOCK_TYPES = new Set([
   "file",
@@ -239,7 +228,7 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
   const defaultSdk = async (): Promise<NotionClient> => {
     const creds = await loadNotionCredentials();
     if (!creds) {
-      throw new NotionError(
+      throw new ConnectorError(
         "CONFIG_ERROR",
         "Notion credentials not configured. Set NOTION_TOKEN or register a " +
           "credential provider via narai-primitives/credentials.",
@@ -269,7 +258,7 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
           const limit = Math.min(p.max_results, MAX_RESULTS_CAP);
           const filterType = p.filter_type === "" ? undefined : p.filter_type;
           const result = await ctx.sdk.search(p.query, filterType, limit);
-          throwIfError(result);
+          throwIfHttpError(result);
           const results = Array.isArray(result.data.results)
             ? result.data.results
             : [];
@@ -292,7 +281,7 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "read" },
         handler: async (p: z.infer<typeof getPageParams>, ctx) => {
           const result = await ctx.sdk.getPage(p.page_id);
-          throwIfError(result);
+          throwIfHttpError(result);
           const page = result.data;
           return {
             id: page.id,
@@ -310,7 +299,7 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "read" },
         handler: async (p: z.infer<typeof getDatabaseParams>, ctx) => {
           const result = await ctx.sdk.getDatabase(p.database_id);
-          throwIfError(result);
+          throwIfHttpError(result);
           const db = result.data;
           return {
             id: db.id,
@@ -334,7 +323,7 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
             p.filter,
             limit,
           );
-          throwIfError(result);
+          throwIfHttpError(result);
           const results = Array.isArray(result.data.results)
             ? result.data.results
             : [];
@@ -356,7 +345,7 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "read" },
         handler: async (p: z.infer<typeof listAttachmentsParams>, ctx) => {
           const result = await ctx.sdk.listPageFileBlocks(p.page_id);
-          throwIfError(result);
+          throwIfHttpError(result);
           const results = result.data.results ?? [];
           return {
             page_id: p.page_id,
@@ -380,7 +369,7 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "read" },
         handler: async (p: z.infer<typeof getAttachmentParams>, ctx) => {
           const blockRes = await ctx.sdk.getBlock(p.block_id);
-          throwIfError(blockRes);
+          throwIfHttpError(blockRes);
           // Verify the block actually belongs to the requested page so
           // callers can't fetch arbitrary block content by guessing IDs.
           // Notion exposes parent as {type: "page_id"|"block_id"|..., page_id?, ...}.
@@ -389,7 +378,7 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
           // would require an unbounded walk.
           const parent = (blockRes.data as { parent?: { type?: string; page_id?: string } }).parent;
           if (parent?.page_id !== p.page_id) {
-            throw new NotionError(
+            throw new ConnectorError(
               "NOT_FOUND",
               `Block '${p.block_id}' is not a direct child of page '${p.page_id}'`,
               false,
@@ -398,7 +387,7 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
           }
           const normalized = normalizeFileBlockForFetch(blockRes.data);
           if (!normalized) {
-            throw new NotionError(
+            throw new ConnectorError(
               "BAD_REQUEST",
               `Block ${p.block_id} is not a downloadable file/image/pdf/audio/video block`,
               false,
@@ -416,7 +405,7 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
               message.includes("invalid URL scheme") ||
               (err instanceof Error &&
                 err.constructor?.name === "FetchCapExceeded");
-            throw new NotionError(
+            throw new ConnectorError(
               isDeterministic ? "BAD_REQUEST" : "HTTP_ERROR",
               `Failed to fetch attachment URL: ${message}`,
               !isDeterministic,
@@ -444,7 +433,7 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "read" },
         handler: async (p: z.infer<typeof getCommentsParams>, ctx) => {
           const result = await ctx.sdk.getComments(p.page_id);
-          throwIfError(result);
+          throwIfHttpError(result);
           const results = result.data.results ?? [];
           return {
             page_id: p.page_id,
@@ -475,7 +464,7 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
           };
           if (children.length > 0) payload["children"] = children;
           const result = await ctx.sdk.createPage(payload);
-          throwIfError(result);
+          throwIfHttpError(result);
           return {
             id: result.data.id,
             url: result.data.url ?? null,
@@ -493,7 +482,7 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
           if (p.properties !== undefined) payload["properties"] = p.properties;
           if (p.archived !== undefined) payload["archived"] = p.archived;
           const result = await ctx.sdk.updatePage(p.page_id, payload);
-          throwIfError(result);
+          throwIfHttpError(result);
           return {
             id: result.data.id,
             last_edited: result.data.last_edited_time ?? null,
@@ -508,7 +497,7 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "write", aspects: ["delete"] },
         handler: async (p: z.infer<typeof archivePageParams>, ctx) => {
           const result = await ctx.sdk.archivePage(p.page_id);
-          throwIfError(result);
+          throwIfHttpError(result);
           return {
             id: result.data.id,
             archived: true,
@@ -523,7 +512,7 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
         handler: async (p: z.infer<typeof appendBlocksParams>, ctx) => {
           const children = toBlocks(p.children);
           const result = await ctx.sdk.appendBlocks(p.block_id, children);
-          throwIfError(result);
+          throwIfHttpError(result);
           return {
             block_id: p.block_id,
             results: result.data.results.length,
@@ -538,7 +527,7 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "write" },
         handler: async (p: z.infer<typeof updateBlockParams>, ctx) => {
           const result = await ctx.sdk.updateBlock(p.block_id, p.payload);
-          throwIfError(result);
+          throwIfHttpError(result);
           return {
             block_id: result.data.id,
             type: result.data.type ?? null,
@@ -553,7 +542,7 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
         classify: { kind: "write", aspects: ["delete"] },
         handler: async (p: z.infer<typeof deleteBlockParams>, ctx) => {
           const result = await ctx.sdk.deleteBlock(p.block_id);
-          throwIfError(result);
+          throwIfHttpError(result);
           return {
             block_id: result.data.id,
             archived: result.data.archived ?? true,
@@ -572,7 +561,7 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
             p.properties,
             children.length > 0 ? children : undefined,
           );
-          throwIfError(result);
+          throwIfHttpError(result);
           return {
             id: result.data.id,
             url: result.data.url ?? null,
@@ -589,7 +578,7 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
             p.page_id,
             p.properties,
           );
-          throwIfError(result);
+          throwIfHttpError(result);
           return {
             id: result.data.id,
             last_edited: result.data.last_edited_time ?? null,
@@ -598,16 +587,7 @@ export function buildNotionConnector(overrides: BuildOptions = {}): Connector {
         },
       },
     },
-    mapError: (err) => {
-      if (err instanceof NotionError) {
-        return {
-          error_code: CODE_MAP[err.code] ?? "CONNECTION_ERROR",
-          message: err.message,
-          retriable: err.retriable,
-        };
-      }
-      return undefined;
-    },
+    mapError: mapHttpError(CODE_MAP),
   });
 }
 
@@ -624,4 +604,4 @@ export {
   type NotionClientOptions,
   type NotionResult,
 } from "./lib/notion_client.js";
-export { NotionError } from "./lib/notion_error.js";
+export { ConnectorError as NotionError } from "narai-primitives/toolkit";

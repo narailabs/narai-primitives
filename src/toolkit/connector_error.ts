@@ -1,8 +1,9 @@
 /**
- * Bridges JiraClient's `{ok: false, code, ...}` result shape to the
- * handler-throws-an-Error contract the factory expects.
+ * Bridges an HTTP/SDK client's `{ok: false, code, ...}` result shape to the
+ * handler-throws-an-Error contract expected by `createConnector`. One class
+ * replaces the per-connector error classes that all had the same shape.
  */
-export class JiraError extends Error {
+export class ConnectorError extends Error {
   readonly code: string;
   readonly retriable: boolean;
   readonly httpStatus: number | undefined;
@@ -14,7 +15,7 @@ export class JiraError extends Error {
     httpStatus?: number,
   ) {
     super(message);
-    this.name = "JiraError";
+    this.name = "ConnectorError";
     this.code = code;
     this.retriable = retriable;
     this.httpStatus = httpStatus;

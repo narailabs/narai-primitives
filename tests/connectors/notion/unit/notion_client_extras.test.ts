@@ -203,7 +203,7 @@ describe("NotionClient.request — retry & timeout branches", () => {
           fetchImpl: globalThis.fetch,
           sleepImpl: async () => {},
         }),
-    ).toThrow(/Invalid Notion API base/);
+    ).toThrow(/Invalid base URL/);
   });
 });
 
@@ -215,25 +215,20 @@ describe("NotionClient — _throttle()", () => {
     let now = 1_000_000;
     const dateSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
     try {
+      const fetchMock = (async () =>
+        jsonResponse({ ok: true })) as unknown as typeof globalThis.fetch;
       const client = makeClient({
         rateLimitPerMin: 2,
+        fetchImpl: fetchMock,
         sleepImpl: async (ms) => {
           sleeps.push(ms);
           now += ms; // advance the mocked clock by the sleep duration
         },
       });
-      const fetchMock = async () => jsonResponse({ ok: true });
       // Drive 3 requests; the 3rd must sleep before issuing.
-      const stub = vi
-        .spyOn(client as unknown as { _fetch: typeof globalThis.fetch }, "_fetch")
-        .mockImplementation(fetchMock as never);
-      try {
-        await client.request("GET", "/v1/pages/a");
-        await client.request("GET", "/v1/pages/b");
-        await client.request("GET", "/v1/pages/c");
-      } finally {
-        stub.mockRestore();
-      }
+      await client.request("GET", "/v1/pages/a");
+      await client.request("GET", "/v1/pages/b");
+      await client.request("GET", "/v1/pages/c");
       expect(sleeps.length).toBeGreaterThanOrEqual(1);
     } finally {
       dateSpy.mockRestore();

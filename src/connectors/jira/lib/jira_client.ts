@@ -1,30 +1,22 @@
 /**
- * jira_client.ts — read-only Atlassian Cloud REST v3 HTTP client.
+ * jira_client.ts — Atlassian Cloud REST v3 HTTP client.
  *
- * Design guarantees:
- * - Only GET is permitted (enforced via the `method` whitelist).
- * - Every outgoing URL is validated via `security_check.validateUrl`.
- * - Connect/read timeouts enforced via `AbortController` (10s / 30s).
- * - Exponential backoff honours `Retry-After` headers on 429/5xx.
- * - A best-effort 60-req/min ceiling is applied per client instance.
- * - Credentials resolved via `resolveSecret` with `env_var` fallback order.
+ * Thin wrapper over the shared `HttpClient` in `narai-primitives/toolkit`:
+ * supplies Basic-auth, the Atlassian-Token header on multipart uploads,
+ * and the Jira endpoint surface. All retry/throttle/timeout/URL-validation
+ * logic comes from the shared client.
  */
-import { validateUrl } from "narai-primitives/toolkit";
+import {
+  HttpClient,
+  type BinaryResponse,
+  type HttpResult,
+  type HttpResultErr,
+  type HttpResultOk,
+} from "narai-primitives/toolkit";
 import { resolveSecret } from "narai-primitives/credentials";
 import { adfToPlainText, type AdfNode } from "./adf.js";
 
 type HttpMethod = "GET" | "POST" | "PUT" | "DELETE";
-const ALLOWED_METHODS: ReadonlySet<HttpMethod> = new Set<HttpMethod>([
-  "GET",
-  "POST",
-  "PUT",
-  "DELETE",
-]);
-
-const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
-const DEFAULT_READ_TIMEOUT_MS = 30_000;
-const DEFAULT_RATE_LIMIT_PER_MIN = 60;
-const MAX_ATTEMPTS = 4;
 
 export interface JiraClientOptions {
   /** Atlassian Cloud site URL — e.g. https://acme.atlassian.net. */
@@ -45,31 +37,19 @@ export interface JiraClientOptions {
   sleepImpl?: (ms: number) => Promise<void>;
 }
 
-export interface JiraErrorPayload {
-  ok: false;
-  code: string;
-  message: string;
-  retriable: boolean;
-  status?: number;
-}
+export type JiraErrorPayload = HttpResultErr;
+export type JiraSuccessPayload<T> = HttpResultOk<T>;
+export type JiraResult<T> = HttpResult<T>;
 
-export interface JiraSuccessPayload<T> {
-  ok: true;
-  data: T;
-  status: number;
-}
-
-export type JiraResult<T> = JiraSuccessPayload<T> | JiraErrorPayload;
-
-/** Resolve Jira credentials from the shared credential provider chain. */
 export async function loadJiraCredentials(): Promise<
   { siteUrl: string; email: string; apiToken: string } | null
 > {
-  const siteUrl = process.env["JIRA_SITE_URL"] ?? null;
-  const email =
-    (await resolveSecret("JIRA_EMAIL")) ??
-    process.env["JIRA_EMAIL"] ??
+  const siteUrl =
+    (await resolveSecret("JIRA_SITE_URL")) ??
+    process.env["JIRA_SITE_URL"] ??
     null;
+  const email =
+    (await resolveSecret("JIRA_EMAIL")) ?? process.env["JIRA_EMAIL"] ?? null;
   const apiToken =
     (await resolveSecret("JIRA_API_TOKEN")) ??
     process.env["JIRA_API_TOKEN"] ??
@@ -79,203 +59,51 @@ export async function loadJiraCredentials(): Promise<
 }
 
 export class JiraClient {
+  private readonly _http: HttpClient;
   private readonly _site: string;
-  private readonly _authHeader: string;
-  private readonly _rateLimitPerMin: number;
-  private readonly _connectTimeoutMs: number;
-  private readonly _readTimeoutMs: number;
-  private readonly _fetch: typeof globalThis.fetch;
-  private readonly _sleep: (ms: number) => Promise<void>;
-  private _requestTimestamps: number[] = [];
 
   constructor(opts: JiraClientOptions) {
-    if (!validateUrl(opts.siteUrl)) {
-      throw new Error(`Invalid Jira site URL: ${opts.siteUrl}`);
-    }
     this._site = opts.siteUrl.replace(/\/+$/, "");
-    const basic = Buffer.from(`${opts.email}:${opts.apiToken}`, "utf-8").toString(
-      "base64",
-    );
-    this._authHeader = `Basic ${basic}`;
-    this._rateLimitPerMin = opts.rateLimitPerMin ?? DEFAULT_RATE_LIMIT_PER_MIN;
-    this._connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
-    this._readTimeoutMs = opts.readTimeoutMs ?? DEFAULT_READ_TIMEOUT_MS;
-    this._fetch = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
-    this._sleep =
-      opts.sleepImpl ??
-      ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    const basic = Buffer.from(
+      `${opts.email}:${opts.apiToken}`,
+      "utf-8",
+    ).toString("base64");
+    this._http = new HttpClient({
+      baseUrl: opts.siteUrl,
+      authHeader: `Basic ${basic}`,
+      serviceName: "Jira",
+      allowedMethods: new Set<HttpMethod>(["GET", "POST", "PUT", "DELETE"]),
+      rateLimitPerMin: opts.rateLimitPerMin,
+      connectTimeoutMs: opts.connectTimeoutMs,
+      readTimeoutMs: opts.readTimeoutMs,
+      fetchImpl: opts.fetchImpl,
+      sleepImpl: opts.sleepImpl,
+    });
   }
 
-  /** Reset the request-per-minute sliding window (test helper). */
+  public get siteUrl(): string {
+    return this._site;
+  }
+
+  /** Clear the per-client rate-limit sliding window. Test-only convenience. */
   public resetRateLimiter(): void {
-    this._requestTimestamps = [];
-  }
-
-  private async _throttle(): Promise<void> {
-    const now = Date.now();
-    const cutoff = now - 60_000;
-    this._requestTimestamps = this._requestTimestamps.filter((t) => t > cutoff);
-    if (this._requestTimestamps.length >= this._rateLimitPerMin) {
-      const oldest = this._requestTimestamps[0] ?? now;
-      const waitMs = Math.max(0, 60_000 - (now - oldest));
-      if (waitMs > 0) await this._sleep(waitMs);
-      this._requestTimestamps = this._requestTimestamps.filter(
-        (t) => t > Date.now() - 60_000,
-      );
-    }
-    this._requestTimestamps.push(Date.now());
-  }
-
-  /** Build a URL against the site root. */
-  public buildUrl(path: string, query?: Record<string, unknown>): string {
-    const relative = path.startsWith("/") ? path : `/${path}`;
-    const base = `${this._site}${relative}`;
-    if (!query) return base;
-    const params = new URLSearchParams();
-    for (const [k, v] of Object.entries(query)) {
-      if (v === undefined || v === null) continue;
-      params.append(k, String(v));
-    }
-    const qs = params.toString();
-    return qs ? `${base}?${qs}` : base;
+    this._http.resetRateLimiter();
   }
 
   public async request<T = unknown>(
     method: HttpMethod,
     path: string,
     init: {
-      query?: Record<string, unknown>;
+      query?: Record<string, string | number | boolean | undefined | null>;
       headers?: Record<string, string>;
       body?: object | FormData;
     } = {},
   ): Promise<JiraResult<T>> {
-    if (!ALLOWED_METHODS.has(method)) {
-      return {
-        ok: false,
-        code: "METHOD_NOT_ALLOWED",
-        message: `Method ${method} is not permitted`,
-        retriable: false,
-      };
-    }
-    const url = this.buildUrl(path, init.query);
-    if (!validateUrl(url)) {
-      return {
-        ok: false,
-        code: "INVALID_URL",
-        message: `URL rejected: ${url}`,
-        retriable: false,
-      };
-    }
-
-    // Build the request body and any body-specific headers.
-    let fetchBody: string | FormData | undefined;
-    const bodyHeaders: Record<string, string> = {};
-    if (init.body !== undefined) {
-      if (init.body instanceof FormData) {
-        fetchBody = init.body;
-        // Do NOT set Content-Type: let fetch set the multipart boundary.
-      } else {
-        fetchBody = JSON.stringify(init.body);
-        bodyHeaders["Content-Type"] = "application/json";
-      }
-    }
-
-    let lastError: JiraErrorPayload | null = null;
-    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-      await this._throttle();
-      const connectCtrl = new AbortController();
-      const readCtrl = new AbortController();
-      const connectTimer = setTimeout(
-        () => connectCtrl.abort(),
-        this._connectTimeoutMs,
-      );
-      const readTimer = setTimeout(
-        () => readCtrl.abort(),
-        this._connectTimeoutMs + this._readTimeoutMs,
-      );
-      try {
-        const response = await this._fetch(url, {
-          method,
-          headers: {
-            Authorization: this._authHeader,
-            Accept: "application/json",
-            ...bodyHeaders,
-            ...(init.headers ?? {}),
-          },
-          ...(fetchBody !== undefined ? { body: fetchBody } : {}),
-          signal: readCtrl.signal,
-        });
-        clearTimeout(connectTimer);
-        const status = response.status;
-
-        if (status === 429 || status >= 500) {
-          const retryAfter = parseRetryAfter(response.headers.get("retry-after"));
-          const backoff =
-            retryAfter ?? Math.min(30_000, 500 * 2 ** attempt);
-          lastError = {
-            ok: false,
-            code: status === 429 ? "RATE_LIMITED" : "SERVER_ERROR",
-            message: `Jira returned HTTP ${status}`,
-            retriable: true,
-            status,
-          };
-          if (attempt < MAX_ATTEMPTS - 1) {
-            await this._sleep(backoff);
-            continue;
-          }
-          return lastError;
-        }
-
-        if (!response.ok) {
-          let bodyText = "";
-          try {
-            bodyText = await response.text();
-          } catch {
-            /* ignore */
-          }
-          return {
-            ok: false,
-            code: classifyHttpStatus(status),
-            message: `Jira HTTP ${status}: ${truncate(bodyText, 200)}`,
-            retriable: false,
-            status,
-          };
-        }
-
-        // 204 No Content — no body to parse.
-        if (status === 204) {
-          return { ok: true, data: {} as T, status };
-        }
-        const data = (await response.json()) as T;
-        return { ok: true, data, status };
-      } catch (err) {
-        clearTimeout(connectTimer);
-        const message = err instanceof Error ? err.message : String(err);
-        const aborted =
-          err instanceof DOMException || /abort/i.test(message);
-        lastError = {
-          ok: false,
-          code: aborted ? "TIMEOUT" : "NETWORK_ERROR",
-          message: aborted ? "Request timed out" : message,
-          retriable: true,
-        };
-        if (attempt < MAX_ATTEMPTS - 1) {
-          await this._sleep(Math.min(30_000, 500 * 2 ** attempt));
-          continue;
-        }
-        return lastError;
-      } finally {
-        clearTimeout(readTimer);
-      }
-    }
-    return (
-      lastError ?? {
-        ok: false,
-        code: "UNKNOWN",
-        message: "Exhausted retries without a response",
-        retriable: true,
-      }
-    );
+    return this._http.request<T>(method, path, {
+      query: init.query,
+      headers: init.headers,
+      body: init.body,
+    });
   }
 
   /**
@@ -321,17 +149,21 @@ export class JiraClient {
     };
   }
 
-  /** `/rest/api/3/issue/{issueKey}`. */
   public async getIssue(
     issueKey: string,
     expand: string[] = [],
   ): Promise<JiraResult<JiraIssue>> {
-    const opts: { query?: Record<string, unknown> } = {};
+    const opts: {
+      query?: Record<string, string | number | boolean | undefined | null>;
+    } = {};
     if (expand.length) opts.query = { expand: expand.join(",") };
-    return this.request<JiraIssue>("GET", `/rest/api/3/issue/${issueKey}`, opts);
+    return this.request<JiraIssue>(
+      "GET",
+      `/rest/api/3/issue/${issueKey}`,
+      opts,
+    );
   }
 
-  /** `/rest/api/3/project/{projectKey}`. */
   public async getProject(
     projectKey: string,
   ): Promise<JiraResult<JiraProject>> {
@@ -341,11 +173,6 @@ export class JiraClient {
     );
   }
 
-  /**
-   * List attachments on an issue. Uses `fields=attachment` on the issue
-   * endpoint because `fields.attachment` is the canonical list; there is
-   * no dedicated `/attachments` collection per issue.
-   */
   public async listAttachments(
     issueKey: string,
   ): Promise<JiraResult<JiraAttachmentList>> {
@@ -372,71 +199,17 @@ export class JiraClient {
     };
   }
 
-  /** Fetch raw attachment bytes. `GET /rest/api/3/attachment/content/{id}`. */
   public async getAttachmentDownload(
     attachmentId: string,
-  ): Promise<
-    JiraResult<{
-      bytes: Uint8Array;
-      contentType: string;
-      filename: string;
-    }>
-  > {
-    const url = this.buildUrl(`/rest/api/3/attachment/content/${attachmentId}`);
-    if (!validateUrl(url)) {
-      return {
-        ok: false,
-        code: "INVALID_URL",
-        message: `URL rejected: ${url}`,
-        retriable: false,
-      };
-    }
-    await this._throttle();
-    const ctrl = new AbortController();
-    const timer = setTimeout(
-      () => ctrl.abort(),
-      this._connectTimeoutMs + this._readTimeoutMs,
+  ): Promise<JiraResult<BinaryResponse>> {
+    return this._http.request<BinaryResponse>(
+      "GET",
+      `/rest/api/3/attachment/content/${attachmentId}`,
+      {
+        responseType: "binary",
+        filenameFallback: attachmentId,
+      },
     );
-    try {
-      const response = await this._fetch(url, {
-        method: "GET",
-        headers: {
-          Authorization: this._authHeader,
-          Accept: "*/*",
-        },
-        signal: ctrl.signal,
-      });
-      const status = response.status;
-      if (!response.ok) {
-        return {
-          ok: false,
-          code: classifyHttpStatus(status),
-          message: `Jira HTTP ${status} while downloading attachment ${attachmentId}`,
-          retriable: status === 429 || status >= 500,
-          status,
-        };
-      }
-      const buf = await response.arrayBuffer();
-      const bytes = new Uint8Array(buf);
-      const contentType =
-        response.headers.get("content-type") ?? "application/octet-stream";
-      const filename =
-        parseContentDispositionFilename(
-          response.headers.get("content-disposition"),
-        ) ?? attachmentId;
-      return { ok: true, data: { bytes, contentType, filename }, status };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const aborted = err instanceof DOMException || /abort/i.test(message);
-      return {
-        ok: false,
-        code: aborted ? "TIMEOUT" : "NETWORK_ERROR",
-        message: aborted ? "Request timed out" : message,
-        retriable: true,
-      };
-    } finally {
-      clearTimeout(timer);
-    }
   }
 
   public async getComments(
@@ -464,14 +237,12 @@ export class JiraClient {
     };
   }
 
-  /** POST /rest/api/3/issue */
   public async createIssue(
     payload: object,
   ): Promise<JiraResult<{ key: string; id: string; self: string }>> {
     return this.request("POST", "/rest/api/3/issue", { body: payload });
   }
 
-  /** PUT /rest/api/3/issue/{key} — returns 204 */
   public async updateIssue(
     key: string,
     payload: object,
@@ -479,14 +250,12 @@ export class JiraClient {
     return this.request("PUT", `/rest/api/3/issue/${key}`, { body: payload });
   }
 
-  /** DELETE /rest/api/3/issue/{key} — returns 204 */
   public async deleteIssue(
     key: string,
   ): Promise<JiraResult<Record<string, never>>> {
     return this.request("DELETE", `/rest/api/3/issue/${key}`);
   }
 
-  /** POST /rest/api/3/issue/{key}/comment */
   public async addComment(
     key: string,
     payload: object,
@@ -496,7 +265,6 @@ export class JiraClient {
     });
   }
 
-  /** PUT /rest/api/3/issue/{key}/comment/{id} */
   public async updateComment(
     key: string,
     id: string,
@@ -509,7 +277,6 @@ export class JiraClient {
     );
   }
 
-  /** DELETE /rest/api/3/issue/{key}/comment/{id} — returns 204 */
   public async deleteComment(
     key: string,
     id: string,
@@ -517,7 +284,6 @@ export class JiraClient {
     return this.request("DELETE", `/rest/api/3/issue/${key}/comment/${id}`);
   }
 
-  /** POST /rest/api/3/issue/{key}/transitions — returns 204 */
   public async transitionIssue(
     key: string,
     payload: object,
@@ -527,11 +293,6 @@ export class JiraClient {
     });
   }
 
-  /**
-   * POST /rest/api/3/issue/{key}/attachments — multipart upload.
-   * Each file becomes a `file` part with the given filename and MIME type.
-   * X-Atlassian-Token: no-check is required by Jira's CSRF protection.
-   */
   public async postAttachment(
     key: string,
     files: Array<{ filename: string; bytes: Uint8Array; mimeType?: string }>,
@@ -547,10 +308,6 @@ export class JiraClient {
       body: formData,
       headers: { "X-Atlassian-Token": "no-check" },
     });
-  }
-
-  public get siteUrl(): string {
-    return this._site;
   }
 }
 
@@ -637,28 +394,4 @@ interface JiraRawComment {
 interface JiraRawCommentResponse {
   comments?: JiraRawComment[];
   total?: number;
-}
-
-function parseRetryAfter(value: string | null): number | null {
-  if (!value) return null;
-  const seconds = Number(value);
-  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
-  return null;
-}
-
-function classifyHttpStatus(status: number): string {
-  if (status === 401 || status === 403) return "UNAUTHORIZED";
-  if (status === 404) return "NOT_FOUND";
-  if (status === 400) return "BAD_REQUEST";
-  return "HTTP_ERROR";
-}
-
-function truncate(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n) + "…" : s;
-}
-
-function parseContentDispositionFilename(header: string | null): string | null {
-  if (!header) return null;
-  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(header);
-  return match && match[1] ? match[1].trim() : null;
 }

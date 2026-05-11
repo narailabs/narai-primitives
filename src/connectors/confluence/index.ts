@@ -11,11 +11,14 @@ import * as path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import {
   createConnector,
+  ConnectorError,
   extractBinary,
   FORMAT_MAP,
+  mapHttpError,
   sanitizeLabel,
   assertValidAdf,
   checkPathContainment,
+  throwIfHttpError,
   type Connector,
   type ErrorCode,
 } from "narai-primitives/toolkit";
@@ -24,9 +27,7 @@ import { z } from "zod";
 import {
   ConfluenceClient,
   loadConfluenceCredentials,
-  type ConfluenceResult,
 } from "./lib/confluence_client.js";
-import { ConfluenceError } from "./lib/confluence_error.js";
 
 // ───────────────────────────────────────────────────────────────────────────
 // Param schemas
@@ -138,12 +139,14 @@ const postAttachmentParams = z.object({
 
 const CODE_MAP: Record<string, ErrorCode> = {
   UNAUTHORIZED: "AUTH_ERROR",
+  FORBIDDEN: "AUTH_ERROR",
   NOT_FOUND: "NOT_FOUND",
   RATE_LIMITED: "RATE_LIMITED",
   TIMEOUT: "TIMEOUT",
   NETWORK_ERROR: "CONNECTION_ERROR",
   SERVER_ERROR: "CONNECTION_ERROR",
   BAD_REQUEST: "VALIDATION_ERROR",
+  UNPROCESSABLE: "VALIDATION_ERROR",
   INVALID_URL: "VALIDATION_ERROR",
   METHOD_NOT_ALLOWED: "VALIDATION_ERROR",
   VALIDATION_ERROR: "VALIDATION_ERROR",
@@ -151,19 +154,6 @@ const CODE_MAP: Record<string, ErrorCode> = {
   CONFIG_ERROR: "CONFIG_ERROR",
 };
 
-/** Throw a ConfluenceError for a failed client result; type-narrows to the ok branch. */
-function throwIfError<T>(
-  result: ConfluenceResult<T>,
-): asserts result is Extract<ConfluenceResult<T>, { ok: true }> {
-  if (!result.ok) {
-    throw new ConfluenceError(
-      result.code,
-      result.message,
-      result.retriable,
-      result.status,
-    );
-  }
-}
 
 // ───────────────────────────────────────────────────────────────────────────
 // ADF conversion helper — local copy; JiraError vs ConfluenceError prevents
@@ -198,7 +188,7 @@ function toAdf(input: ContentInput): unknown {
   try {
     assertValidAdf(doc);
   } catch (e) {
-    throw new ConfluenceError(
+    throw new ConnectorError(
       "VALIDATION_ERROR",
       e instanceof Error ? e.message : String(e),
       false,
@@ -244,7 +234,7 @@ export function buildConfluenceConnector(
   const defaultSdk = async (): Promise<ConfluenceClient> => {
     const creds = await loadConfluenceCredentials();
     if (!creds) {
-      throw new ConfluenceError(
+      throw new ConnectorError(
         "CONFIG_ERROR",
         "Confluence credentials not configured. Set CONFLUENCE_SITE_URL, " +
           "CONFLUENCE_EMAIL, and CONFLUENCE_API_TOKEN (or register a credential " +
@@ -272,7 +262,7 @@ export function buildConfluenceConnector(
         handler: async (p: z.infer<typeof cqlSearchParams>, ctx) => {
           const limit = Math.min(p.max_results, MAX_RESULTS_CAP);
           const result = await ctx.sdk.searchCql(p.cql, limit);
-          throwIfError(result);
+          throwIfHttpError(result);
           const results = Array.isArray(result.data.results)
             ? result.data.results
             : [];
@@ -300,7 +290,7 @@ export function buildConfluenceConnector(
               ? p.expand
               : ["body.storage", "space", "version"];
           const result = await ctx.sdk.getContent(p.page_id, expand);
-          throwIfError(result);
+          throwIfHttpError(result);
           const data = result.data;
           return {
             id: data.id,
@@ -318,7 +308,7 @@ export function buildConfluenceConnector(
         classify: { kind: "read" },
         handler: async (p: z.infer<typeof getSpaceParams>, ctx) => {
           const result = await ctx.sdk.getSpace(p.space_key);
-          throwIfError(result);
+          throwIfHttpError(result);
           const data = result.data;
           return {
             key: data.key,
@@ -335,7 +325,7 @@ export function buildConfluenceConnector(
         classify: { kind: "read" },
         handler: async (p: z.infer<typeof listAttachmentsParams>, ctx) => {
           const result = await ctx.sdk.listAttachments(p.page_id, p.limit);
-          throwIfError(result);
+          throwIfHttpError(result);
           const results = result.data.results ?? [];
           return {
             page_id: p.page_id,
@@ -358,12 +348,12 @@ export function buildConfluenceConnector(
         classify: { kind: "read" },
         handler: async (p: z.infer<typeof getAttachmentParams>, ctx) => {
           const list = await ctx.sdk.listAttachments(p.page_id, 500);
-          throwIfError(list);
+          throwIfHttpError(list);
           const match = (list.data.results ?? []).find(
             (a) => a.id === p.attachment_id,
           );
           if (!match) {
-            throw new ConfluenceError(
+            throw new ConnectorError(
               "NOT_FOUND",
               `Attachment ${p.attachment_id} not found on page ${p.page_id}`,
               false,
@@ -372,14 +362,14 @@ export function buildConfluenceConnector(
           }
           const downloadPath = match._links?.download;
           if (!downloadPath) {
-            throw new ConfluenceError(
+            throw new ConnectorError(
               "BAD_REQUEST",
               `Attachment ${p.attachment_id} has no download link`,
               false,
             );
           }
           const dl = await ctx.sdk.getAttachmentDownload(downloadPath);
-          throwIfError(dl);
+          throwIfHttpError(dl);
           const { bytes, contentType, filename } = dl.data;
           const ext = path.extname(filename).toLowerCase();
           const fmt = FORMAT_MAP[ext];
@@ -440,7 +430,7 @@ export function buildConfluenceConnector(
         classify: { kind: "read" },
         handler: async (p: z.infer<typeof getCommentsParams>, ctx) => {
           const result = await ctx.sdk.getComments(p.page_id, p.limit);
-          throwIfError(result);
+          throwIfHttpError(result);
           const results = result.data.results ?? [];
           return {
             page_id: p.page_id,
@@ -476,7 +466,7 @@ export function buildConfluenceConnector(
             payload["ancestors"] = [{ id: p.parent_id }];
           }
           const result = await ctx.sdk.createPage(payload);
-          throwIfError(result);
+          throwIfHttpError(result);
           return {
             id: result.data.id,
             title: result.data.title ?? p.title,
@@ -502,7 +492,7 @@ export function buildConfluenceConnector(
             version: { number: p.expected_version + 1 },
           };
           const result = await ctx.sdk.updatePage(p.page_id, payload);
-          throwIfError(result);
+          throwIfHttpError(result);
           return {
             id: p.page_id,
             version: result.data.version?.number ?? p.expected_version + 1,
@@ -516,7 +506,7 @@ export function buildConfluenceConnector(
         classify: { kind: "write", aspects: ["delete"] },
         handler: async (p: z.infer<typeof deletePageParams>, ctx) => {
           const result = await ctx.sdk.deletePage(p.page_id);
-          throwIfError(result);
+          throwIfHttpError(result);
           return { id: p.page_id, deleted: true };
         },
       },
@@ -537,7 +527,7 @@ export function buildConfluenceConnector(
             },
           };
           const result = await ctx.sdk.addComment(payload);
-          throwIfError(result);
+          throwIfHttpError(result);
           const r = result.data;
           return {
             comment_id: r.id,
@@ -566,7 +556,7 @@ export function buildConfluenceConnector(
               files.push(entry);
             } else {
               if (!checkPathContainment(f.path, process.cwd())) {
-                throw new ConfluenceError(
+                throw new ConnectorError(
                   "VALIDATION_ERROR",
                   `Path '${f.path}' escapes working directory`,
                   false,
@@ -586,7 +576,7 @@ export function buildConfluenceConnector(
             }
           }
           const result = await ctx.sdk.postAttachment(p.page_id, files);
-          throwIfError(result);
+          throwIfHttpError(result);
           const attachments = Array.isArray(result.data.results)
             ? result.data.results
             : [];
@@ -602,16 +592,7 @@ export function buildConfluenceConnector(
         },
       },
     },
-    mapError: (err) => {
-      if (err instanceof ConfluenceError) {
-        return {
-          error_code: CODE_MAP[err.code] ?? "CONNECTION_ERROR",
-          message: err.message,
-          retriable: err.retriable,
-        };
-      }
-      return undefined;
-    },
+    mapError: mapHttpError(CODE_MAP),
   });
 }
 
@@ -627,4 +608,4 @@ export {
   type ConfluenceClientOptions,
   type ConfluenceResult,
 } from "./lib/confluence_client.js";
-export { ConfluenceError } from "./lib/confluence_error.js";
+export { ConnectorError as ConfluenceError } from "narai-primitives/toolkit";
