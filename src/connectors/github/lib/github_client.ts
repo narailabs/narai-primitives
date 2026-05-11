@@ -55,11 +55,13 @@ export class GithubClient {
   private readonly _http: HttpClient;
   private _defaultOwner: string | null = null;
   private readonly _authHeaderForLogs: string;
+  private readonly _logsTimeoutMs: number;
 
   constructor(opts: GithubClientOptions) {
     const apiBase = opts.apiBase ?? GITHUB_API_BASE;
     this._defaultOwner = opts.defaultOwner ?? null;
     this._authHeaderForLogs = `Bearer ${opts.token}`;
+    this._logsTimeoutMs = opts.readTimeoutMs ?? 30000;
     this._http = new HttpClient({
       baseUrl: apiBase,
       authHeader: `Bearer ${opts.token}`,
@@ -398,7 +400,7 @@ export class GithubClient {
     owner: string,
     repo: string,
     issueNumber: number,
-    body?: { state_reason?: "completed" | "not_planned" | "reopened" | null },
+    body?: { state_reason?: "completed" | "not_planned" | "duplicate" | null },
   ): Promise<GithubResult<GithubIssueDetail>> {
     const payload: { state: "closed"; state_reason?: string | null } = {
       state: "closed",
@@ -614,10 +616,12 @@ export class GithubClient {
     owner: string,
     repo: string,
     runId: number,
+    query: { per_page?: number; page?: number } = {},
   ): Promise<GithubResult<GithubWorkflowJobsList>> {
     return this._http.request<GithubWorkflowJobsList>(
       "GET",
       `/repos/${owner}/${repo}/actions/runs/${runId}/jobs`,
+      { query },
     );
   }
 
@@ -633,15 +637,21 @@ export class GithubClient {
     runId: number,
   ): Promise<GithubResult<{ url: string; content_length: number | null }>> {
     const path = `/repos/${owner}/${repo}/actions/runs/${runId}/logs`;
-    const url = new URL(path, this._http.baseUrl).toString();
+    const base = this._http.baseUrl;
+    const baseWithSlash = base.endsWith("/") ? base : base + "/";
+    const relative = path.startsWith("/") ? path.slice(1) : path;
+    const url = baseWithSlash + relative;
     const fetchFn = (this as unknown as {
       _http: { _fetch: typeof globalThis.fetch };
     })._http._fetch;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this._logsTimeoutMs);
     let resp: Response;
     try {
       resp = await fetchFn(url, {
         method: "GET",
         redirect: "manual",
+        signal: controller.signal,
         headers: {
           Accept: "application/vnd.github+json",
           Authorization: this._authHeaderForLogs,
@@ -649,12 +659,15 @@ export class GithubClient {
         },
       });
     } catch (e) {
+      const isAbort = e instanceof Error && e.name === "AbortError";
       return {
         ok: false,
-        code: "NETWORK_ERROR",
+        code: isAbort ? "TIMEOUT" : "NETWORK_ERROR",
         message: e instanceof Error ? e.message : String(e),
         retriable: true,
       };
+    } finally {
+      clearTimeout(timeoutId);
     }
     if (resp.status !== 302 && resp.status !== 200) {
       return {

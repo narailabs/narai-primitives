@@ -48,7 +48,7 @@ const closeIssueParams = z.object({
   owner: ownerRepoField,
   repo: ownerRepoField,
   issue_number: issueNumberField,
-  state_reason: z.enum(["completed", "not_planned", "reopened"]).optional(),
+  state_reason: z.enum(["completed", "not_planned", "duplicate"]).optional(),
 });
 
 function issueEnvelope(d: GithubIssueDetail) {
@@ -135,7 +135,7 @@ export function buildIssuesActions(_deps: GithubActionDeps): GithubActions {
       classify: { kind: "write", aspects: ["delete"] },
       handler: async (p, ctx) => {
         const body: {
-          state_reason?: "completed" | "not_planned" | "reopened";
+          state_reason?: "completed" | "not_planned" | "duplicate";
         } = {};
         if (p.state_reason !== undefined) body.state_reason = p.state_reason;
         const r = await ctx.sdk.closeIssue(

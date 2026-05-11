@@ -136,6 +136,30 @@ describe("update_issue — schema rejects state=closed", () => {
   });
 });
 
+describe("close_issue — state_reason enum", () => {
+  const actions = buildIssuesActions({ behavior: { requireDraftPr: false } });
+  it("accepts state_reason: 'duplicate'", () => {
+    expect(() =>
+      actions["close_issue"]!.params.parse({
+        owner: "o",
+        repo: "r",
+        issue_number: 1,
+        state_reason: "duplicate",
+      }),
+    ).not.toThrow();
+  });
+  it("rejects state_reason: 'reopened' (not a valid close reason)", () => {
+    expect(() =>
+      actions["close_issue"]!.params.parse({
+        owner: "o",
+        repo: "r",
+        issue_number: 1,
+        state_reason: "reopened",
+      }),
+    ).toThrow();
+  });
+});
+
 describe("close_issue", () => {
   it("returns closed envelope and accepts state_reason", async () => {
     let bodySent: Record<string, unknown> = {};

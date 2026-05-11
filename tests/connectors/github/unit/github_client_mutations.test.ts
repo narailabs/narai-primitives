@@ -429,4 +429,42 @@ describe("GithubClient — workflow methods", () => {
       expect(r.data.content_length).toBe(1024);
     }
   });
+
+  it("getRunLogsRedirect returns TIMEOUT when fetch never resolves within readTimeoutMs", async () => {
+    const client = makeClient(
+      async (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = (init as RequestInit | undefined)?.signal;
+          if (signal) {
+            signal.addEventListener("abort", () =>
+              reject(Object.assign(new Error("The operation was aborted."), { name: "AbortError" })),
+            );
+          }
+        }),
+      { readTimeoutMs: 30 },
+    );
+    const r = await client.getRunLogsRedirect("o", "r", 5);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe("TIMEOUT");
+      expect(r.retriable).toBe(true);
+    }
+  });
+
+  it("getRunLogsRedirect preserves apiBase path for GHES at /api/v3", async () => {
+    let observedUrl = "";
+    const client = makeClient(
+      async (url) => {
+        observedUrl = url;
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://example.com/logs.zip" },
+        });
+      },
+      { apiBase: "https://ghe.example/api/v3" },
+    );
+    const r = await client.getRunLogsRedirect("o", "r", 5);
+    expect(r.ok).toBe(true);
+    expect(observedUrl).toContain("/api/v3/repos/o/r/actions/runs/5/logs");
+  });
 });

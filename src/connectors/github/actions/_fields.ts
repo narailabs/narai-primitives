@@ -24,3 +24,16 @@ export const tagField = z
   .string()
   .min(1)
   .regex(/^[A-Za-z0-9._/+-]+$/, "Invalid tag");
+
+/**
+ * PR head ref — accepts the local `branch` form AND the cross-repo
+ * `owner:branch` form GitHub uses for fork-originated pull requests.
+ * Use this only for the `head` field of create_pull_request.
+ */
+export const prHeadField = z
+  .string()
+  .min(1)
+  .regex(
+    /^[A-Za-z0-9._/+-]+(:[A-Za-z0-9._/+-]+)?$/,
+    "Invalid PR head — must be 'branch' or 'owner:branch'",
+  );

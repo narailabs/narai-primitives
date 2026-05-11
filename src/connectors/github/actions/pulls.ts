@@ -16,7 +16,7 @@ import { ConnectorError, throwIfHttpError } from "narai-primitives/toolkit";
 import { z } from "zod";
 import type { GithubActionDeps, GithubActions } from "./_types.js";
 import type { GithubPullDetail } from "../lib/github_client.js";
-import { ownerRepoField, pullNumberField, branchField } from "./_fields.js";
+import { ownerRepoField, pullNumberField, branchField, prHeadField } from "./_fields.js";
 
 const getPullParams = z.object({
   owner: ownerRepoField,
@@ -28,7 +28,7 @@ const createPullParams = z.object({
   owner: ownerRepoField,
   repo: ownerRepoField,
   title: z.string().min(1),
-  head: branchField,
+  head: prHeadField,
   base: branchField,
   body: z.string().optional(),
   draft: z.boolean().default(false),

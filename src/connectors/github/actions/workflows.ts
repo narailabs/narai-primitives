@@ -11,6 +11,7 @@
 import { throwIfHttpError } from "narai-primitives/toolkit";
 import { z } from "zod";
 import { ownerRepoField, branchField } from "./_fields.js";
+import { paginate } from "./_pagination.js";
 import type { GithubActionDeps, GithubActions } from "./_types.js";
 
 const runIdField = z.coerce.number().int().positive();
@@ -54,6 +55,16 @@ const runIdParams = z.object({
   owner: ownerRepoField,
   repo: ownerRepoField,
   run_id: runIdField,
+});
+
+const MAX_RESULTS_DEFAULT = 30;
+const MAX_RESULTS_CAP = 1000;
+
+const listRunJobsParams = z.object({
+  owner: ownerRepoField,
+  repo: ownerRepoField,
+  run_id: runIdField,
+  max_results: z.coerce.number().int().positive().default(MAX_RESULTS_DEFAULT),
 });
 
 const dispatchParams = z.object({
@@ -133,15 +144,25 @@ export function buildWorkflowsActions(_deps: GithubActionDeps): GithubActions {
       },
     },
     list_workflow_run_jobs: {
-      description: "List the jobs inside a workflow run",
-      params: runIdParams,
+      description: "List the jobs inside a workflow run, paginated up to max_results",
+      params: listRunJobsParams,
       classify: { kind: "read" },
       handler: async (p, ctx) => {
-        const r = await ctx.sdk.listRunJobs(p.owner, p.repo, p.run_id);
-        throwIfHttpError(r);
+        const limit = Math.min(p.max_results, MAX_RESULTS_CAP);
+        const page = await paginate<import("../lib/github_client.js").GithubWorkflowJob>(
+          limit,
+          async (pageNum, perPage) => {
+            const r = await ctx.sdk.listRunJobs(p.owner, p.repo, p.run_id, {
+              per_page: perPage,
+              page: pageNum,
+            });
+            if (!r.ok) return r;
+            return { ok: true as const, status: r.status, data: r.data.jobs ?? [] };
+          },
+        );
         return {
-          total: r.data.total_count,
-          jobs: (r.data.jobs ?? []).map((j) => ({
+          total: page.items.length,
+          jobs: page.items.map((j) => ({
             id: j.id,
             name: j.name,
             status: j.status,
@@ -151,6 +172,7 @@ export function buildWorkflowsActions(_deps: GithubActionDeps): GithubActions {
             url: j.html_url ?? "",
             run_id: j.run_id,
           })),
+          truncated: page.truncated,
         };
       },
     },

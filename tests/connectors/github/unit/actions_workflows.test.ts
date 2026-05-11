@@ -84,6 +84,88 @@ describe("list_workflow_runs", () => {
   });
 });
 
+describe("list_workflow_run_jobs", () => {
+  it("returns jobs from a single page", async () => {
+    const sdk = fakeSdk({
+      listRunJobs: async () => ({
+        ok: true,
+        status: 200,
+        data: {
+          total_count: 2,
+          jobs: [
+            { id: 1, name: "build", status: "completed", conclusion: "success", run_id: 42 },
+            { id: 2, name: "test", status: "completed", conclusion: "failure", run_id: 42 },
+          ],
+        },
+      }),
+    });
+    const a = buildWorkflowsActions({ behavior: { requireDraftPr: false } });
+    const r = (await runHandler(
+      a["list_workflow_run_jobs"]!,
+      { owner: "o", repo: "r", run_id: 42 },
+      sdk,
+    )) as { total: number; jobs: Array<{ id: number; name: string }>; truncated: boolean };
+    expect(r.total).toBe(2);
+    expect(r.jobs).toHaveLength(2);
+    expect(r.jobs[0]).toMatchObject({ id: 1, name: "build" });
+    expect(r.truncated).toBe(false);
+  });
+
+  it("paginates and concatenates multiple pages", async () => {
+    let callCount = 0;
+    const sdk = fakeSdk({
+      listRunJobs: async (_o, _r, _id, query) => {
+        callCount++;
+        const perPage = query?.per_page ?? 30;
+        // page 1 returns a full page, page 2 returns a short page
+        const jobs =
+          (query?.page ?? 1) === 1
+            ? Array.from({ length: perPage }, (_, i) => ({
+                id: i + 1,
+                name: `job-${i + 1}`,
+                status: "completed",
+                conclusion: "success",
+                run_id: 1,
+              }))
+            : [{ id: 999, name: "last-job", status: "completed", conclusion: "success", run_id: 1 }];
+        return { ok: true, status: 200, data: { total_count: jobs.length, jobs } };
+      },
+    });
+    const a = buildWorkflowsActions({ behavior: { requireDraftPr: false } });
+    const r = (await runHandler(
+      a["list_workflow_run_jobs"]!,
+      { owner: "o", repo: "r", run_id: 1, max_results: 200 },
+      sdk,
+    )) as { total: number; truncated: boolean };
+    expect(callCount).toBeGreaterThan(1);
+    expect(r.truncated).toBe(false);
+  });
+
+  it("sets truncated=true when results exceed max_results", async () => {
+    const sdk = fakeSdk({
+      listRunJobs: async (_o, _r, _id, query) => {
+        const perPage = query?.per_page ?? 30;
+        const jobs = Array.from({ length: perPage }, (_, i) => ({
+          id: i + 1,
+          name: `job-${i + 1}`,
+          status: "completed",
+          conclusion: "success",
+          run_id: 1,
+        }));
+        return { ok: true, status: 200, data: { total_count: jobs.length, jobs } };
+      },
+    });
+    const a = buildWorkflowsActions({ behavior: { requireDraftPr: false } });
+    const r = (await runHandler(
+      a["list_workflow_run_jobs"]!,
+      { owner: "o", repo: "r", run_id: 1, max_results: 5 },
+      sdk,
+    )) as { total: number; truncated: boolean };
+    expect(r.total).toBe(5);
+    expect(r.truncated).toBe(true);
+  });
+});
+
 describe("get_workflow_run_logs returns redirect URL without body", () => {
   it("returns { url } from the captured Location header", async () => {
     const sdk = fakeSdk({

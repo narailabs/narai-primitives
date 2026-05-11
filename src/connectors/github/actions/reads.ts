@@ -16,15 +16,14 @@ import {
   FORMAT_MAP,
   sanitizeLabel,
   throwIfHttpError,
-  type HttpResult,
 } from "narai-primitives/toolkit";
 import { z } from "zod";
 import type { GithubActionDeps, GithubActions } from "./_types.js";
 import { ownerRepoField, issueNumberField, tagField } from "./_fields.js";
+import { paginate } from "./_pagination.js";
 
 const MAX_RESULTS_DEFAULT = 30;
 const MAX_RESULTS_CAP = 1000;
-const GITHUB_MAX_PER_PAGE = 100;
 
 const repoInfoParams = z.object({
   owner: ownerRepoField,
@@ -98,27 +97,6 @@ const getReleaseAssetParams = z.object({
   repo: ownerRepoField,
   asset_id: z.coerce.number().int().positive(),
 });
-
-async function paginate<T>(
-  maxResults: number,
-  fetchPage: (page: number, perPage: number) => Promise<HttpResult<T[]>>,
-): Promise<{ items: T[]; truncated: boolean }> {
-  const perPage = Math.min(GITHUB_MAX_PER_PAGE, Math.max(1, maxResults));
-  const acc: T[] = [];
-  let truncated = false;
-  for (let page = 1; ; page++) {
-    const result = await fetchPage(page, perPage);
-    throwIfHttpError(result);
-    const chunk = Array.isArray(result.data) ? result.data : [];
-    acc.push(...chunk);
-    if (chunk.length < perPage) break;
-    if (acc.length >= maxResults) {
-      truncated = true;
-      break;
-    }
-  }
-  return { items: acc.slice(0, maxResults), truncated };
-}
 
 export function buildReadActions(_deps: GithubActionDeps): GithubActions {
   return {

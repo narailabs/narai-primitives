@@ -186,6 +186,32 @@ describe("create_pull_request — require_draft_pr enforcement", () => {
   });
 });
 
+describe("create_pull_request — prHeadField allows fork owner:branch form", () => {
+  const actions = buildPullsActions({ behavior: { requireDraftPr: false } });
+  it("accepts fork-qualified head 'fork-owner:feat/x'", () => {
+    expect(() =>
+      actions["create_pull_request"]!.params.parse({
+        owner: "o",
+        repo: "r",
+        title: "t",
+        head: "fork-owner:feat/x",
+        base: "main",
+      }),
+    ).not.toThrow();
+  });
+  it("base rejects fork-qualified form 'fork-owner:main'", () => {
+    expect(() =>
+      actions["create_pull_request"]!.params.parse({
+        owner: "o",
+        repo: "r",
+        title: "t",
+        head: "feat/x",
+        base: "fork-owner:main",
+      }),
+    ).toThrow();
+  });
+});
+
 describe("update_pull_request — schema rejects state=closed", () => {
   const actions = buildPullsActions({ behavior: { requireDraftPr: false } });
   it("accepts state=open", () => {
