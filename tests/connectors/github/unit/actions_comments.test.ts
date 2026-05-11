@@ -142,6 +142,45 @@ describe("add_pr_review_comment", () => {
       }),
     ).toThrow();
   });
+
+  it("accepts paths with @scope, brackets, plus, parens, and unicode", () => {
+    const a = buildCommentsActions({ behavior: { requireDraftPr: false } });
+    const realisticPaths = [
+      "node_modules/@scope/pkg/lib/foo.ts",
+      "src/components/[id]/page.tsx",
+      "tests/some (case).spec.ts",
+      "build/output+v2.json",
+      "docs/résumé.md",
+    ];
+    for (const p of realisticPaths) {
+      expect(() =>
+        a["add_pr_review_comment"]!.params.parse({
+          owner: "o",
+          repo: "r",
+          pr_number: 1,
+          body: "x",
+          commit_id: "deadbeef",
+          path: p,
+          line: 1,
+        }),
+      ).not.toThrow();
+    }
+  });
+
+  it("still rejects path-traversal '..' in path", () => {
+    const a = buildCommentsActions({ behavior: { requireDraftPr: false } });
+    expect(() =>
+      a["add_pr_review_comment"]!.params.parse({
+        owner: "o",
+        repo: "r",
+        pr_number: 1,
+        body: "x",
+        commit_id: "deadbeef",
+        path: "../secrets.env",
+        line: 1,
+      }),
+    ).toThrow(/traversal/);
+  });
 });
 
 describe("delete_pr_review_comment", () => {

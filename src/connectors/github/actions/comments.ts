@@ -20,7 +20,6 @@ const shaField = z.string().regex(/^[a-f0-9]{7,40}$/, "Expected a git SHA");
 const pathField = z
   .string()
   .min(1)
-  .regex(/^[a-zA-Z0-9_./ -]+$/)
   .refine((p) => !p.includes(".."), { message: "Path traversal not allowed" });
 
 const commentIdField = z.coerce.number().int().positive();
