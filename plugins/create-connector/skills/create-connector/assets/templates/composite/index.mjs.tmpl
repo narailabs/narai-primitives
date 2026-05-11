@@ -1,0 +1,35 @@
+// {{SLUG}} — composite orchestrator. Calls {{DEPENDENCIES}} and composes the result.
+import { gather } from "narai-primitives";
+
+const SLUG = "{{SLUG}}";
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  if (!args.action) return errorEnvelope("VALIDATION_ERROR", "missing --action");
+
+  switch (args.action) {
+{{ACTIONS_DICTIONARY}}
+    default:
+      return errorEnvelope("VALIDATION_ERROR", `unknown action ${args.action}`);
+  }
+}
+
+function parseArgs(argv) {
+  const out = {};
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--action") out.action = argv[++i];
+    if (argv[i] === "--params") out.params = JSON.parse(argv[++i]);
+  }
+  return out;
+}
+
+function errorEnvelope(code, message) {
+  process.stdout.write(JSON.stringify({
+    status: "error",
+    error_code: code,
+    message,
+  }) + "\n");
+  process.exit(1);
+}
+
+main().catch((err) => errorEnvelope("INTERNAL_ERROR", err?.message ?? String(err)));

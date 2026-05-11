@@ -1,0 +1,27 @@
+---
+name: {{SLUG}}
+description: |
+  {{DESCRIPTION}}
+context: connector
+---
+
+# {{ServicePascal}}
+
+Shell-command gate. {{DESCRIPTION}}
+
+## What it does
+
+When Claude Code is about to invoke a Bash command matching one of the
+patterns below, this connector intercepts and surfaces a permission
+decision. No actions are exposed; this connector is purely a gate.
+
+## Rules
+
+| Pattern | Decision | Reason |
+|---|---|---|
+{{RULES_TABLE}}
+
+## Disable
+
+Set `NARAI_GATE_DISABLE` to a comma-separated list of rule names to skip
+specific rules without uninstalling.

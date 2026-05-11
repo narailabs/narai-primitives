@@ -1,0 +1,120 @@
+#!/usr/bin/env node
+/**
+ * connector-gate.mjs — auto-discovers user connectors at
+ * <scope>/.connectors/connectors/*\/gates.json and applies the rules at
+ * Claude Code PreToolUse on Bash.
+ *
+ * Scope is resolved from NARAI_GATE_SCOPE (set by Claude Code's hook
+ * invocation), or falls back to the parent of this script's directory.
+ *
+ * Output shape (per Claude Code hook contract):
+ *   { hookSpecificOutput: { hookEventName: "PreToolUse",
+ *                           permissionDecision: "allow"|"deny"|"ask",
+ *                           permissionDecisionReason: "..." } }
+ *
+ * Decision precedence: deny > ask > allow.
+ */
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+
+main().catch((err) => {
+  process.stderr.write(`connector-gate: ${err?.message ?? err}\n`);
+  process.exit(0);
+});
+
+async function main() {
+  const payload = await readStdinJson();
+  if (payload === null) return;
+  if (payload.tool_name !== "Bash") return;
+  const command = payload.tool_input?.command;
+  if (typeof command !== "string" || command.length === 0) return;
+
+  const scope = resolveScope();
+  const decisions = scanConnectors(scope, command);
+  if (decisions.length === 0) return;
+
+  const rank = { deny: 2, ask: 1, allow: 0 };
+  decisions.sort((a, b) => rank[b.decision] - rank[a.decision]);
+  const winner = decisions[0];
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: winner.decision,
+      permissionDecisionReason: winner.reason,
+    },
+  }));
+}
+
+function resolveScope() {
+  if (process.env.NARAI_GATE_SCOPE) return process.env.NARAI_GATE_SCOPE;
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  return path.dirname(here); // …/<scope>/.connectors → <scope>
+}
+
+function scanConnectors(scope, command) {
+  const root = path.join(scope, ".connectors", "connectors");
+  if (!fs.existsSync(root)) return [];
+  // NARAI_GATE_DISABLE is a comma-separated list of rule names to skip.
+  // Documented in the shell-gate SKILL.md as the disable hatch; runtime
+  // honors it so operators can silence a noisy rule without editing
+  // gates.json.
+  const disabled = new Set(
+    (process.env.NARAI_GATE_DISABLE ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+  const out = [];
+  for (const slug of fs.readdirSync(root)) {
+    const file = path.join(root, slug, "gates.json");
+    if (!fs.existsSync(file)) continue;
+    try {
+      const cfg = JSON.parse(fs.readFileSync(file, "utf-8"));
+      for (const rule of cfg.rules ?? []) {
+        if (
+          !["deny", "ask", "allow"].includes(rule.decision) ||
+          typeof rule.pattern !== "string"
+        ) continue;
+        if (typeof rule.name === "string" && disabled.has(rule.name)) continue;
+        let re;
+        try { re = new RegExp(rule.pattern); } catch { continue; }
+        for (const segment of splitCompound(command)) {
+          if (re.test(segment)) {
+            out.push({
+              decision: rule.decision,
+              reason: rule.reason ?? `${slug}: ${rule.name ?? "rule"}`,
+            });
+            break;
+          }
+        }
+      }
+    } catch (err) {
+      process.stderr.write(`connector-gate: bad ${file} (${err.message})\n`);
+    }
+  }
+  return out;
+}
+
+function splitCompound(cmd) {
+  const parts = cmd.split(/\s*(?:&&|\|\||;|\|)\s*/);
+  return parts
+    .map((p) => stripPrefix(p.trim()))
+    .filter((p) => p.length > 0);
+}
+
+function stripPrefix(s) {
+  let cur = s;
+  while (/^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/.test(cur)) {
+    cur = cur.replace(/^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/, "");
+  }
+  return cur.replace(/^(sudo|nice|time)\s+/, "");
+}
+
+async function readStdinJson() {
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  const raw = Buffer.concat(chunks).toString("utf-8").trim();
+  if (raw.length === 0) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}

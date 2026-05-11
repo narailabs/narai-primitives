@@ -1,0 +1,4 @@
+{
+  "name": "aws",
+  "binPath": "narai-primitives/dist/connectors/aws"
+}

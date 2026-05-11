@@ -9,12 +9,18 @@
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/reminder.mjs\" 2>/dev/null || true"
-          },
+            "command": "node \"${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/plugin-hooks/dispatcher.mjs\" session-start"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/plugin-hooks/stale-summarize.mjs\" 2>/dev/null || true",
-            "env": { "USAGE_CONNECTOR_NAME": "jira" }
+            "command": "node \"${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/plugin-hooks/dispatcher.mjs\" pre-tool-use"
           }
         ]
       }
@@ -25,11 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/plugin-hooks/usage-record.mjs\" 2>/dev/null || true",
-            "env": {
-              "USAGE_CONNECTOR_NAME": "jira",
-              "USAGE_BIN_HINT": "narai-primitives/dist/connectors/jira"
-            }
+            "command": "node \"${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/plugin-hooks/dispatcher.mjs\" post-tool-use"
           }
         ]
       }
@@ -39,8 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/plugin-hooks/session-summary.mjs\" 2>/dev/null || true",
-            "env": { "USAGE_CONNECTOR_NAME": "jira" }
+            "command": "node \"${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/plugin-hooks/dispatcher.mjs\" session-end"
           }
         ]
       }

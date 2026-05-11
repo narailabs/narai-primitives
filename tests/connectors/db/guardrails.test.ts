@@ -1,10 +1,15 @@
 /**
- * Tests for the install-time guardrail hook (`plugin/hooks/db-guard.mjs`).
+ * Tests for the db-agent guardrail enforced via the shared dispatcher's
+ * PreToolUse handler (`plugin-hooks/dispatcher.mjs` with kind=db).
  *
- * The hook is invoked as a subprocess with stdin-provided JSON — mirrors
- * exactly how Claude Code invokes PreToolUse hooks at runtime. Tests assert
- * the public contract: exit 0 always, stdout JSON with permissionDecision:
- * "deny" for a denied command, empty (or non-deny) stdout for allowed.
+ * The dispatcher is invoked as a subprocess with CLAUDE_PLUGIN_ROOT set to
+ * the db-agent plugin directory — mirrors how Claude Code invokes it at
+ * runtime. Tests assert the public contract: exit 0 always, stdout JSON with
+ * permissionDecision: "deny" for a denied command, empty stdout for allowed.
+ *
+ * Note: The old per-plugin DB_AGENT_GUARDRAILS=off opt-out env var is no
+ * longer supported by the dispatcher; that escape hatch was removed when
+ * db-guard.mjs was absorbed.
  */
 import { describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
@@ -13,16 +18,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const HOOK_PATH = path.resolve(
+const ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
   "..",
   "..",
-  "plugins",
-  "db-agent",
-  "hooks",
-  "db-guard.mjs",
 );
+
+const DISPATCHER_PATH = path.join(ROOT, "plugin-hooks", "dispatcher.mjs");
+const DB_PLUGIN_ROOT = path.join(ROOT, "plugins", "db-agent");
 
 type HookResult = { stdout: string; stderr: string; status: number | null };
 
@@ -34,10 +38,16 @@ function runHook(
   // developer's real `~/.connectors/config.yaml` during a test run.
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "db-guard-test-"));
   try {
-    const result = spawnSync("node", [HOOK_PATH], {
+    const result = spawnSync("node", [DISPATCHER_PATH, "pre-tool-use"], {
       input: JSON.stringify(payload),
       encoding: "utf-8",
-      env: { ...process.env, HOME: sandbox, ...env },
+      env: {
+        ...process.env,
+        HOME: sandbox,
+        CLAUDE_PLUGIN_ROOT: DB_PLUGIN_ROOT,
+        CLAUDE_PLUGIN_DATA: sandbox,
+        ...env,
+      },
     });
     return {
       stdout: result.stdout ?? "",
@@ -132,15 +142,7 @@ describe("db-guard hook", () => {
     }
   });
 
-  describe("opt-out and scope", () => {
-    it("honours DB_AGENT_GUARDRAILS=off (opt-out)", () => {
-      const r = runHook(bash("psql -h x -U u mydb"), {
-        DB_AGENT_GUARDRAILS: "off",
-      });
-      expect(r.status).toBe(0);
-      expect(isDenied(r.stdout)).toBe(false);
-    });
-
+  describe("scope", () => {
     it("does not fire for non-Bash tools", () => {
       const r = runHook({
         session_id: "test",
@@ -157,10 +159,15 @@ describe("db-guard hook", () => {
     it("does not block when stdin is not JSON", () => {
       const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "db-guard-test-"));
       try {
-        const r = spawnSync("node", [HOOK_PATH], {
+        const r = spawnSync("node", [DISPATCHER_PATH, "pre-tool-use"], {
           input: "this is not json at all",
           encoding: "utf-8",
-          env: { ...process.env, HOME: sandbox },
+          env: {
+            ...process.env,
+            HOME: sandbox,
+            CLAUDE_PLUGIN_ROOT: DB_PLUGIN_ROOT,
+            CLAUDE_PLUGIN_DATA: sandbox,
+          },
         });
         expect(r.status).toBe(0);
         expect(isDenied(r.stdout ?? "")).toBe(false);
