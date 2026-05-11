@@ -99,6 +99,13 @@ export function buildGithubConnector(overrides: BuildOptions = {}): Connector {
     scope: githubScope,
     credentials: overrides.credentials ?? defaultCredentials,
     sdk: overrides.sdk ?? defaultSdk,
+    policyFloorAspects: ["delete"],
+    defaultPolicy: {
+      read: "success",
+      write: "escalate",
+      admin: "denied",
+      aspects: { delete: "escalate" },
+    },
     actions: {
       ...buildReadActions({ behavior }),
       ...buildPullsActions({ behavior }),

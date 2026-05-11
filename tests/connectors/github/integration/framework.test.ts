@@ -153,6 +153,55 @@ describe("hardship logging integration", () => {
   });
 });
 
+describe("policy defaults & floors", () => {
+  it("rejects operator YAML setting policy.aspects.delete: success", async () => {
+    writeRepoPolicy("policy:\n  aspects:\n    delete: success\n");
+    const c = buildGithubConnector({
+      sdk: async () => makeClient({}, async () => jsonResponse({})),
+      credentials: async () => ({ token: "ghp_test" }),
+    });
+    // The toolkit loads policy eagerly on connector creation; the load error
+    // surfaces as a CONFIG_ERROR envelope on the first fetch call.
+    const result = await c.fetch("repo_info", { owner: "o", repo: "r" });
+    expect(result.status).toBe("error");
+    expect((result as { error_code?: string }).error_code).toBe("CONFIG_ERROR");
+    expect((result as { message?: string }).message).toMatch(/aspects.delete/);
+  });
+
+  it("admin actions are denied under defaultPolicy (no operator config)", async () => {
+    // No writeRepoPolicy call — falls through to the connector's defaultPolicy.
+    const c = buildGithubConnector({
+      sdk: async () =>
+        makeClient({}, async () => jsonResponse({ sha: "x", merged: true })),
+      credentials: async () => ({ token: "ghp_test" }),
+    });
+    const r = await c.fetch("merge_pull_request", {
+      owner: "o",
+      repo: "r",
+      pull_number: 1,
+      merge_method: "merge",
+    });
+    expect(r.status).toBe("denied");
+    expect((r as { reason?: string }).reason).toMatch(/admin/);
+  });
+
+  it("write+delete aspect escalates by default (no operator config)", async () => {
+    const c = buildGithubConnector({
+      sdk: async () =>
+        makeClient({}, async () =>
+          jsonResponse({ number: 1, title: "t", state: "closed" }),
+        ),
+      credentials: async () => ({ token: "ghp_test" }),
+    });
+    const r = await c.fetch("close_pull_request", {
+      owner: "o",
+      repo: "r",
+      pull_number: 1,
+    });
+    expect(r.status).toBe("escalate");
+  });
+});
+
 describe("--curate flag", () => {
   it("prints a JSON snapshot and exits 0", async () => {
     const c = buildGithubConnector({
