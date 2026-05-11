@@ -204,7 +204,7 @@ describe("GithubClient._send — retry & timeout branches", () => {
     const client = makeClient();
     // Reach the underlying HttpClient to exercise an allow-list miss.
     const http = (client as unknown as { _http: { request: (m: string, p: string) => Promise<{ ok: boolean; code?: string }> } })._http;
-    const r = await http.request("DELETE" as never, "/x");
+    const r = await http.request("HEAD" as never, "/x");
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe("METHOD_NOT_ALLOWED");
   });

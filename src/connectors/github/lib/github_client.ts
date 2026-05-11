@@ -60,7 +60,7 @@ export class GithubClient {
       baseUrl: apiBase,
       authHeader: `Bearer ${opts.token}`,
       serviceName: "GitHub",
-      allowedMethods: new Set(["GET", "POST"]),
+      allowedMethods: new Set(["GET", "POST", "PATCH", "PUT", "DELETE"]),
       defaultHeaders: {
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": GITHUB_API_VERSION,
