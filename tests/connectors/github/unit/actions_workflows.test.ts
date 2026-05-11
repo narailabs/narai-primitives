@@ -50,7 +50,7 @@ describe("list_workflow_runs", () => {
                 conclusion: "success",
                 event: "pull_request",
                 head_branch: "feat/x",
-                head_sha: "abc",
+                head_sha: "abc1234",
                 run_number: 12,
                 html_url: "u",
                 created_at: "x",
@@ -70,7 +70,7 @@ describe("list_workflow_runs", () => {
         branch: "feat/x",
         status: "completed",
         event: "pull_request",
-        head_sha: "abc",
+        head_sha: "abc1234",
       },
       sdk,
     )) as { total: number; runs: Array<{ id: number }> };
@@ -79,7 +79,7 @@ describe("list_workflow_runs", () => {
       branch: "feat/x",
       status: "completed",
       event: "pull_request",
-      head_sha: "abc",
+      head_sha: "abc1234",
     });
   });
 });

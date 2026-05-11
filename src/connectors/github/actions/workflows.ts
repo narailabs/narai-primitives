@@ -15,7 +15,7 @@ import type { GithubActionDeps, GithubActions } from "./_types.js";
 
 const runIdField = z.coerce.number().int().positive();
 const refField = z.string().min(1).regex(/^[A-Za-z0-9._/+-]+$/, "Invalid ref");
-const shaField = z.string().regex(/^[a-f0-9]{3,40}$/);
+const shaField = z.string().regex(/^[a-f0-9]{7,40}$/);
 const workflowIdField = z
   .string()
   .min(1)
