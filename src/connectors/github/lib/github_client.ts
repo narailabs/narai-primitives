@@ -54,10 +54,12 @@ export async function loadGithubCredentials(): Promise<
 export class GithubClient {
   private readonly _http: HttpClient;
   private _defaultOwner: string | null = null;
+  private readonly _authHeaderForLogs: string;
 
   constructor(opts: GithubClientOptions) {
     const apiBase = opts.apiBase ?? GITHUB_API_BASE;
     this._defaultOwner = opts.defaultOwner ?? null;
+    this._authHeaderForLogs = `Bearer ${opts.token}`;
     this._http = new HttpClient({
       baseUrl: apiBase,
       authHeader: `Bearer ${opts.token}`,
@@ -576,6 +578,150 @@ export class GithubClient {
       `/repos/${owner}/${repo}/releases/assets/${assetId}`,
     );
   }
+
+  // ─── workflows / Actions ────────────────────────────────────────────────
+  public async listWorkflowRuns(
+    owner: string,
+    repo: string,
+    query: {
+      branch?: string;
+      event?: string;
+      status?: string;
+      head_sha?: string;
+      per_page?: number;
+      page?: number;
+    },
+  ): Promise<GithubResult<GithubWorkflowRunsList>> {
+    return this._http.request<GithubWorkflowRunsList>(
+      "GET",
+      `/repos/${owner}/${repo}/actions/runs`,
+      { query },
+    );
+  }
+
+  public async getWorkflowRun(
+    owner: string,
+    repo: string,
+    runId: number,
+  ): Promise<GithubResult<GithubWorkflowRun>> {
+    return this._http.request<GithubWorkflowRun>(
+      "GET",
+      `/repos/${owner}/${repo}/actions/runs/${runId}`,
+    );
+  }
+
+  public async listRunJobs(
+    owner: string,
+    repo: string,
+    runId: number,
+  ): Promise<GithubResult<GithubWorkflowJobsList>> {
+    return this._http.request<GithubWorkflowJobsList>(
+      "GET",
+      `/repos/${owner}/${repo}/actions/runs/${runId}/jobs`,
+    );
+  }
+
+  /**
+   * Returns the 302 redirect URL for run logs without downloading the ZIP.
+   * Uses fetchImpl directly with redirect: "manual" so we can capture the
+   * Location header. Falls back to the normal _http.request if fetchImpl
+   * unavailable (testing convenience).
+   */
+  public async getRunLogsRedirect(
+    owner: string,
+    repo: string,
+    runId: number,
+  ): Promise<GithubResult<{ url: string; content_length: number | null }>> {
+    const path = `/repos/${owner}/${repo}/actions/runs/${runId}/logs`;
+    const url = new URL(path, this._http.baseUrl).toString();
+    const fetchFn = (this as unknown as {
+      _http: { _fetch: typeof globalThis.fetch };
+    })._http._fetch;
+    let resp: Response;
+    try {
+      resp = await fetchFn(url, {
+        method: "GET",
+        redirect: "manual",
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: this._authHeaderForLogs,
+          "X-GitHub-Api-Version": GITHUB_API_VERSION,
+        },
+      });
+    } catch (e) {
+      return {
+        ok: false,
+        code: "NETWORK_ERROR",
+        message: e instanceof Error ? e.message : String(e),
+        retriable: true,
+      };
+    }
+    if (resp.status !== 302 && resp.status !== 200) {
+      return {
+        ok: false,
+        code: "HTTP_ERROR",
+        status: resp.status,
+        message: `Unexpected status ${resp.status} from logs endpoint`,
+        retriable: false,
+      };
+    }
+    const location = resp.headers.get("location") ?? "";
+    const lenHdr = resp.headers.get("content-length");
+    return {
+      ok: true,
+      status: resp.status,
+      data: {
+        url: location,
+        content_length: lenHdr ? Number(lenHdr) : null,
+      },
+    };
+  }
+
+  public async rerunRun(
+    owner: string,
+    repo: string,
+    runId: number,
+  ): Promise<GithubResult<unknown>> {
+    return this._http.request<unknown>(
+      "POST",
+      `/repos/${owner}/${repo}/actions/runs/${runId}/rerun`,
+    );
+  }
+
+  public async rerunFailedJobs(
+    owner: string,
+    repo: string,
+    runId: number,
+  ): Promise<GithubResult<unknown>> {
+    return this._http.request<unknown>(
+      "POST",
+      `/repos/${owner}/${repo}/actions/runs/${runId}/rerun-failed-jobs`,
+    );
+  }
+
+  public async cancelRun(
+    owner: string,
+    repo: string,
+    runId: number,
+  ): Promise<GithubResult<unknown>> {
+    return this._http.request<unknown>(
+      "POST",
+      `/repos/${owner}/${repo}/actions/runs/${runId}/cancel`,
+    );
+  }
+
+  public async triggerWorkflowDispatch(
+    owner: string,
+    repo: string,
+    workflowIdOrFilename: string,
+    body: { ref: string; inputs?: Record<string, string> },
+  ): Promise<GithubResult<unknown>> {
+    return this._http.request<unknown>(
+      "POST",
+      `/repos/${owner}/${repo}/actions/workflows/${encodeURIComponent(workflowIdOrFilename)}/dispatches`,
+      { body },
+    );
+  }
 }
 
 // ── Response types (partial; only fields we surface) ──────────────────
@@ -759,4 +905,39 @@ export interface GithubReleaseDetail {
   html_url?: string;
   published_at?: string | null;
   target_commitish?: string;
+}
+
+export interface GithubWorkflowRun {
+  id: number;
+  name?: string;
+  status?: string;
+  conclusion?: string | null;
+  event?: string;
+  head_branch?: string;
+  head_sha?: string;
+  run_number?: number;
+  html_url?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface GithubWorkflowRunsList {
+  total_count: number;
+  workflow_runs: GithubWorkflowRun[];
+}
+
+export interface GithubWorkflowJob {
+  id: number;
+  name: string;
+  status: string;
+  conclusion?: string | null;
+  started_at?: string;
+  completed_at?: string | null;
+  html_url?: string;
+  run_id: number;
+}
+
+export interface GithubWorkflowJobsList {
+  total_count: number;
+  jobs: GithubWorkflowJob[];
 }

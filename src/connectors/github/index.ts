@@ -22,6 +22,7 @@ import { buildPullsActions } from "./actions/pulls.js";
 import { buildIssuesActions } from "./actions/issues.js";
 import { buildCommentsActions } from "./actions/comments.js";
 import { buildReleasesActions } from "./actions/releases.js";
+import { buildWorkflowsActions } from "./actions/workflows.js";
 
 // ───────────────────────────────────────────────────────────────────────────
 // Error-code translation
@@ -104,6 +105,7 @@ export function buildGithubConnector(overrides: BuildOptions = {}): Connector {
       ...buildIssuesActions({ behavior }),
       ...buildCommentsActions({ behavior }),
       ...buildReleasesActions({ behavior }),
+      ...buildWorkflowsActions({ behavior }),
     },
     mapError: mapHttpError(CODE_MAP),
   });

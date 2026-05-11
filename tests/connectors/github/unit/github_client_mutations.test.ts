@@ -373,3 +373,60 @@ describe("GithubClient — release methods", () => {
     expect(observed.url).toMatch(/\/repos\/o\/r\/releases\/assets\/7$/);
   });
 });
+
+describe("GithubClient — workflow methods", () => {
+  it("listWorkflowRuns GETs /actions/runs with query", async () => {
+    let observed = { url: "" };
+    const client = makeClient(async (url) => {
+      observed = { url };
+      return jsonResponse({ total_count: 0, workflow_runs: [] });
+    });
+    const r = await client.listWorkflowRuns("o", "r", { branch: "main" });
+    expect(r.ok).toBe(true);
+    expect(observed.url).toMatch(/\/actions\/runs/);
+    expect(observed.url).toContain("branch=main");
+  });
+  it("rerunRun POSTs /actions/runs/{id}/rerun", async () => {
+    let observed = { url: "", method: "" };
+    const client = makeClient(async (url, init) => {
+      observed = { url, method: String(init?.method ?? "") };
+      return jsonResponse({}, 201);
+    });
+    const r = await client.rerunRun("o", "r", 5);
+    expect(r.ok).toBe(true);
+    expect(observed.method).toBe("POST");
+    expect(observed.url).toMatch(/\/actions\/runs\/5\/rerun$/);
+  });
+  it("triggerWorkflowDispatch POSTs /actions/workflows/{wf}/dispatches", async () => {
+    let observed = { url: "", body: "" };
+    const client = makeClient(async (url, init) => {
+      observed = { url, body: String(init?.body ?? "") };
+      return new Response(null, { status: 204 });
+    });
+    const r = await client.triggerWorkflowDispatch("o", "r", "ci.yml", {
+      ref: "main",
+      inputs: { foo: "bar" },
+    });
+    expect(r.ok).toBe(true);
+    expect(observed.url).toMatch(/\/actions\/workflows\/ci\.yml\/dispatches$/);
+    expect(observed.body).toContain('"ref":"main"');
+  });
+  it("getRunLogsRedirect captures Location from 302", async () => {
+    const client = makeClient(async () =>
+      new Response(null, {
+        status: 302,
+        headers: {
+          location:
+            "https://pipelines.actions.githubusercontent.com/x/logs.zip",
+          "content-length": "1024",
+        },
+      }),
+    );
+    const r = await client.getRunLogsRedirect("o", "r", 5);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.data.url).toMatch(/logs\.zip$/);
+      expect(r.data.content_length).toBe(1024);
+    }
+  });
+});
