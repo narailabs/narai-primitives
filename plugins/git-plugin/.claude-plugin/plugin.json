@@ -1,6 +1,0 @@
-{
-  "name": "git-plugin",
-  "version": "1.0.0",
-  "description": "Pre-tool-use hook that gates risky git commands (push, force-push, branch deletion, reset --hard, etc.). No agents or actions — hooks only.",
-  "author": "narailabs"
-}

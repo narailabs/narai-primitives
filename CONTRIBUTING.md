@@ -5,7 +5,7 @@ Thanks for your interest in contributing. Most contributions fall into one of tw
 1. **Fixes / improvements to existing code** — see [Fixes and improvements](#fixes-and-improvements) below for the local-dev loop, conventions, and PR hygiene.
 2. **A brand-new builtin connector** — read the [New builtin connector](#new-builtin-connector) section. It describes the file layout, naming, testing, and marketplace surfacing expected of a new builtin.
 
-If you instead want a **local connector** for your own project (private API, internal tool, one-off), don't add it here. Use the `/create-connector` Claude Code skill (shipped via the [`narai`](https://github.com/narailabs/narai-claude-plugins) marketplace) — it scaffolds a minimal local connector at `.connectors/connectors/<slug>/` with no plugin layer, no publish step, no `git init`. Builtins are reserved for connectors useful enough that bundling them in the core npm package and shipping a Claude Code plugin for them is justified.
+If you instead want a **local connector** for your own project (private API, internal tool, one-off), don't add it here. Use the `/connector-creator` Claude Code skill (shipped via the [`narai`](https://github.com/narailabs/narai-claude-plugins) marketplace) — it scaffolds a minimal local connector at `.connectors/connectors/<slug>/` with no plugin layer, no publish step, no `git init`. Builtins are reserved for connectors useful enough that bundling them in the core npm package and shipping a Claude Code plugin for them is justified.
 
 ## Fixes and improvements
 
@@ -68,16 +68,16 @@ src/connectors/<slug>/
     <slug>_error.ts      service-specific error class
     (other helpers)
 
-plugins/<slug>-agent/
+plugins/<slug>-connector/
   .claude-plugin/
     plugin.json          plugin manifest with independent version
   package.json           runtime install metadata for SessionStart hook
-  bin/<slug>-agent       executable bash shim that exec's the connector CLI
+  bin/<slug>-connector   executable bash shim that exec's the connector CLI
   hooks/
     hooks.json           SessionStart / PostToolUse / SessionEnd hooks
     reminder.mjs         optional credential reminder
-  commands/<slug>-agent.md
-  skills/<slug>-agent/SKILL.md
+  commands/<slug>-connector.md
+  skills/<slug>-connector/SKILL.md
   README.md
 
 tests/connectors/<slug>/
@@ -96,13 +96,13 @@ tests/connectors/<slug>/
 | `src/connectors/<slug>/cli.ts` | Identical pattern to `src/connectors/jira/cli.ts`: import `loadConnectorEnvironment` from `narai-primitives/config`, declare an env-mapping (`{ config_key: ENV_VAR_NAME }`), then call `connector.main(process.argv.slice(2))`. |
 | `src/connectors/<slug>/lib/<slug>_client.ts` | HTTP client (or SDK wrapper). Export `load<Service>Credentials()`, the client class, and a `<Service>Result<T>` discriminated union for handler returns. |
 | `src/connectors/<slug>/lib/<slug>_error.ts` | Service-specific `Error` subclass tagged with an `ErrorCode` from the toolkit. |
-| `plugins/<slug>-agent/.claude-plugin/plugin.json` | `{ "name": "<slug>-agent-plugin", "version": "1.0.0", ... }`. Plugin version is independent of the bundle version. |
-| `plugins/<slug>-agent/package.json` | Runtime install metadata used by the plugin's SessionStart hook to materialize the connector binary inside the user's plugin data dir. Mirror `plugins/jira-agent/package.json`. |
-| `plugins/<slug>-agent/bin/<slug>-agent` | Bash shim that `exec node`s the installed CLI. Mirror `plugins/jira-agent/bin/jira-agent` exactly; remember `chmod +x` after writing. |
-| `plugins/<slug>-agent/hooks/hooks.json` | Mirror `plugins/jira-agent/hooks/hooks.json`. Set `USAGE_CONNECTOR_NAME` to `<slug>` in each block. |
-| `plugins/<slug>-agent/skills/<slug>-agent/SKILL.md` | "Use when the user asks about ..." — the trigger phrase block goes in the frontmatter `description`. The body lists actions and credentials. |
-| `plugins/<slug>-agent/commands/<slug>-agent.md` | Slash-command wrapper. See `plugins/jira-agent/commands/jira-agent.md`. |
-| `plugins/<slug>-agent/README.md` | One-screen credentials + license note. |
+| `plugins/<slug>-connector/.claude-plugin/plugin.json` | `{ "name": "<slug>-connector-plugin", "version": "1.0.0", ... }`. Plugin version is independent of the bundle version. |
+| `plugins/<slug>-connector/package.json` | Runtime install metadata used by the plugin's SessionStart hook to materialize the connector binary inside the user's plugin data dir. Mirror `plugins/jira-connector/package.json`. |
+| `plugins/<slug>-connector/bin/<slug>-connector` | Bash shim that `exec node`s the installed CLI. Mirror `plugins/jira-connector/bin/jira-connector` exactly; remember `chmod +x` after writing. |
+| `plugins/<slug>-connector/hooks/hooks.json` | Mirror `plugins/jira-connector/hooks/hooks.json`. Set `USAGE_CONNECTOR_NAME` to `<slug>` in each block. |
+| `plugins/<slug>-connector/skills/<slug>-connector/SKILL.md` | "Use when the user asks about ..." — the trigger phrase block goes in the frontmatter `description`. The body lists actions and credentials. |
+| `plugins/<slug>-connector/commands/<slug>-connector.md` | Slash-command wrapper. See `plugins/jira-connector/commands/jira-connector.md`. |
+| `plugins/<slug>-connector/README.md` | One-screen credentials + license note. |
 | `tests/connectors/<slug>/unit/cli.test.ts` | One happy-path test per action invocation through the CLI. |
 | `tests/connectors/<slug>/unit/<slug>_client_extras.test.ts` | One test per public client method asserting URL, method, headers. |
 | `tests/connectors/<slug>/integration/framework.test.ts` | Connector-toolkit framework smoke test. See `tests/connectors/jira/integration/framework.test.ts`. |
@@ -122,9 +122,9 @@ tests/connectors/<slug>/
 | Service slug | lowercase, hyphens allowed | `jira`, `acme-msg` |
 | Subpath import | `narai-primitives/<slug>` | `narai-primitives/jira` |
 | Bin name (back-compat) | `<slug>-agent-connector` | `jira-agent-connector` |
-| Plugin directory | `plugins/<slug>-agent/` | `plugins/jira-agent/` |
-| Plugin name (in `plugin.json`) | `<slug>-agent-plugin` | `jira-agent-plugin` |
-| Plugin name (in marketplace) | `<slug>-agent` | `jira-agent` |
+| Plugin directory | `plugins/<slug>-connector/` | `plugins/jira-connector/` |
+| Plugin name (in `plugin.json`) | `<slug>-connector-plugin` | `jira-connector-plugin` |
+| Plugin name (in marketplace) | `<slug>-connector` | `jira-connector` |
 | Source library files | underscores instead of hyphens | `acme_msg_client.ts`, `acme_msg_error.ts` |
 | Env var prefix | uppercase, underscores | `JIRA_API_TOKEN`, `ACME_MSG_TOKEN` |
 | Connector class name (PascalCase) | strip hyphens / underscores | `Jira`, `AcmeMsg` |
@@ -172,11 +172,11 @@ Plugins are exposed to Claude Code via the [`narailabs/narai-claude-plugins`](ht
 
 ```json
 {
-  "name": "<slug>-agent",
+  "name": "<slug>-connector",
   "source": {
     "source": "git-subdir",
     "url": "https://github.com/narailabs/narai-primitives.git",
-    "path": "plugins/<slug>-agent",
+    "path": "plugins/<slug>-connector",
     "ref": "main"
   },
   "description": "<one-line description — what data the connector exposes>",
@@ -198,14 +198,14 @@ Bump the marketplace `version` in the same file (patch bump for a new connector 
 - [ ] `npm run typecheck && npm run build && npm test && npm run coverage` clean locally
 - [ ] `package.json` `exports` and `bin` updated
 - [ ] `README.md` lists the new subpath
-- [ ] PR description states why the service belongs as a builtin (not as a local connector via `/create-connector`)
+- [ ] PR description states why the service belongs as a builtin (not as a local connector via `/connector-creator`)
 - [ ] Action classifications justified if any are non-`read`
 - [ ] Follow-up marketplace PR linked or noted
 
 ## Reference material
 
 - `src/connectors/jira/` — canonical connector source layout
-- `plugins/jira-agent/` — canonical plugin layout
+- `plugins/jira-connector/` — canonical plugin layout
 - `tests/connectors/jira/` — canonical test layout
 - `src/toolkit/` — `createConnector`, policy gate, audit, hardship, envelope contract
 - `src/hub/` — `gather()` planning + dispatch (you don't usually touch this when adding a connector)

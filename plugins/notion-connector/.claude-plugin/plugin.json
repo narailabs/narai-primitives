@@ -1,0 +1,6 @@
+{
+  "name": "notion-connector-plugin",
+  "version": "1.1.0",
+  "description": "Read + write CRUD on Notion pages, blocks, and database entries. Policy-gated.",
+  "author": "narai"
+}

@@ -57,7 +57,7 @@ function setupFakeConnector(
 
 /** Build a fake bundled-2.x layout under `<root>/narai-primitives/`:
  *   - dist/connectors/<name>/cli.js
- *   - plugins/<name>-agent/skills/<name>-agent/SKILL.md
+ *   - plugins/<name>-connector/skills/<name>-connector/SKILL.md
  *  Returns the cli path so a test can register it with the cliResolver. */
 function setupBundledConnector(
   root: string,
@@ -67,7 +67,7 @@ function setupBundledConnector(
   const pkgRoot = path.join(root, "narai-primitives");
   fs.mkdirSync(path.join(pkgRoot, "dist", "connectors", name), { recursive: true });
   fs.mkdirSync(
-    path.join(pkgRoot, "plugins", `${name}-agent`, "skills", `${name}-agent`),
+    path.join(pkgRoot, "plugins", `${name}-connector`, "skills", `${name}-connector`),
     { recursive: true },
   );
   const cliPath = path.join(pkgRoot, "dist", "connectors", name, "cli.js");
@@ -77,7 +77,7 @@ function setupBundledConnector(
       `process.stdout.write(JSON.stringify({status:"success",action:"x",data:{name:"${name}"}}));\n`,
   );
   fs.writeFileSync(
-    path.join(pkgRoot, "plugins", `${name}-agent`, "skills", `${name}-agent`, "SKILL.md"),
+    path.join(pkgRoot, "plugins", `${name}-connector`, "skills", `${name}-connector`, "SKILL.md"),
     opts.skill ?? `# ${name} skill body (bundled)`,
   );
   return cliPath;
@@ -158,10 +158,10 @@ describe("gather end-to-end with stubs", () => {
     expect(out.results[0]?.error).toBeUndefined();
   });
 
-  it("loads SKILL.md from the bundled 2.x layout (plugins/<name>-agent/skills/<name>-agent/SKILL.md)", async () => {
+  it("loads SKILL.md from the bundled 2.x layout (plugins/<name>-connector/skills/<name>-connector/SKILL.md)", async () => {
     // The bundled 2.x narai-primitives layout puts the connector CLI at
     // <root>/dist/connectors/<name>/cli.js and the skill at
-    // <root>/plugins/<name>-agent/skills/<name>-agent/SKILL.md.
+    // <root>/plugins/<name>-connector/skills/<name>-connector/SKILL.md.
     // Both paths must resolve correctly from `prepareConnector`.
     //
     // We verify by capturing the planner's systemPrompt — buildSystemPrompt

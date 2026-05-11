@@ -1,0 +1,15 @@
+# confluence-connector-plugin
+
+Claude Code plugin that wraps `narai-primitives/confluence` as a read-only Confluence skill and slash command. Same layout as aws/gcp/notion-connector-plugin.
+
+## Credentials
+
+```bash
+export CONFLUENCE_SITE_URL="https://your.atlassian.net"
+export CONFLUENCE_EMAIL="you@example.com"
+export CONFLUENCE_API_TOKEN="…"
+```
+
+## License
+
+MIT

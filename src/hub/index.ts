@@ -65,8 +65,8 @@ function packageRootFromCli(cliPath: string): string {
 /** Candidate SKILL.md paths under a package root, in preference order. */
 function skillMdCandidates(root: string, name: string): string[] {
   return [
-    // Bundled 2.x: plugins/<name>-agent/skills/<name>-agent/SKILL.md
-    path.join(root, "plugins", `${name}-agent`, "skills", `${name}-agent`, "SKILL.md"),
+    // Bundled 2.x: plugins/<name>-connector/skills/<name>-connector/SKILL.md
+    path.join(root, "plugins", `${name}-connector`, "skills", `${name}-connector`, "SKILL.md"),
     // Legacy: plugin/skills/<name>-agent/SKILL.md (pre-2.0 per-connector packages)
     path.join(root, "plugin", "skills", `${name}-agent`, "SKILL.md"),
   ];

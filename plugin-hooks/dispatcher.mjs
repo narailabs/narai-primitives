@@ -250,7 +250,7 @@ async function onPreToolUse(cfg) {
       .filter(Boolean),
   );
   // 3. plugin-shipped gates.json at CLAUDE_PLUGIN_ROOT/gates.json — lets
-  // hook-only plugins (e.g. git-plugin) ship default rules out-of-the-box.
+  // hook-only plugins (e.g. git-connector) ship default rules out-of-the-box.
   const pluginGatesFile = path.join(process.env.CLAUDE_PLUGIN_ROOT, "gates.json");
   if (fs.existsSync(pluginGatesFile)) {
     try {

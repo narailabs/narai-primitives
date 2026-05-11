@@ -112,8 +112,8 @@ Each action module exports a factory `buildXActions(deps)` returning `Record<str
 | `src/connectors/github/index.ts` | Shrinks to ~120 lines. Composes the 6 action modules into a single `actions` map. Wires `policyFloorAspects: ["delete"]` and an explicit `defaultPolicy` (see §5). Keeps `githubScope`, `BuildOptions`, default exports. |
 | `src/connectors/github/lib/github_client.ts` | Adds ~17 mutation methods (one per new endpoint). Expands `allowedMethods` from `{GET, POST}` to `{GET, POST, PATCH, PUT, DELETE}`. |
 | `src/connectors/github/cli.ts` | No change. |
-| `plugins/github-agent/skills/github-agent/SKILL.md` | Rewrite: remove "read-only" / "Never modifies GitHub". Add write- and admin-action tables. Add a safety paragraph pointing operators at `~/.github-agent/config.yaml`. |
-| `plugins/github-agent/README.md` | Document the new token scopes (`repo` write, `workflow`) and the `require_draft_pr` config knob. |
+| `plugins/github-connector/skills/github-agent/SKILL.md` | Rewrite: remove "read-only" / "Never modifies GitHub". Add write- and admin-action tables. Add a safety paragraph pointing operators at `~/.github-agent/config.yaml`. |
+| `plugins/github-connector/README.md` | Document the new token scopes (`repo` write, `workflow`) and the `require_draft_pr` config knob. |
 | `package.json` | Version bump 3.0.1 → 4.0.0 (semver major; admin actions added, denied by default; SKILL.md framing changed). |
 
 ### 4.3 Test files (new)
@@ -272,8 +272,8 @@ The repo enforces global v8 coverage thresholds via `npm run coverage`. Every ne
 
 | File | Edit |
 |---|---|
-| `plugins/github-agent/skills/github-agent/SKILL.md` | Replace "Never modifies GitHub" framing. Add write- and admin-action tables. Add a "Safety" section: writes escalate by default; admin denied until operator opts in via `~/.github-agent/config.yaml`. |
-| `plugins/github-agent/README.md` | Document required token scopes (`repo` for code/issue/PR/release writes; `workflow` for Actions writes) and the `require_draft_pr` knob (YAML + env). |
+| `plugins/github-connector/skills/github-agent/SKILL.md` | Replace "Never modifies GitHub" framing. Add write- and admin-action tables. Add a "Safety" section: writes escalate by default; admin denied until operator opts in via `~/.github-agent/config.yaml`. |
+| `plugins/github-connector/README.md` | Document required token scopes (`repo` for code/issue/PR/release writes; `workflow` for Actions writes) and the `require_draft_pr` knob (YAML + env). |
 
 ## 10. Migration / breaking-change call-outs
 

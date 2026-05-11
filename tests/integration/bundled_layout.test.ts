@@ -34,9 +34,9 @@ describe.skipIf(!distExists)("bundled distribution layout", () => {
     const skillPath = path.join(
       repoRoot,
       "plugins",
-      `${name}-agent`,
+      `${name}-connector`,
       "skills",
-      `${name}-agent`,
+      `${name}-connector`,
       "SKILL.md",
     );
 
@@ -44,7 +44,7 @@ describe.skipIf(!distExists)("bundled distribution layout", () => {
       expect(fs.existsSync(cliPath)).toBe(true);
     });
 
-    it("ships plugins/<name>-agent/skills/<name>-agent/SKILL.md (catches the 2.1.2 regression class)", () => {
+    it("ships plugins/<name>-connector/skills/<name>-connector/SKILL.md (catches the 2.1.2 regression class)", () => {
       expect(fs.existsSync(skillPath)).toBe(true);
     });
 

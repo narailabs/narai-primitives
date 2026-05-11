@@ -35,8 +35,8 @@
 - `src/connectors/github/lib/github_client.ts`
 - `tests/connectors/github/unit/cli.test.ts`
 - `tests/connectors/github/integration/framework.test.ts`
-- `plugins/github-agent/skills/github-agent/SKILL.md`
-- `plugins/github-agent/README.md`
+- `plugins/github-connector/skills/github-connector/SKILL.md`
+- `plugins/github-connector/README.md`
 - `package.json`
 
 ---
