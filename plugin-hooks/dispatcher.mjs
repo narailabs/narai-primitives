@@ -211,8 +211,8 @@ async function onPreToolUse(cfg) {
 
   const decisions = [];
 
-  // 1. db-guard (only if kind=db)
-  if (cfg.kind === "db") {
+  // 1. db-guard (only if kind=db, and not opted out via user_config)
+  if (cfg.kind === "db" && process.env.DB_AGENT_GUARDRAILS !== "off") {
     const guardrailsPath = path.join(
       process.env.CLAUDE_PLUGIN_ROOT,
       "hooks",

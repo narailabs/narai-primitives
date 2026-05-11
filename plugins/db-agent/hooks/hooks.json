@@ -20,7 +20,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/plugin-hooks/dispatcher.mjs\" pre-tool-use"
+            "command": "node \"${CLAUDE_PLUGIN_DATA}/node_modules/narai-primitives/plugin-hooks/dispatcher.mjs\" pre-tool-use",
+            "env": {
+              "DB_AGENT_GUARDRAILS": "${user_config.install_guardrails}"
+            }
           }
         ]
       }
