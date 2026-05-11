@@ -15,20 +15,8 @@
 import { ConnectorError, throwIfHttpError } from "narai-primitives/toolkit";
 import { z } from "zod";
 import type { GithubActionDeps, GithubActions } from "./_types.js";
-
-const ownerRepoField = z
-  .string()
-  .regex(
-    /^[a-zA-Z0-9_.-]+$/,
-    "owner/repo: alphanumeric, dots, dashes, underscores only",
-  );
-
-const pullNumberField = z.coerce.number().int().positive();
-
-const branchField = z
-  .string()
-  .min(1)
-  .regex(/^[A-Za-z0-9._/+-]+$/, "Invalid branch name");
+import type { GithubPullDetail } from "../lib/github_client.js";
+import { ownerRepoField, pullNumberField, branchField } from "./_fields.js";
 
 const getPullParams = z.object({
   owner: ownerRepoField,
@@ -83,20 +71,7 @@ const mergePullParams = z.object({
   sha: z.string().optional(),
 });
 
-function pullEnvelope(d: {
-  number: number;
-  title: string;
-  state: "open" | "closed";
-  draft?: boolean;
-  user?: { login: string };
-  base?: { ref: string; sha: string };
-  head?: { ref: string; sha: string };
-  html_url?: string;
-  body?: string;
-  merged?: boolean;
-  mergeable?: boolean | null;
-  updated_at?: string;
-}) {
+function pullEnvelope(d: GithubPullDetail) {
   return {
     number: d.number,
     title: d.title,

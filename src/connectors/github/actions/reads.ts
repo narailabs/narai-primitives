@@ -20,17 +20,11 @@ import {
 } from "narai-primitives/toolkit";
 import { z } from "zod";
 import type { GithubActionDeps, GithubActions } from "./_types.js";
+import { ownerRepoField, issueNumberField, tagField } from "./_fields.js";
 
 const MAX_RESULTS_DEFAULT = 30;
 const MAX_RESULTS_CAP = 1000;
 const GITHUB_MAX_PER_PAGE = 100;
-
-const ownerRepoField = z
-  .string()
-  .regex(
-    /^[a-zA-Z0-9_.-]+$/,
-    "owner/repo: alphanumeric, dots, dashes, underscores only",
-  );
 
 const repoInfoParams = z.object({
   owner: ownerRepoField,
@@ -81,8 +75,6 @@ const getFileParams = z.object({
   ref: z.string().default("main"),
 });
 
-const issueNumberField = z.coerce.number().int().positive();
-
 const getIssueCommentsParams = z.object({
   owner: ownerRepoField,
   repo: ownerRepoField,
@@ -94,11 +86,6 @@ const getPrReviewCommentsParams = z.object({
   repo: ownerRepoField,
   pr_number: issueNumberField,
 });
-
-const tagField = z
-  .string()
-  .min(1)
-  .regex(/^[A-Za-z0-9._/+-]+$/, "Invalid tag");
 
 const listReleaseAssetsParams = z.object({
   owner: ownerRepoField,
