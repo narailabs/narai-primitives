@@ -95,7 +95,7 @@ export function buildGithubConnector(overrides: BuildOptions = {}): Connector {
 
   return createConnector<GithubClient>({
     name: "github",
-    version: "3.0.1",
+    version: "4.0.0",
     scope: githubScope,
     credentials: overrides.credentials ?? defaultCredentials,
     sdk: overrides.sdk ?? defaultSdk,
