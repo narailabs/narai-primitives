@@ -1,5 +1,5 @@
 ---
-description: Run a read-only GitHub query via the github-agent connector
+description: Run a GitHub action via the github-agent connector
 argument-hint: "<action> <params-json>"
 ---
 
