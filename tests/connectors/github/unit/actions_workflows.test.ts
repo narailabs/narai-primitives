@@ -283,6 +283,30 @@ describe("trigger_workflow_dispatch", () => {
     expect(bodySent).toMatchObject({ ref: "main", inputs: { foo: "x", count: 3, enabled: true } });
   });
 
+  it("accepts a numeric workflow ID and coerces it to string in the URL", async () => {
+    let workflowIdObserved: unknown;
+    const sdk = fakeSdk({
+      triggerWorkflowDispatch: async (_o, _r, wf, _body) => {
+        workflowIdObserved = wf;
+        return { ok: true, status: 204, data: undefined as unknown };
+      },
+    });
+    const a = buildWorkflowsActions({ behavior: { requireDraftPr: false } });
+    const r = (await runHandler(
+      a["trigger_workflow_dispatch"]!,
+      {
+        owner: "o",
+        repo: "r",
+        workflow_id_or_filename: 12345,
+        ref: "main",
+      },
+      sdk,
+    )) as { triggered: boolean; workflow: string };
+    expect(r.triggered).toBe(true);
+    expect(workflowIdObserved).toBe("12345");
+    expect(r.workflow).toBe("12345");
+  });
+
   it("schema rejects an invalid workflow id", () => {
     const a = buildWorkflowsActions({ behavior: { requireDraftPr: false } });
     expect(() =>

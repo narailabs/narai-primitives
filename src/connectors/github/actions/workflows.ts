@@ -18,10 +18,18 @@ const runIdField = z.coerce.number().int().positive();
 const refField = z.string().min(1).regex(/^[A-Za-z0-9._/+-]+$/, "Invalid ref");
 const shaField = z.string().regex(/^[a-f0-9]{7,40}$/);
 const workflowIdField = z
-  .string()
-  .min(1)
-  .regex(/^[A-Za-z0-9._-]+$/, "workflow_id_or_filename: alphanumerics, dot, dash, underscore only")
-  .refine((s) => !s.includes(".."), { message: "Path traversal not allowed" });
+  .union([
+    z
+      .string()
+      .min(1)
+      .regex(
+        /^[A-Za-z0-9._-]+$/,
+        "workflow_id_or_filename: alphanumerics, dot, dash, underscore only",
+      )
+      .refine((s) => !s.includes(".."), { message: "Path traversal not allowed" }),
+    z.number().int().positive(),
+  ])
+  .transform((v) => String(v));
 
 const listRunsParams = z.object({
   owner: ownerRepoField,
