@@ -1,5 +1,10 @@
 /**
- * @narai/github-agent-connector — read-only GitHub connector.
+ * @narai/github-agent-connector — GitHub connector.
+ *
+ * Exposes 15 read, 20 write, and 1 admin action across repos, issues,
+ * pull requests, comments, releases, and Actions workflows. Writes
+ * escalate by default and admin is denied until the operator opts in
+ * via ~/.github-agent/config.yaml; see SKILL.md for the full surface.
  *
  * Built on @narai/connector-toolkit. The default export is a ready-to-use
  * `Connector` instance; `buildGithubConnector(overrides?)` is exposed for
