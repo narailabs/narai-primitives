@@ -18,6 +18,7 @@ import {
 } from "./lib/github_client.js";
 import { loadGithubBehavior } from "./lib/github_config.js";
 import { buildReadActions } from "./actions/reads.js";
+import { buildPullsActions } from "./actions/pulls.js";
 
 // ───────────────────────────────────────────────────────────────────────────
 // Error-code translation
@@ -37,6 +38,7 @@ const CODE_MAP: Record<string, ErrorCode> = {
   METHOD_NOT_ALLOWED: "VALIDATION_ERROR",
   HTTP_ERROR: "CONNECTION_ERROR",
   CONFIG_ERROR: "CONFIG_ERROR",
+  CONFLICT: "VALIDATION_ERROR",
 };
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -95,6 +97,7 @@ export function buildGithubConnector(overrides: BuildOptions = {}): Connector {
     sdk: overrides.sdk ?? defaultSdk,
     actions: {
       ...buildReadActions({ behavior }),
+      ...buildPullsActions({ behavior }),
     },
     mapError: mapHttpError(CODE_MAP),
   });

@@ -114,3 +114,89 @@ describe("GithubClient — allowedMethods: GET, POST, PATCH, PUT, DELETE", () =>
     expect(observedMethod).toBe("DELETE");
   });
 });
+
+describe("GithubClient — pull-request methods", () => {
+  it("getPull issues GET /repos/o/r/pulls/{n}", async () => {
+    let observed: { url: string; method: string } = { url: "", method: "" };
+    const client = makeClient(async (url, init) => {
+      observed = { url, method: String(init?.method ?? "") };
+      return jsonResponse({ number: 1, title: "t", state: "open" });
+    });
+    const r = await client.getPull("o", "r", 1);
+    expect(r.ok).toBe(true);
+    expect(observed.method).toBe("GET");
+    expect(observed.url).toMatch(/\/repos\/o\/r\/pulls\/1$/);
+  });
+
+  it("createPull issues POST with body", async () => {
+    let observedBody = "";
+    const client = makeClient(async (_url, init) => {
+      observedBody = String(init?.body ?? "");
+      return jsonResponse({ number: 1, title: "t", state: "open", draft: true });
+    });
+    const r = await client.createPull("o", "r", {
+      title: "t",
+      head: "f",
+      base: "main",
+      draft: true,
+    });
+    expect(r.ok).toBe(true);
+    expect(observedBody).toContain('"title":"t"');
+    expect(observedBody).toContain('"draft":true');
+  });
+
+  it("updatePull issues PATCH", async () => {
+    let observed: { url: string; method: string } = { url: "", method: "" };
+    const client = makeClient(async (url, init) => {
+      observed = { url, method: String(init?.method ?? "") };
+      return jsonResponse({ number: 1, title: "t2", state: "open" });
+    });
+    const r = await client.updatePull("o", "r", 1, { title: "t2" });
+    expect(r.ok).toBe(true);
+    expect(observed.method).toBe("PATCH");
+    expect(observed.url).toMatch(/\/repos\/o\/r\/pulls\/1$/);
+  });
+
+  it("closePull issues PATCH with state=closed", async () => {
+    let observedBody = "";
+    const client = makeClient(async (_url, init) => {
+      observedBody = String(init?.body ?? "");
+      return jsonResponse({ number: 1, title: "t", state: "closed" });
+    });
+    const r = await client.closePull("o", "r", 1);
+    expect(r.ok).toBe(true);
+    expect(observedBody).toContain('"state":"closed"');
+  });
+
+  it("mergePull issues PUT to /merge", async () => {
+    let observed: { url: string; method: string; body: string } = {
+      url: "",
+      method: "",
+      body: "",
+    };
+    const client = makeClient(async (url, init) => {
+      observed = {
+        url,
+        method: String(init?.method ?? ""),
+        body: String(init?.body ?? ""),
+      };
+      return jsonResponse({ sha: "abc", merged: true, message: "ok" });
+    });
+    const r = await client.mergePull("o", "r", 1, { merge_method: "squash" });
+    expect(r.ok).toBe(true);
+    expect(observed.method).toBe("PUT");
+    expect(observed.url).toMatch(/\/repos\/o\/r\/pulls\/1\/merge$/);
+    expect(observed.body).toContain('"merge_method":"squash"');
+  });
+
+  it("mergePull surfaces 409 as a structured error with status set", async () => {
+    const client = makeClient(async () =>
+      jsonResponse({ message: "Head branch was modified" }, 409),
+    );
+    const r = await client.mergePull("o", "r", 1, { merge_method: "merge" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.status).toBe(409);
+    }
+  });
+});

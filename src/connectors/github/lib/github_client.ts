@@ -262,6 +262,86 @@ export class GithubClient {
     );
   }
 
+  // ─── pull requests ──────────────────────────────────────────────────────
+  public async getPull(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+  ): Promise<GithubResult<GithubPullDetail>> {
+    return this._http.request<GithubPullDetail>(
+      "GET",
+      `/repos/${owner}/${repo}/pulls/${pullNumber}`,
+    );
+  }
+
+  public async createPull(
+    owner: string,
+    repo: string,
+    body: {
+      title: string;
+      head: string;
+      base: string;
+      body?: string;
+      draft?: boolean;
+      maintainer_can_modify?: boolean;
+    },
+  ): Promise<GithubResult<GithubPullDetail>> {
+    return this._http.request<GithubPullDetail>(
+      "POST",
+      `/repos/${owner}/${repo}/pulls`,
+      { body },
+    );
+  }
+
+  public async updatePull(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+    body: {
+      title?: string;
+      body?: string;
+      state?: "open";
+      base?: string;
+      maintainer_can_modify?: boolean;
+    },
+  ): Promise<GithubResult<GithubPullDetail>> {
+    return this._http.request<GithubPullDetail>(
+      "PATCH",
+      `/repos/${owner}/${repo}/pulls/${pullNumber}`,
+      { body },
+    );
+  }
+
+  public async closePull(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+  ): Promise<GithubResult<GithubPullDetail>> {
+    return this._http.request<GithubPullDetail>(
+      "PATCH",
+      `/repos/${owner}/${repo}/pulls/${pullNumber}`,
+      { body: { state: "closed" } },
+    );
+  }
+
+  public async mergePull(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+    body: {
+      commit_title?: string;
+      commit_message?: string;
+      sha?: string;
+      merge_method: "merge" | "squash" | "rebase";
+    },
+  ): Promise<GithubResult<{ sha: string; merged: boolean; message: string }>> {
+    return this._http.request(
+      "PUT",
+      `/repos/${owner}/${repo}/pulls/${pullNumber}/merge`,
+      { body },
+    );
+  }
+
   /** List wiki pages via GraphQL (repository has hasWikiEnabled flag). */
   public async listWikiPages(
     owner: string,
@@ -312,6 +392,22 @@ export interface GithubPull {
   state: string;
   user?: { login?: string };
   html_url?: string;
+  updated_at?: string;
+}
+
+export interface GithubPullDetail {
+  number: number;
+  title: string;
+  state: "open" | "closed";
+  draft?: boolean;
+  user?: { login: string };
+  base?: { ref: string; sha: string };
+  head?: { ref: string; sha: string };
+  html_url?: string;
+  body?: string;
+  merged?: boolean;
+  mergeable?: boolean | null;
+  mergeable_state?: string;
   updated_at?: string;
 }
 

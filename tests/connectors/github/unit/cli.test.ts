@@ -272,15 +272,20 @@ describe("github connector — fetch()", () => {
   it("exposes validActions", () => {
     const c = buildGithubConnector();
     expect([...c.validActions].sort()).toEqual([
+      "close_pull_request",
+      "create_pull_request",
       "get_file",
       "get_issue_comments",
       "get_issues",
       "get_pr_review_comments",
+      "get_pull_request",
       "get_pulls",
       "get_release_asset",
       "list_release_assets",
+      "merge_pull_request",
       "repo_info",
       "search_code",
+      "update_pull_request",
     ]);
   });
 
