@@ -7,6 +7,7 @@
 import { throwIfHttpError } from "narai-primitives/toolkit";
 import { z } from "zod";
 import type { GithubActionDeps, GithubActions } from "./_types.js";
+import type { GithubIssueDetail } from "../lib/github_client.js";
 import { ownerRepoField, issueNumberField } from "./_fields.js";
 
 const getIssueParams = z.object({
@@ -50,17 +51,7 @@ const closeIssueParams = z.object({
   state_reason: z.enum(["completed", "not_planned", "reopened"]).optional(),
 });
 
-function issueEnvelope(d: {
-  number: number;
-  title: string;
-  state: "open" | "closed";
-  user?: { login: string };
-  labels?: Array<string | { name?: string }>;
-  html_url?: string;
-  body?: string;
-  updated_at?: string;
-  state_reason?: string | null;
-}) {
+function issueEnvelope(d: GithubIssueDetail) {
   return {
     number: d.number,
     title: d.title,
