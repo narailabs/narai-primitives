@@ -348,6 +348,27 @@ export class GitlabClient {
     );
   }
 
+  /**
+   * Fetches discussions (including diff/inline threads) on a merge request.
+   * GitLab's Notes API does not return DiscussionNote/DiffNote entries;
+   * those are only available via the Discussions API.
+   */
+  public async getDiscussions(
+    namespace: string,
+    project: string,
+    mrIid: number,
+    opts: { page?: number; perPage?: number } = {},
+  ): Promise<GitlabResult<GitlabDiscussion[]>> {
+    const projectPath = this.projectPath(namespace, project);
+    const query: Record<string, string | number> = {};
+    if (opts.page !== undefined) query.page = opts.page;
+    if (opts.perPage !== undefined) query.per_page = opts.perPage;
+    return this.get<GitlabDiscussion[]>(
+      `/projects/${projectPath}/merge_requests/${mrIid}/discussions`,
+      query,
+    );
+  }
+
   public async listReleaseLinks(
     namespace: string,
     project: string,
@@ -596,11 +617,14 @@ export class GitlabClient {
     iid: number,
     noteId: number,
     body: { body: string },
+    opts: { discussionId?: string } = {},
   ): Promise<GitlabResult<GitlabNote>> {
-    return this.put<GitlabNote>(
-      `/projects/${this.projectPath(namespace, project)}/${this.noteSegment(noteableType)}/${iid}/notes/${noteId}`,
-      body as Record<string, unknown>,
-    );
+    const projectPath = this.projectPath(namespace, project);
+    const notePath =
+      noteableType === "merge_request" && opts.discussionId
+        ? `/projects/${projectPath}/merge_requests/${iid}/discussions/${opts.discussionId}/notes/${noteId}`
+        : `/projects/${projectPath}/${this.noteSegment(noteableType)}/${iid}/notes/${noteId}`;
+    return this.put<GitlabNote>(notePath, body as Record<string, unknown>);
   }
 
   public async deleteNote(
@@ -609,10 +633,14 @@ export class GitlabClient {
     noteableType: "issue" | "merge_request",
     iid: number,
     noteId: number,
+    opts: { discussionId?: string } = {},
   ): Promise<GitlabResult<null>> {
-    return this.delete<null>(
-      `/projects/${this.projectPath(namespace, project)}/${this.noteSegment(noteableType)}/${iid}/notes/${noteId}`,
-    );
+    const projectPath = this.projectPath(namespace, project);
+    const notePath =
+      noteableType === "merge_request" && opts.discussionId
+        ? `/projects/${projectPath}/merge_requests/${iid}/discussions/${opts.discussionId}/notes/${noteId}`
+        : `/projects/${projectPath}/${this.noteSegment(noteableType)}/${iid}/notes/${noteId}`;
+    return this.delete<null>(notePath);
   }
 
   // ── Release mutations ────────────────────────────────────────────────────

@@ -272,25 +272,67 @@ export function buildReadActions(_deps: GitlabActionDeps): GitlabActions {
       classify: { kind: "read" },
       handler: async (p: z.infer<typeof getNotesParams>, ctx) => {
         const limit = Math.min(p.max_results, MAX_RESULTS_CAP);
+
+        if (p.noteable_type === "issue") {
+          const page = await paginateGitlab(limit, (pageNum, perPage) =>
+            ctx.sdk.getNotes(p.namespace, p.project, p.noteable_type, p.noteable_iid, {
+              page: pageNum,
+              perPage,
+            }),
+          );
+          return {
+            noteable_type: p.noteable_type,
+            noteable_iid: p.noteable_iid,
+            total: page.items.length,
+            truncated: page.truncated,
+            notes: page.items.map((n) => ({
+              id: n.id,
+              body: n.body,
+              author: n.author?.username ?? "",
+              created_at: n.created_at ?? null,
+              updated_at: n.updated_at ?? null,
+              system: n.system ?? false,
+              discussion_id: null,
+            })),
+          };
+        }
+
+        // For merge_requests: fetch discussions and flatten notes so that
+        // DiscussionNote/DiffNote entries (not returned by /notes) are included.
         const page = await paginateGitlab(limit, (pageNum, perPage) =>
-          ctx.sdk.getNotes(p.namespace, p.project, p.noteable_type, p.noteable_iid, {
+          ctx.sdk.getDiscussions(p.namespace, p.project, p.noteable_iid, {
             page: pageNum,
             perPage,
           }),
         );
+        const flatNotes: {
+          id: number;
+          body: string;
+          author: string;
+          created_at: string | null;
+          updated_at: string | null;
+          system: boolean;
+          discussion_id: string;
+        }[] = [];
+        for (const discussion of page.items) {
+          for (const n of discussion.notes) {
+            flatNotes.push({
+              id: n.id,
+              body: n.body,
+              author: n.author?.username ?? "",
+              created_at: n.created_at ?? null,
+              updated_at: n.updated_at ?? null,
+              system: n.system ?? false,
+              discussion_id: discussion.id,
+            });
+          }
+        }
         return {
           noteable_type: p.noteable_type,
           noteable_iid: p.noteable_iid,
-          total: page.items.length,
+          total: flatNotes.length,
           truncated: page.truncated,
-          notes: page.items.map((n) => ({
-            id: n.id,
-            body: n.body,
-            author: n.author?.username ?? "",
-            created_at: n.created_at ?? null,
-            updated_at: n.updated_at ?? null,
-            system: n.system ?? false,
-          })),
+          notes: flatNotes,
         };
       },
     },

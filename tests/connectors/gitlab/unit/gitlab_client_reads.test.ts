@@ -196,6 +196,35 @@ describe("GitlabClient.getNotes", () => {
   });
 });
 
+// ── getDiscussions ────────────────────────────────────────────────────────────
+
+describe("GitlabClient.getDiscussions", () => {
+  it("calls GET /projects/<encoded>/merge_requests/:iid/discussions", async () => {
+    let usedUrl = "";
+    let usedMethod = "";
+    const client = makeClient(async (url, init) => {
+      usedUrl = url;
+      usedMethod = String(init?.method);
+      return jsonResponse([{ id: "disc1", individual_note: false, notes: [] }]);
+    });
+    const r = await client.getDiscussions("ns", "proj", 5);
+    expect(r.ok).toBe(true);
+    expect(usedMethod).toBe("GET");
+    expect(usedUrl).toMatch(/\/projects\/ns%2Fproj\/merge_requests\/5\/discussions$/);
+  });
+
+  it("passes page and per_page query params when opts are provided", async () => {
+    let usedUrl = "";
+    const client = makeClient(async (url) => {
+      usedUrl = url;
+      return jsonResponse([]);
+    });
+    await client.getDiscussions("ns", "proj", 3, { page: 2, perPage: 25 });
+    expect(usedUrl).toContain("page=2");
+    expect(usedUrl).toContain("per_page=25");
+  });
+});
+
 // ── listReleaseLinks ──────────────────────────────────────────────────────────
 
 describe("GitlabClient.listReleaseLinks", () => {

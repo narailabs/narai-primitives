@@ -46,14 +46,36 @@ const addNoteParams = baseNoteParams
     }
   });
 
-const updateNoteParams = baseNoteParams.extend({
-  note_id: noteIdField,
-  body: z.string().min(1),
-});
+const updateNoteParams = baseNoteParams
+  .extend({
+    note_id: noteIdField,
+    body: z.string().min(1),
+    discussion_id: z.string().optional(),
+  })
+  .superRefine((val, ctx) => {
+    if (val.discussion_id !== undefined && val.noteable_type !== "merge_request") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["discussion_id"],
+        message: "discussion_id is only valid when noteable_type is 'merge_request'",
+      });
+    }
+  });
 
-const deleteNoteParams = baseNoteParams.extend({
-  note_id: noteIdField,
-});
+const deleteNoteParams = baseNoteParams
+  .extend({
+    note_id: noteIdField,
+    discussion_id: z.string().optional(),
+  })
+  .superRefine((val, ctx) => {
+    if (val.discussion_id !== undefined && val.noteable_type !== "merge_request") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["discussion_id"],
+        message: "discussion_id is only valid when noteable_type is 'merge_request'",
+      });
+    }
+  });
 
 // ── Factory ────────────────────────────────────────────────────────────────
 
@@ -92,6 +114,8 @@ export function buildNotesActions(_deps: GitlabActionDeps): GitlabActions {
       params: updateNoteParams,
       classify: { kind: "write" },
       handler: async (p: z.infer<typeof updateNoteParams>, ctx) => {
+        const updateOpts: { discussionId?: string } = {};
+        if (p.discussion_id !== undefined) updateOpts.discussionId = p.discussion_id;
         const r = await ctx.sdk.updateNote(
           p.namespace,
           p.project,
@@ -99,6 +123,7 @@ export function buildNotesActions(_deps: GitlabActionDeps): GitlabActions {
           p.noteable_iid,
           p.note_id,
           { body: p.body },
+          updateOpts,
         );
         throwIfHttpError(r);
         const d = r.data;
@@ -117,12 +142,15 @@ export function buildNotesActions(_deps: GitlabActionDeps): GitlabActions {
       params: deleteNoteParams,
       classify: { kind: "write", aspects: ["delete"] },
       handler: async (p: z.infer<typeof deleteNoteParams>, ctx) => {
+        const deleteOpts: { discussionId?: string } = {};
+        if (p.discussion_id !== undefined) deleteOpts.discussionId = p.discussion_id;
         const r = await ctx.sdk.deleteNote(
           p.namespace,
           p.project,
           p.noteable_type,
           p.noteable_iid,
           p.note_id,
+          deleteOpts,
         );
         throwIfHttpError(r);
         return {

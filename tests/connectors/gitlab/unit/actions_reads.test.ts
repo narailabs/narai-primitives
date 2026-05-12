@@ -352,7 +352,7 @@ describe("get_file", () => {
 // ── get_notes ─────────────────────────────────────────────────────────────────
 
 describe("get_notes", () => {
-  it("fetches notes for an issue", async () => {
+  it("fetches notes for an issue (uses /notes, discussion_id is null)", async () => {
     const sdk = fakeSdk({
       getNotes: async () => ({
         ok: true,
@@ -374,36 +374,74 @@ describe("get_notes", () => {
       actions["get_notes"]!,
       { namespace: "mygroup", project: "my-project", noteable_type: "issue", noteable_iid: 1 },
       sdk,
-    )) as { total: number; notes: unknown[] };
+    )) as { total: number; notes: Record<string, unknown>[] };
     expect(r.total).toBe(1);
     expect(r.notes[0]).toMatchObject({
       id: 101,
       body: "This is a note",
       author: "eve",
+      discussion_id: null,
     });
   });
 
-  it("fetches notes for a merge_request", async () => {
+  it("fetches notes for a merge_request via /discussions and flattens with discussion_id", async () => {
     const sdk = fakeSdk({
-      getNotes: async (_ns, _proj, noteableType, _iid) => {
-        expect(noteableType).toBe("merge_request");
-        return {
-          ok: true as const,
-          status: 200,
-          data: [{ id: 202, body: "MR note", author: { username: "frank" }, created_at: "2026-05-02T00:00:00Z", updated_at: "2026-05-02T00:00:00Z", system: false }],
-        };
-      },
+      getDiscussions: async () => ({
+        ok: true as const,
+        status: 200,
+        data: [
+          {
+            id: "disc-abc",
+            individual_note: false,
+            notes: [
+              {
+                id: 202,
+                body: "MR diff note",
+                author: { username: "frank" },
+                created_at: "2026-05-02T00:00:00Z",
+                updated_at: "2026-05-02T00:00:00Z",
+                system: false,
+              },
+              {
+                id: 203,
+                body: "MR diff reply",
+                author: { username: "grace" },
+                created_at: "2026-05-02T01:00:00Z",
+                updated_at: "2026-05-02T01:00:00Z",
+                system: false,
+              },
+            ],
+          },
+          {
+            id: "disc-def",
+            individual_note: true,
+            notes: [
+              {
+                id: 204,
+                body: "General comment",
+                author: { username: "hank" },
+                created_at: "2026-05-02T02:00:00Z",
+                updated_at: "2026-05-02T02:00:00Z",
+                system: false,
+              },
+            ],
+          },
+        ],
+      }),
     });
     const actions = buildReadActions(deps);
     const r = (await runHandler(
       actions["get_notes"]!,
       { namespace: "mygroup", project: "my-project", noteable_type: "merge_request", noteable_iid: 3 },
       sdk,
-    )) as { notes: unknown[] };
-    expect(r.notes[0]).toMatchObject({ id: 202, author: "frank" });
+    )) as { total: number; notes: Record<string, unknown>[] };
+    expect(r.total).toBe(3);
+    expect(r.notes[0]).toMatchObject({ id: 202, author: "frank", discussion_id: "disc-abc" });
+    expect(r.notes[1]).toMatchObject({ id: 203, author: "grace", discussion_id: "disc-abc" });
+    expect(r.notes[2]).toMatchObject({ id: 204, author: "hank", discussion_id: "disc-def" });
   });
 
-  it("paginates across multiple pages until max_results is reached", async () => {
+  it("paginates issue notes across multiple pages until max_results is reached", async () => {
     let callCount = 0;
     const sdk = fakeSdk({
       getNotes: async (_ns, _proj, _type, _iid, opts) => {
@@ -427,6 +465,40 @@ describe("get_notes", () => {
       sdk,
     )) as { total: number; notes: unknown[]; truncated: boolean };
     expect(r.total).toBe(5);
+    expect(r.truncated).toBe(true);
+    expect(callCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it("paginates MR discussions and truncates at max_results (discussion count)", async () => {
+    let callCount = 0;
+    const sdk = fakeSdk({
+      getDiscussions: async (_ns, _proj, _iid, opts) => {
+        callCount++;
+        const perPage = opts?.perPage ?? 30;
+        const data = Array.from({ length: perPage }, (_, i) => ({
+          id: `disc-${(callCount - 1) * perPage + i}`,
+          individual_note: true,
+          notes: [
+            {
+              id: (callCount - 1) * perPage + i + 1,
+              body: `note ${(callCount - 1) * perPage + i + 1}`,
+              author: { username: "alice" },
+              created_at: "2026-05-01T00:00:00Z",
+              updated_at: "2026-05-01T00:00:00Z",
+              system: false,
+            },
+          ],
+        }));
+        return { ok: true as const, status: 200, data };
+      },
+    });
+    const actions = buildReadActions(deps);
+    const r = (await runHandler(
+      actions["get_notes"]!,
+      { namespace: "mygroup", project: "my-project", noteable_type: "merge_request", noteable_iid: 5, max_results: 5 },
+      sdk,
+    )) as { total: number; notes: unknown[]; truncated: boolean };
+    expect(r.notes.length).toBe(5);
     expect(r.truncated).toBe(true);
     expect(callCount).toBeGreaterThanOrEqual(1);
   });

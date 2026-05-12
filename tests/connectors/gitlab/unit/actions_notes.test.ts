@@ -219,6 +219,40 @@ describe("add_note — handler", () => {
   });
 });
 
+// ── update_note — schema ──────────────────────────────────────────────────────
+
+describe("update_note — schema validation", () => {
+  const actions = buildNotesActions(deps);
+  const spec = actions["update_note"]!;
+
+  it("rejects discussion_id when noteable_type is 'issue'", () => {
+    expect(() =>
+      spec.params.parse({
+        namespace: "mygroup",
+        project: "myproject",
+        noteable_type: "issue",
+        noteable_iid: 1,
+        note_id: 42,
+        body: "text",
+        discussion_id: "disc-abc",
+      }),
+    ).toThrow("discussion_id is only valid when noteable_type is 'merge_request'");
+  });
+
+  it("accepts discussion_id when noteable_type is 'merge_request'", () => {
+    const parsed = spec.params.parse({
+      namespace: "mygroup",
+      project: "myproject",
+      noteable_type: "merge_request",
+      noteable_iid: 5,
+      note_id: 42,
+      body: "text",
+      discussion_id: "disc-abc",
+    });
+    expect(parsed).toMatchObject({ discussion_id: "disc-abc" });
+  });
+});
+
 // ── update_note — handler ─────────────────────────────────────────────────────
 
 describe("update_note — handler", () => {
@@ -271,6 +305,30 @@ describe("update_note — handler", () => {
     expect(result).toMatchObject({ body: "MR updated" });
   });
 
+  it("passes discussion_id to sdk.updateNote when provided", async () => {
+    let capturedOpts: unknown;
+    const sdk = fakeSdk({
+      updateNote: async (_ns, _proj, _type, _iid, _noteId, _body, opts) => {
+        capturedOpts = opts;
+        return { ok: true, status: 200, data: noteStub };
+      },
+    });
+    await runHandler(
+      spec,
+      {
+        namespace: "mygroup",
+        project: "myproject",
+        noteable_type: "merge_request",
+        noteable_iid: 5,
+        note_id: 42,
+        body: "Updated",
+        discussion_id: "disc-abc",
+      },
+      sdk,
+    );
+    expect((capturedOpts as Record<string, unknown>)["discussionId"]).toBe("disc-abc");
+  });
+
   it("throws on HTTP error", async () => {
     const sdk = fakeSdk({
       updateNote: async () => ({ ok: false, status: 404, data: null }),
@@ -289,6 +347,38 @@ describe("update_note — handler", () => {
         sdk,
       ),
     ).rejects.toThrow();
+  });
+});
+
+// ── delete_note — schema ──────────────────────────────────────────────────────
+
+describe("delete_note — schema validation", () => {
+  const actions = buildNotesActions(deps);
+  const spec = actions["delete_note"]!;
+
+  it("rejects discussion_id when noteable_type is 'issue'", () => {
+    expect(() =>
+      spec.params.parse({
+        namespace: "mygroup",
+        project: "myproject",
+        noteable_type: "issue",
+        noteable_iid: 1,
+        note_id: 42,
+        discussion_id: "disc-abc",
+      }),
+    ).toThrow("discussion_id is only valid when noteable_type is 'merge_request'");
+  });
+
+  it("accepts discussion_id when noteable_type is 'merge_request'", () => {
+    const parsed = spec.params.parse({
+      namespace: "mygroup",
+      project: "myproject",
+      noteable_type: "merge_request",
+      noteable_iid: 5,
+      note_id: 42,
+      discussion_id: "disc-abc",
+    });
+    expect(parsed).toMatchObject({ discussion_id: "disc-abc" });
   });
 });
 
@@ -332,6 +422,29 @@ describe("delete_note — handler", () => {
       sdk,
     );
     expect(result).toEqual({ note_id: 7, deleted: true });
+  });
+
+  it("passes discussion_id to sdk.deleteNote when provided", async () => {
+    let capturedOpts: unknown;
+    const sdk = fakeSdk({
+      deleteNote: async (_ns, _proj, _type, _iid, _noteId, opts) => {
+        capturedOpts = opts;
+        return { ok: true, status: 204, data: null };
+      },
+    });
+    await runHandler(
+      spec,
+      {
+        namespace: "mygroup",
+        project: "myproject",
+        noteable_type: "merge_request",
+        noteable_iid: 5,
+        note_id: 7,
+        discussion_id: "disc-xyz",
+      },
+      sdk,
+    );
+    expect((capturedOpts as Record<string, unknown>)["discussionId"]).toBe("disc-xyz");
   });
 
   it("throws on HTTP error", async () => {

@@ -335,7 +335,7 @@ describe("GitlabClient.updateNote", () => {
     expect((usedBody as Record<string, unknown>)["body"]).toBe("Updated");
   });
 
-  it("calls PUT .../merge_requests/:iid/notes/:note_id for merge_request", async () => {
+  it("calls PUT .../merge_requests/:iid/notes/:note_id for merge_request (no discussion_id)", async () => {
     let usedUrl = "";
     const client = makeClient(async (url) => {
       usedUrl = url;
@@ -343,6 +343,26 @@ describe("GitlabClient.updateNote", () => {
     });
     await client.updateNote("mygroup", "myproject", "merge_request", 5, 7, { body: "Updated" });
     expect(usedUrl).toMatch(/\/projects\/mygroup%2Fmyproject\/merge_requests\/5\/notes\/7$/);
+  });
+
+  it("routes PUT to /discussions/:discussion_id/notes/:note_id when discussion_id is set (merge_request)", async () => {
+    let usedUrl = "";
+    let usedMethod = "";
+    const client = makeClient(async (url, init) => {
+      usedUrl = url;
+      usedMethod = String(init?.method);
+      return jsonResponse({ ...noteBody, body: "Updated" });
+    });
+    const r = await client.updateNote(
+      "mygroup", "myproject", "merge_request", 5, 7,
+      { body: "Updated" },
+      { discussionId: "disc-abc" },
+    );
+    expect(r.ok).toBe(true);
+    expect(usedMethod).toBe("PUT");
+    expect(usedUrl).toMatch(
+      /\/projects\/mygroup%2Fmyproject\/merge_requests\/5\/discussions\/disc-abc\/notes\/7$/,
+    );
   });
 });
 
@@ -363,7 +383,7 @@ describe("GitlabClient.deleteNote", () => {
     expect(usedUrl).toMatch(/\/projects\/mygroup%2Fmyproject\/issues\/3\/notes\/42$/);
   });
 
-  it("calls DELETE .../merge_requests/:iid/notes/:note_id for merge_request", async () => {
+  it("calls DELETE .../merge_requests/:iid/notes/:note_id for merge_request (no discussion_id)", async () => {
     let usedUrl = "";
     const client = makeClient(async (url) => {
       usedUrl = url;
@@ -371,6 +391,25 @@ describe("GitlabClient.deleteNote", () => {
     });
     await client.deleteNote("mygroup", "myproject", "merge_request", 5, 7);
     expect(usedUrl).toMatch(/\/projects\/mygroup%2Fmyproject\/merge_requests\/5\/notes\/7$/);
+  });
+
+  it("routes DELETE to /discussions/:discussion_id/notes/:note_id when discussion_id is set (merge_request)", async () => {
+    let usedUrl = "";
+    let usedMethod = "";
+    const client = makeClient(async (url, init) => {
+      usedUrl = url;
+      usedMethod = String(init?.method);
+      return new Response(null, { status: 204 });
+    });
+    const r = await client.deleteNote(
+      "mygroup", "myproject", "merge_request", 5, 7,
+      { discussionId: "disc-xyz" },
+    );
+    expect(r.ok).toBe(true);
+    expect(usedMethod).toBe("DELETE");
+    expect(usedUrl).toMatch(
+      /\/projects\/mygroup%2Fmyproject\/merge_requests\/5\/discussions\/disc-xyz\/notes\/7$/,
+    );
   });
 });
 
