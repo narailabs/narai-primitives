@@ -425,3 +425,129 @@ describe("GitlabClient.deleteReleaseLink", () => {
     );
   });
 });
+
+// ── retryPipeline ─────────────────────────────────────────────────────────────
+
+const pipelineBody = {
+  id: 101,
+  status: "running",
+  ref: "main",
+  sha: "abc123",
+  web_url: "https://gitlab.com/g/p/-/pipelines/101",
+  created_at: "2024-01-01T00:00:00Z",
+  updated_at: "2024-01-01T00:00:00Z",
+};
+
+describe("GitlabClient.retryPipeline", () => {
+  it("calls POST /projects/<encoded>/pipelines/:id/retry", async () => {
+    let usedUrl = "";
+    let usedMethod = "";
+    const client = makeClient(async (url, init) => {
+      usedUrl = url;
+      usedMethod = String(init?.method);
+      return jsonResponse(pipelineBody);
+    });
+    const r = await client.retryPipeline("mygroup", "myproject", 101);
+    expect(r.ok).toBe(true);
+    expect(usedMethod).toBe("POST");
+    expect(usedUrl).toMatch(/\/projects\/mygroup%2Fmyproject\/pipelines\/101\/retry$/);
+  });
+});
+
+// ── cancelPipeline ────────────────────────────────────────────────────────────
+
+describe("GitlabClient.cancelPipeline", () => {
+  it("calls POST /projects/<encoded>/pipelines/:id/cancel", async () => {
+    let usedUrl = "";
+    let usedMethod = "";
+    const client = makeClient(async (url, init) => {
+      usedUrl = url;
+      usedMethod = String(init?.method);
+      return jsonResponse({ ...pipelineBody, status: "canceled" });
+    });
+    const r = await client.cancelPipeline("mygroup", "myproject", 101);
+    expect(r.ok).toBe(true);
+    expect(usedMethod).toBe("POST");
+    expect(usedUrl).toMatch(/\/projects\/mygroup%2Fmyproject\/pipelines\/101\/cancel$/);
+  });
+});
+
+// ── triggerPipeline ───────────────────────────────────────────────────────────
+
+describe("GitlabClient.triggerPipeline", () => {
+  it("calls POST /projects/<encoded>/trigger/pipeline with token and ref in body", async () => {
+    let usedUrl = "";
+    let usedMethod = "";
+    let usedBody: unknown;
+    const client = makeClient(async (url, init) => {
+      usedUrl = url;
+      usedMethod = String(init?.method);
+      usedBody = JSON.parse(String(init?.body));
+      return jsonResponse({ ...pipelineBody, id: 202 }, 201);
+    });
+    const r = await client.triggerPipeline("mygroup", "myproject", {
+      token: "glptt_trigger_token",
+      ref: "main",
+    });
+    expect(r.ok).toBe(true);
+    expect(usedMethod).toBe("POST");
+    expect(usedUrl).toMatch(/\/projects\/mygroup%2Fmyproject\/trigger\/pipeline$/);
+    expect((usedBody as Record<string, unknown>)["token"]).toBe("glptt_trigger_token");
+    expect((usedBody as Record<string, unknown>)["ref"]).toBe("main");
+  });
+
+  it("includes variables in body when provided", async () => {
+    let usedBody: unknown;
+    const client = makeClient(async (_url, init) => {
+      usedBody = JSON.parse(String(init?.body));
+      return jsonResponse({ ...pipelineBody, id: 203 }, 201);
+    });
+    await client.triggerPipeline("g", "p", {
+      token: "tok",
+      ref: "main",
+      variables: { FOO: "bar", BAZ: "qux" },
+    });
+    expect((usedBody as Record<string, unknown>)["variables"]).toEqual({ FOO: "bar", BAZ: "qux" });
+  });
+});
+
+// ── playJob ───────────────────────────────────────────────────────────────────
+
+const jobBody = {
+  id: 55,
+  name: "deploy",
+  stage: "deploy",
+  status: "running",
+  web_url: "https://gitlab.com/g/p/-/jobs/55",
+  created_at: "2024-01-01T00:00:00Z",
+  started_at: null,
+  finished_at: null,
+  duration: null,
+};
+
+describe("GitlabClient.playJob", () => {
+  it("calls POST /projects/<encoded>/jobs/:id/play", async () => {
+    let usedUrl = "";
+    let usedMethod = "";
+    const client = makeClient(async (url, init) => {
+      usedUrl = url;
+      usedMethod = String(init?.method);
+      return jsonResponse(jobBody);
+    });
+    const r = await client.playJob("mygroup", "myproject", 55);
+    expect(r.ok).toBe(true);
+    expect(usedMethod).toBe("POST");
+    expect(usedUrl).toMatch(/\/projects\/mygroup%2Fmyproject\/jobs\/55\/play$/);
+  });
+
+  it("includes job_variables_attributes when variables provided", async () => {
+    let usedBody: unknown;
+    const client = makeClient(async (_url, init) => {
+      usedBody = JSON.parse(String(init?.body));
+      return jsonResponse(jobBody);
+    });
+    await client.playJob("mygroup", "myproject", 55, { DEPLOY_ENV: "staging" });
+    const attrs = (usedBody as Record<string, unknown>)["job_variables_attributes"] as Array<Record<string, string>>;
+    expect(attrs).toEqual([{ key: "DEPLOY_ENV", value: "staging" }]);
+  });
+});

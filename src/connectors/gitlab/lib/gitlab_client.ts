@@ -615,4 +615,59 @@ export class GitlabClient {
       `/projects/${this.projectPath(namespace, project)}/releases/${encodeURIComponent(tag)}/assets/links/${linkId}`,
     );
   }
+
+  // ── Pipeline mutations ───────────────────────────────────────────────────
+
+  public async retryPipeline(
+    namespace: string,
+    project: string,
+    pipelineId: number,
+  ): Promise<GitlabResult<GitlabPipeline>> {
+    return this.post<GitlabPipeline>(
+      `/projects/${this.projectPath(namespace, project)}/pipelines/${pipelineId}/retry`,
+    );
+  }
+
+  public async cancelPipeline(
+    namespace: string,
+    project: string,
+    pipelineId: number,
+  ): Promise<GitlabResult<GitlabPipeline>> {
+    return this.post<GitlabPipeline>(
+      `/projects/${this.projectPath(namespace, project)}/pipelines/${pipelineId}/cancel`,
+    );
+  }
+
+  public async triggerPipeline(
+    namespace: string,
+    project: string,
+    body: {
+      token: string;
+      ref: string;
+      variables?: Record<string, string>;
+    },
+  ): Promise<GitlabResult<GitlabPipeline>> {
+    return this.post<GitlabPipeline>(
+      `/projects/${this.projectPath(namespace, project)}/trigger/pipeline`,
+      body as Record<string, unknown>,
+    );
+  }
+
+  public async playJob(
+    namespace: string,
+    project: string,
+    jobId: number,
+    variables?: Record<string, string>,
+  ): Promise<GitlabResult<GitlabJob>> {
+    const body: Record<string, unknown> = {};
+    if (variables !== undefined) {
+      body["job_variables_attributes"] = Object.entries(variables).map(
+        ([key, value]) => ({ key, value }),
+      );
+    }
+    return this.post<GitlabJob>(
+      `/projects/${this.projectPath(namespace, project)}/jobs/${jobId}/play`,
+      body,
+    );
+  }
 }
