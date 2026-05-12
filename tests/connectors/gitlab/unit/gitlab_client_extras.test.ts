@@ -269,7 +269,7 @@ describe("loadGitlabCredentials()", () => {
     const r = await loadGitlabCredentials();
     expect(r).not.toBeNull();
     expect(r?.token).toBe("env-token");
-    expect(r?.host).toBe("https://gitlab.com");
+    expect(r?.host).toBeNull();
     expect(r?.defaultNamespace).toBeNull();
   });
 
@@ -323,5 +323,22 @@ describe("loadGitlabCredentials()", () => {
     );
     const r = await loadGitlabCredentials();
     expect(r?.defaultNamespace).toBeNull();
+  });
+
+  it("returns null host when neither secret nor env sets GITLAB_HOST", async () => {
+    vi.mocked(resolveSecret).mockImplementation(async (key: string) =>
+      key === "GITLAB_TOKEN" ? "tok" : null,
+    );
+    const r = await loadGitlabCredentials();
+    expect(r?.host).toBeNull();
+  });
+
+  it("returns env host when secret returns null for GITLAB_HOST", async () => {
+    vi.mocked(resolveSecret).mockImplementation(async (key: string) =>
+      key === "GITLAB_TOKEN" ? "tok" : null,
+    );
+    process.env["GITLAB_HOST"] = "https://env-only.example";
+    const r = await loadGitlabCredentials();
+    expect(r?.host).toBe("https://env-only.example");
   });
 });

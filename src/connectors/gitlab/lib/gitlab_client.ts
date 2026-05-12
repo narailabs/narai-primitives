@@ -131,7 +131,7 @@ export interface GitlabJob {
 
 export async function loadGitlabCredentials(): Promise<{
   token: string;
-  host: string;
+  host: string | null;
   defaultNamespace: string | null;
 } | null> {
   const token =
@@ -143,7 +143,7 @@ export async function loadGitlabCredentials(): Promise<{
   const host =
     (await resolveSecret("GITLAB_HOST")) ??
     process.env["GITLAB_HOST"] ??
-    GITLAB_DEFAULT_HOST;
+    null;
 
   const defaultNamespace =
     (await resolveSecret("GITLAB_NAMESPACE")) ??

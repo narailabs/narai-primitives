@@ -76,9 +76,11 @@ export function buildGitlabConnector(overrides: BuildOptions = {}): Connector {
         false,
       );
     }
+    // Precedence: secret/env (creds.host) > YAML (behavior.host) > GitlabClient default
+    const host = creds.host ?? behavior.host ?? undefined;
     return new GitlabClient({
       token: creds.token,
-      host: behavior.host,
+      ...(host !== undefined ? { host } : {}),
       ...(creds.defaultNamespace ? { defaultNamespace: creds.defaultNamespace } : {}),
     });
   };

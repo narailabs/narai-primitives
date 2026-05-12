@@ -6,11 +6,15 @@
  *   rewritten to draft mode regardless of caller input.
  * - `host` — the GitLab instance base URL (default: "https://gitlab.com").
  *
- * Precedence (highest wins):
- *   1. GITLAB_REQUIRE_DRAFT_MR / GITLAB_HOST env vars
- *   2. <cwd>/.gitlab-agent/config.yaml `gitlab.*`
- *   3. ~/.gitlab-agent/config.yaml  `gitlab.*`
- *   4. defaults: requireDraftMr=false, host="https://gitlab.com"
+ * Precedence for host (highest wins, as merged in defaultSdk):
+ *   1. resolveSecret("GITLAB_HOST") — secret provider (Vault, AWS SM, etc.)
+ *   2. GITLAB_HOST env var
+ *   3. <cwd>/.gitlab-agent/config.yaml `gitlab.host`
+ *   4. ~/.gitlab-agent/config.yaml  `gitlab.host`
+ *   5. Default https://gitlab.com (applied in GitlabClient constructor)
+ *
+ * loadGitlabBehavior() returns host=null when neither env nor YAML sets it,
+ * allowing the caller to distinguish "explicitly configured" from "absent".
  *
  * Replicates the toolkit's discover-and-merge pattern locally so we don't
  * depend on internals of `toolkit/policy/config.ts` that aren't part of
@@ -23,7 +27,7 @@ import * as yaml from "js-yaml";
 
 export interface GitlabBehavior {
   requireDraftMr: boolean;
-  host: string;
+  host: string | null;
 }
 
 export interface LoadGitlabBehaviorOptions {
@@ -115,7 +119,7 @@ export function loadGitlabBehavior(
   const env = opts.env ?? process.env;
 
   let requireDraftMr = false;
-  let host = "https://gitlab.com";
+  let host: string | null = null;
 
   const userCfg = path.join(home, ".gitlab-agent", "config.yaml");
   const repoCfg = path.join(cwd, ".gitlab-agent", "config.yaml");

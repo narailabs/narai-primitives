@@ -33,10 +33,10 @@ afterEach(() => {
 });
 
 describe("loadGitlabBehavior — defaults", () => {
-  it("returns requireDraftMr=false and host=https://gitlab.com when nothing is configured", () => {
+  it("returns requireDraftMr=false and host=null when nothing is configured", () => {
     const b = loadGitlabBehavior({ home: tmpHome, cwd: tmpCwd, env: {} });
     expect(b.requireDraftMr).toBe(false);
-    expect(b.host).toBe("https://gitlab.com");
+    expect(b.host).toBeNull();
   });
 });
 
@@ -152,9 +152,9 @@ describe("loadGitlabBehavior — env override (requireDraftMr)", () => {
 });
 
 describe("loadGitlabBehavior — host knob", () => {
-  it("returns default host when nothing is configured", () => {
+  it("returns null when neither env nor YAML sets host", () => {
     const b = loadGitlabBehavior({ home: tmpHome, cwd: tmpCwd, env: {} });
-    expect(b.host).toBe("https://gitlab.com");
+    expect(b.host).toBeNull();
   });
 
   it("reads user-level YAML gitlab.host", () => {
@@ -185,5 +185,24 @@ describe("loadGitlabBehavior — host knob", () => {
     expect(() =>
       loadGitlabBehavior({ home: tmpHome, cwd: tmpCwd, env: {} }),
     ).toThrow(/host/);
+  });
+
+  it("env empty string falls through to YAML host", () => {
+    writeYaml(tmpHome, "gitlab:\n  host: https://yaml.example\n");
+    const b = loadGitlabBehavior({
+      home: tmpHome,
+      cwd: tmpCwd,
+      env: { GITLAB_HOST: "" },
+    });
+    expect(b.host).toBe("https://yaml.example");
+  });
+
+  it("returns null when env is empty string and no YAML host", () => {
+    const b = loadGitlabBehavior({
+      home: tmpHome,
+      cwd: tmpCwd,
+      env: { GITLAB_HOST: "" },
+    });
+    expect(b.host).toBeNull();
   });
 });

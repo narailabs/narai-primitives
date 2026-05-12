@@ -4,12 +4,17 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildGitlabConnector } from "../../../../src/connectors/gitlab/index.js";
 import {
   GitlabClient,
   type GitlabClientOptions,
 } from "../../../../src/connectors/gitlab/lib/gitlab_client.js";
+
+vi.mock("narai-primitives/credentials", () => ({
+  resolveSecret: vi.fn(async () => null),
+}));
+import { resolveSecret } from "narai-primitives/credentials";
 
 let tmpHome: string;
 let tmpCwd: string;
@@ -253,6 +258,98 @@ describe("defaultSdk uses behavior.host (YAML-only host config)", () => {
     }
     expect(capturedUrl).toMatch(/^https:\/\/env\.example\/api\/v4\//);
     expect(capturedUrl).not.toContain("yaml.example");
+  });
+});
+
+describe("defaultSdk host precedence: secret > env > YAML > default", () => {
+  beforeEach(() => {
+    vi.mocked(resolveSecret).mockReset();
+    vi.mocked(resolveSecret).mockResolvedValue(null);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  function stubFetch(onUrl: (url: string) => void): () => void {
+    const orig = globalThis.fetch;
+    globalThis.fetch = async (url: RequestInfo | URL): Promise<Response> => {
+      onUrl(String(url));
+      return new Response(
+        JSON.stringify({ id: 1, name: "p", path_with_namespace: "g/p", default_branch: "main" }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+    return () => { globalThis.fetch = orig; };
+  }
+
+  it("secret-provider host wins over env and YAML", async () => {
+    const agentDir = path.join(tmpHome, ".gitlab-agent");
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(path.join(agentDir, "config.yaml"), "gitlab:\n  host: https://yaml.example\n");
+    process.env["GITLAB_TOKEN"] = "tok";
+    process.env["GITLAB_HOST"] = "https://env.example";
+
+    vi.mocked(resolveSecret).mockImplementation(async (key: string) => {
+      if (key === "GITLAB_TOKEN") return "tok";
+      if (key === "GITLAB_HOST") return "https://secret.example";
+      return null;
+    });
+
+    let capturedUrl = "";
+    const restore = stubFetch((url) => { capturedUrl = url; });
+    try {
+      const c = buildGitlabConnector();
+      await c.fetch("project_info", { namespace: "g", project: "p" });
+    } finally { restore(); }
+
+    expect(capturedUrl).toMatch(/^https:\/\/secret\.example\/api\/v4\//);
+  });
+
+  it("env host wins over YAML when no secret", async () => {
+    const agentDir = path.join(tmpHome, ".gitlab-agent");
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(path.join(agentDir, "config.yaml"), "gitlab:\n  host: https://yaml.example\n");
+    process.env["GITLAB_TOKEN"] = "tok";
+    process.env["GITLAB_HOST"] = "https://env.example";
+
+    let capturedUrl = "";
+    const restore = stubFetch((url) => { capturedUrl = url; });
+    try {
+      const c = buildGitlabConnector();
+      await c.fetch("project_info", { namespace: "g", project: "p" });
+    } finally { restore(); }
+
+    expect(capturedUrl).toMatch(/^https:\/\/env\.example\/api\/v4\//);
+    expect(capturedUrl).not.toContain("yaml.example");
+  });
+
+  it("YAML host is used when no secret or env", async () => {
+    const agentDir = path.join(tmpHome, ".gitlab-agent");
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(path.join(agentDir, "config.yaml"), "gitlab:\n  host: https://yaml.example\n");
+    process.env["GITLAB_TOKEN"] = "tok";
+    // GITLAB_HOST absent (cleared in outer beforeEach)
+
+    let capturedUrl = "";
+    const restore = stubFetch((url) => { capturedUrl = url; });
+    try {
+      const c = buildGitlabConnector();
+      await c.fetch("project_info", { namespace: "g", project: "p" });
+    } finally { restore(); }
+
+    expect(capturedUrl).toMatch(/^https:\/\/yaml\.example\/api\/v4\//);
+  });
+
+  it("falls back to https://gitlab.com when all sources are unset", async () => {
+    process.env["GITLAB_TOKEN"] = "tok";
+    // no secret, no env GITLAB_HOST, no YAML
+
+    let capturedUrl = "";
+    const restore = stubFetch((url) => { capturedUrl = url; });
+    try {
+      const c = buildGitlabConnector();
+      await c.fetch("project_info", { namespace: "g", project: "p" });
+    } finally { restore(); }
+
+    expect(capturedUrl).toMatch(/^https:\/\/gitlab\.com\/api\/v4\//);
   });
 });
 
