@@ -1,0 +1,9 @@
+{
+  "name": "git-connector-plugin-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Runtime manifest for git-connector. SessionStart copies this manifest and runs npm install to fetch the shared dispatcher.",
+  "dependencies": {
+    "narai-primitives": "^2.1.3"
+  }
+}

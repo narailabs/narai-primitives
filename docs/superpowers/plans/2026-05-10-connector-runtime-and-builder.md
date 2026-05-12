@@ -54,7 +54,7 @@ narai-primitives/
     │   ├── plugin-config.test.ts                      (NEW)
     │   ├── dispatcher.test.ts                         (NEW)
     │   └── smart-bootstrap.test.ts                    (NEW)
-    └── plugins/create-connector/
+    └── plugins/connector-creator/
         ├── connector-gate.test.ts                     (NEW)
         ├── settings-wiring.test.ts                    (NEW)
         └── skill-end-to-end.test.ts                   (NEW)
@@ -1059,11 +1059,11 @@ git commit -m "feat(plugin-hooks): pre-tool-use db-guard + user-connector gate s
 Canary plugin migration — smallest surface, no special PreToolUse. After this lands, the same recipe applies to confluence/gcp/github/jira/notion.
 
 **Files:**
-- Create: `plugins/aws-agent/plugin-config.json`
-- Modify: `plugins/aws-agent/hooks/hooks.json`
-- Delete: `plugins/aws-agent/hooks/reminder.mjs`
+- Create: `plugins/aws-connector/plugin-config.json`
+- Modify: `plugins/aws-connector/hooks/hooks.json`
+- Delete: `plugins/aws-connector/hooks/reminder.mjs`
 
-- [ ] **Step 1: Add `plugins/aws-agent/plugin-config.json`**
+- [ ] **Step 1: Add `plugins/aws-connector/plugin-config.json`**
 
 ```json
 {
@@ -1072,7 +1072,7 @@ Canary plugin migration — smallest surface, no special PreToolUse. After this 
 }
 ```
 
-- [ ] **Step 2: Replace `plugins/aws-agent/hooks/hooks.json`**
+- [ ] **Step 2: Replace `plugins/aws-connector/hooks/hooks.json`**
 
 Read the current file first to confirm the existing shape, then overwrite:
 
@@ -1114,17 +1114,17 @@ Read the current file first to confirm the existing shape, then overwrite:
 }
 ```
 
-- [ ] **Step 3: Delete `plugins/aws-agent/hooks/reminder.mjs`**
+- [ ] **Step 3: Delete `plugins/aws-connector/hooks/reminder.mjs`**
 
 ```sh
-rm plugins/aws-agent/hooks/reminder.mjs
+rm plugins/aws-connector/hooks/reminder.mjs
 ```
 
 - [ ] **Step 4: Smoke-test the dispatcher with aws-agent's plugin-config**
 
 ```sh
 echo '{"tool_name":"Bash","tool_input":{"command":"ls"}}' | \
-  CLAUDE_PLUGIN_ROOT=$(pwd)/plugins/aws-agent \
+  CLAUDE_PLUGIN_ROOT=$(pwd)/plugins/aws-connector \
   CLAUDE_PLUGIN_DATA=$(mktemp -d) \
   node plugin-hooks/dispatcher.mjs post-tool-use
 ```
@@ -1139,8 +1139,8 @@ Expected: all tests pass; existing aws-agent tests unchanged.
 - [ ] **Step 6: Commit**
 
 ```sh
-git add plugins/aws-agent/plugin-config.json plugins/aws-agent/hooks/hooks.json
-git rm plugins/aws-agent/hooks/reminder.mjs
+git add plugins/aws-connector/plugin-config.json plugins/aws-connector/hooks/hooks.json
+git rm plugins/aws-connector/hooks/reminder.mjs
 git commit -m "feat(aws-agent): migrate to shared dispatcher"
 ```
 
@@ -1179,16 +1179,16 @@ Expected: all tests pass.
 - [ ] **Step 3: Commit (one commit covering all 5 — they're mechanically identical)**
 
 ```sh
-git add plugins/confluence-agent/plugin-config.json plugins/confluence-agent/hooks/hooks.json
-git rm plugins/confluence-agent/hooks/reminder.mjs
-git add plugins/gcp-agent/plugin-config.json plugins/gcp-agent/hooks/hooks.json
-git rm plugins/gcp-agent/hooks/reminder.mjs
-git add plugins/github-agent/plugin-config.json plugins/github-agent/hooks/hooks.json
-git rm plugins/github-agent/hooks/reminder.mjs
-git add plugins/jira-agent/plugin-config.json plugins/jira-agent/hooks/hooks.json
-git rm plugins/jira-agent/hooks/reminder.mjs
-git add plugins/notion-agent/plugin-config.json plugins/notion-agent/hooks/hooks.json
-git rm plugins/notion-agent/hooks/reminder.mjs
+git add plugins/confluence-connector/plugin-config.json plugins/confluence-connector/hooks/hooks.json
+git rm plugins/confluence-connector/hooks/reminder.mjs
+git add plugins/gcp-connector/plugin-config.json plugins/gcp-connector/hooks/hooks.json
+git rm plugins/gcp-connector/hooks/reminder.mjs
+git add plugins/github-connector/plugin-config.json plugins/github-connector/hooks/hooks.json
+git rm plugins/github-connector/hooks/reminder.mjs
+git add plugins/jira-connector/plugin-config.json plugins/jira-connector/hooks/hooks.json
+git rm plugins/jira-connector/hooks/reminder.mjs
+git add plugins/notion-connector/plugin-config.json plugins/notion-connector/hooks/hooks.json
+git rm plugins/notion-connector/hooks/reminder.mjs
 git commit -m "feat(builtin-plugins): migrate confluence/gcp/github/jira/notion to dispatcher"
 ```
 
@@ -1199,13 +1199,13 @@ git commit -m "feat(builtin-plugins): migrate confluence/gcp/github/jira/notion 
 `db-agent` is the only builtin plugin with a `PreToolUse` hook today (`db-guard.mjs`). The dispatcher already handles `kind: "db"` for that case; the migration adds a `PreToolUse` entry pointing at `dispatcher.mjs pre-tool-use` and sets `kind: "db"` in the plugin-config.
 
 **Files:**
-- Create: `plugins/db-agent/plugin-config.json`
-- Modify: `plugins/db-agent/hooks/hooks.json`
-- Delete: `plugins/db-agent/hooks/reminder.mjs`
-- Keep: `plugins/db-agent/hooks/guardrails.json` (read by dispatcher)
-- Delete: `plugins/db-agent/hooks/db-guard.mjs` (logic absorbed into dispatcher)
+- Create: `plugins/db-connector/plugin-config.json`
+- Modify: `plugins/db-connector/hooks/hooks.json`
+- Delete: `plugins/db-connector/hooks/reminder.mjs`
+- Keep: `plugins/db-connector/hooks/guardrails.json` (read by dispatcher)
+- Delete: `plugins/db-connector/hooks/db-guard.mjs` (logic absorbed into dispatcher)
 
-- [ ] **Step 1: Add `plugins/db-agent/plugin-config.json`**
+- [ ] **Step 1: Add `plugins/db-connector/plugin-config.json`**
 
 ```json
 {
@@ -1215,7 +1215,7 @@ git commit -m "feat(builtin-plugins): migrate confluence/gcp/github/jira/notion 
 }
 ```
 
-- [ ] **Step 2: Replace `plugins/db-agent/hooks/hooks.json`**
+- [ ] **Step 2: Replace `plugins/db-connector/hooks/hooks.json`**
 
 ```json
 {
@@ -1269,8 +1269,8 @@ git commit -m "feat(builtin-plugins): migrate confluence/gcp/github/jira/notion 
 - [ ] **Step 3: Delete the old per-plugin scripts**
 
 ```sh
-rm plugins/db-agent/hooks/reminder.mjs
-rm plugins/db-agent/hooks/db-guard.mjs
+rm plugins/db-connector/hooks/reminder.mjs
+rm plugins/db-connector/hooks/db-guard.mjs
 ```
 
 (Keep `guardrails.json` — the dispatcher reads it.)
@@ -1279,7 +1279,7 @@ rm plugins/db-agent/hooks/db-guard.mjs
 
 ```sh
 echo '{"tool_name":"Bash","tool_input":{"command":"psql foo"}}' | \
-  CLAUDE_PLUGIN_ROOT=$(pwd)/plugins/db-agent \
+  CLAUDE_PLUGIN_ROOT=$(pwd)/plugins/db-connector \
   CLAUDE_PLUGIN_DATA=$(mktemp -d) \
   node plugin-hooks/dispatcher.mjs pre-tool-use
 ```
@@ -1294,8 +1294,8 @@ Expected: all pass.
 - [ ] **Step 6: Commit**
 
 ```sh
-git add plugins/db-agent/plugin-config.json plugins/db-agent/hooks/hooks.json
-git rm plugins/db-agent/hooks/reminder.mjs plugins/db-agent/hooks/db-guard.mjs
+git add plugins/db-connector/plugin-config.json plugins/db-connector/hooks/hooks.json
+git rm plugins/db-connector/hooks/reminder.mjs plugins/db-connector/hooks/db-guard.mjs
 git commit -m "feat(db-agent): migrate to dispatcher (PreToolUse + db-guard absorbed)"
 ```
 
@@ -1308,13 +1308,13 @@ git commit -m "feat(db-agent): migrate to dispatcher (PreToolUse + db-guard abso
 Self-contained, zero-npm-dep dispatcher stamped at `<scope>/.connectors/connector-gate.mjs` by the create-connector skill. Reads `<scope>/.connectors/connectors/*/gates.json` and emits a permission decision.
 
 **Files:**
-- Create: `plugins/create-connector/skills/create-connector/assets/templates/_runtime/connector-gate.mjs.tmpl`
-- Test: `tests/plugins/create-connector/connector-gate.test.ts`
+- Create: `plugins/connector-creator/skills/create-connector/assets/templates/_runtime/connector-gate.mjs.tmpl`
+- Test: `tests/plugins/connector-creator/connector-gate.test.ts`
 
 - [ ] **Step 1: Write failing test**
 
 ```ts
-// tests/plugins/create-connector/connector-gate.test.ts
+// tests/plugins/connector-creator/connector-gate.test.ts
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
@@ -1446,13 +1446,13 @@ describe("connector-gate template", () => {
 
 - [ ] **Step 2: Run, see fail**
 
-Run: `npx vitest run tests/plugins/create-connector/connector-gate.test.ts`
+Run: `npx vitest run tests/plugins/connector-creator/connector-gate.test.ts`
 Expected: FAIL — template file not found.
 
 - [ ] **Step 3: Implement the template**
 
 ```js
-// plugins/create-connector/skills/create-connector/assets/templates/_runtime/connector-gate.mjs.tmpl
+// plugins/connector-creator/skills/create-connector/assets/templates/_runtime/connector-gate.mjs.tmpl
 #!/usr/bin/env node
 /**
  * connector-gate.mjs — auto-discovers user connectors at
@@ -1566,13 +1566,13 @@ async function readStdinJson() {
 
 - [ ] **Step 4: Run the test**
 
-Run: `npx vitest run tests/plugins/create-connector/connector-gate.test.ts`
+Run: `npx vitest run tests/plugins/connector-creator/connector-gate.test.ts`
 Expected: PASS, 4 tests pass.
 
 - [ ] **Step 5: Commit**
 
 ```sh
-git add plugins/create-connector/skills/create-connector/assets/templates/_runtime/connector-gate.mjs.tmpl tests/plugins/create-connector/connector-gate.test.ts
+git add plugins/connector-creator/skills/create-connector/assets/templates/_runtime/connector-gate.mjs.tmpl tests/plugins/connector-creator/connector-gate.test.ts
 git commit -m "feat(create-connector): standalone connector-gate.mjs template"
 ```
 
@@ -1583,13 +1583,13 @@ git commit -m "feat(create-connector): standalone connector-gate.mjs template"
 Helper that idempotently adds the user's PreToolUse hook entry to `.claude/settings.json` (project) or `~/.claude/settings.json` (user). Backs up before writing; detects conflicts.
 
 **Files:**
-- Create: `plugins/create-connector/skills/create-connector/lib/settings-wiring.mjs`
-- Test: `tests/plugins/create-connector/settings-wiring.test.ts`
+- Create: `plugins/connector-creator/skills/create-connector/lib/settings-wiring.mjs`
+- Test: `tests/plugins/connector-creator/settings-wiring.test.ts`
 
 - [ ] **Step 1: Write failing test**
 
 ```ts
-// tests/plugins/create-connector/settings-wiring.test.ts
+// tests/plugins/connector-creator/settings-wiring.test.ts
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -1597,7 +1597,7 @@ import * as path from "node:path";
 import {
   ensureSettingsHook,
   hasConnectorGateHook,
-} from "../../../plugins/create-connector/skills/create-connector/lib/settings-wiring.mjs";
+} from "../../../plugins/connector-creator/skills/create-connector/lib/settings-wiring.mjs";
 
 describe("settings-wiring", () => {
   let scope: string;
@@ -1666,13 +1666,13 @@ describe("settings-wiring", () => {
 
 - [ ] **Step 2: Run, see fail**
 
-Run: `npx vitest run tests/plugins/create-connector/settings-wiring.test.ts`
+Run: `npx vitest run tests/plugins/connector-creator/settings-wiring.test.ts`
 Expected: FAIL — module not found.
 
 - [ ] **Step 3: Implement the helper**
 
 ```js
-// plugins/create-connector/skills/create-connector/lib/settings-wiring.mjs
+// plugins/connector-creator/skills/create-connector/lib/settings-wiring.mjs
 /**
  * settings-wiring.mjs — idempotent management of Claude Code's settings.json
  * to register the connector-gate.mjs PreToolUse hook.
@@ -1748,13 +1748,13 @@ function backup(filePath) {
 
 - [ ] **Step 4: Run the test**
 
-Run: `npx vitest run tests/plugins/create-connector/settings-wiring.test.ts`
+Run: `npx vitest run tests/plugins/connector-creator/settings-wiring.test.ts`
 Expected: PASS, 5 tests pass.
 
 - [ ] **Step 5: Commit**
 
 ```sh
-git add plugins/create-connector/skills/create-connector/lib/settings-wiring.mjs tests/plugins/create-connector/settings-wiring.test.ts
+git add plugins/connector-creator/skills/create-connector/lib/settings-wiring.mjs tests/plugins/connector-creator/settings-wiring.test.ts
 git commit -m "feat(create-connector): settings.json wiring helper"
 ```
 
@@ -1765,18 +1765,18 @@ git commit -m "feat(create-connector): settings.json wiring helper"
 Helper that appends a connector entry to `<scope>/.connectors/config.yaml`, creating the file if needed.
 
 **Files:**
-- Create: `plugins/create-connector/skills/create-connector/lib/connector-registry.mjs`
-- Test: `tests/plugins/create-connector/connector-registry.test.ts`
+- Create: `plugins/connector-creator/skills/create-connector/lib/connector-registry.mjs`
+- Test: `tests/plugins/connector-creator/connector-registry.test.ts`
 
 - [ ] **Step 1: Write failing test**
 
 ```ts
-// tests/plugins/create-connector/connector-registry.test.ts
+// tests/plugins/connector-creator/connector-registry.test.ts
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { registerConnector } from "../../../plugins/create-connector/skills/create-connector/lib/connector-registry.mjs";
+import { registerConnector } from "../../../plugins/connector-creator/skills/create-connector/lib/connector-registry.mjs";
 
 describe("connector-registry", () => {
   let scope: string;
@@ -1840,13 +1840,13 @@ describe("connector-registry", () => {
 
 - [ ] **Step 2: Run, see fail**
 
-Run: `npx vitest run tests/plugins/create-connector/connector-registry.test.ts`
+Run: `npx vitest run tests/plugins/connector-creator/connector-registry.test.ts`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement**
 
 ```js
-// plugins/create-connector/skills/create-connector/lib/connector-registry.mjs
+// plugins/connector-creator/skills/create-connector/lib/connector-registry.mjs
 import * as fs from "node:fs";
 import * as path from "node:path";
 import yaml from "js-yaml";
@@ -1884,13 +1884,13 @@ export function registerConnector(scope, slug, entry) {
 
 - [ ] **Step 4: Run the test**
 
-Run: `npx vitest run tests/plugins/create-connector/connector-registry.test.ts`
+Run: `npx vitest run tests/plugins/connector-creator/connector-registry.test.ts`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```sh
-git add plugins/create-connector/skills/create-connector/lib/connector-registry.mjs tests/plugins/create-connector/connector-registry.test.ts
+git add plugins/connector-creator/skills/create-connector/lib/connector-registry.mjs tests/plugins/connector-creator/connector-registry.test.ts
 git commit -m "feat(create-connector): config.yaml registration helper"
 ```
 
@@ -1901,8 +1901,8 @@ git commit -m "feat(create-connector): config.yaml registration helper"
 Stamps a connector that has only `gates.json` + `SKILL.md`. Most useful for the "approve before X runs" use case.
 
 **Files:**
-- Create: `plugins/create-connector/skills/create-connector/assets/templates/shell-gate/gates.json.tmpl`
-- Create: `plugins/create-connector/skills/create-connector/assets/templates/shell-gate/SKILL.md.tmpl`
+- Create: `plugins/connector-creator/skills/create-connector/assets/templates/shell-gate/gates.json.tmpl`
+- Create: `plugins/connector-creator/skills/create-connector/assets/templates/shell-gate/SKILL.md.tmpl`
 
 - [ ] **Step 1: Create `gates.json.tmpl`**
 
@@ -1960,7 +1960,7 @@ specific rules without uninstalling.
 - [ ] **Step 3: Add a smoke test for the template content**
 
 ```ts
-// tests/plugins/create-connector/templates.test.ts
+// tests/plugins/connector-creator/templates.test.ts
 import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -2006,13 +2006,13 @@ describe("flavor templates", () => {
 
 - [ ] **Step 4: Run the test**
 
-Run: `npx vitest run tests/plugins/create-connector/templates.test.ts`
+Run: `npx vitest run tests/plugins/connector-creator/templates.test.ts`
 Expected: PASS, 3 tests pass.
 
 - [ ] **Step 5: Commit**
 
 ```sh
-git add plugins/create-connector/skills/create-connector/assets/templates/shell-gate/ tests/plugins/create-connector/templates.test.ts
+git add plugins/connector-creator/skills/create-connector/assets/templates/shell-gate/ tests/plugins/connector-creator/templates.test.ts
 git commit -m "feat(create-connector): shell-gate flavor templates"
 ```
 
@@ -2023,10 +2023,10 @@ git commit -m "feat(create-connector): shell-gate flavor templates"
 Add the remaining two templates so the skill has all five flavors covered (api-wrapper already exists; custom uses no template).
 
 **Files:**
-- Create: `plugins/create-connector/skills/create-connector/assets/templates/composite/index.mjs.tmpl`
-- Create: `plugins/create-connector/skills/create-connector/assets/templates/composite/bin.tmpl`
-- Create: `plugins/create-connector/skills/create-connector/assets/templates/composite/SKILL.md.tmpl`
-- Create: `plugins/create-connector/skills/create-connector/assets/templates/knowledge/SKILL.md.tmpl`
+- Create: `plugins/connector-creator/skills/create-connector/assets/templates/composite/index.mjs.tmpl`
+- Create: `plugins/connector-creator/skills/create-connector/assets/templates/composite/bin.tmpl`
+- Create: `plugins/connector-creator/skills/create-connector/assets/templates/composite/SKILL.md.tmpl`
+- Create: `plugins/connector-creator/skills/create-connector/assets/templates/knowledge/SKILL.md.tmpl`
 
 - [ ] **Step 1: Create `composite/index.mjs.tmpl`**
 
@@ -2136,7 +2136,7 @@ as a runbook for {{DESCRIPTION_SHORT}}.
 
 - [ ] **Step 5: Add tests for new templates**
 
-Append to `tests/plugins/create-connector/templates.test.ts`:
+Append to `tests/plugins/connector-creator/templates.test.ts`:
 
 ```ts
 it("composite has all three template files", () => {
@@ -2157,13 +2157,13 @@ it("knowledge template references runbook usage", () => {
 
 - [ ] **Step 6: Run the test**
 
-Run: `npx vitest run tests/plugins/create-connector/templates.test.ts`
+Run: `npx vitest run tests/plugins/connector-creator/templates.test.ts`
 Expected: PASS.
 
 - [ ] **Step 7: Commit**
 
 ```sh
-git add plugins/create-connector/skills/create-connector/assets/templates/composite/ plugins/create-connector/skills/create-connector/assets/templates/knowledge/ tests/plugins/create-connector/templates.test.ts
+git add plugins/connector-creator/skills/create-connector/assets/templates/composite/ plugins/connector-creator/skills/create-connector/assets/templates/knowledge/ tests/plugins/connector-creator/templates.test.ts
 git commit -m "feat(create-connector): composite + knowledge flavor templates"
 ```
 
@@ -2171,15 +2171,15 @@ git commit -m "feat(create-connector): composite + knowledge flavor templates"
 
 ## Task 16: Adaptive flow — rewrite `SKILL.md`
 
-Rewrite `plugins/create-connector/skills/create-connector/SKILL.md` to use the adaptive flow with 5 flavors. Heavy editorial change; structure follows the spec's "Skill flow" section.
+Rewrite `plugins/connector-creator/skills/create-connector/SKILL.md` to use the adaptive flow with 5 flavors. Heavy editorial change; structure follows the spec's "Skill flow" section.
 
 **Files:**
-- Modify: `plugins/create-connector/skills/create-connector/SKILL.md`
+- Modify: `plugins/connector-creator/skills/create-connector/SKILL.md`
 
 - [ ] **Step 1: Read the current SKILL.md to understand what's preserved vs rewritten**
 
 ```sh
-cat plugins/create-connector/skills/create-connector/SKILL.md
+cat plugins/connector-creator/skills/create-connector/SKILL.md
 ```
 
 Note: the existing 7-step interview becomes the API/SDK wrapper flavor's checklist. Most of the existing content stays, just under a flavor heading.
@@ -2208,7 +2208,7 @@ Make sure the rewritten SKILL.md:
 - [ ] **Step 3: Verify the SKILL.md still parses (frontmatter)**
 
 ```sh
-head -20 plugins/create-connector/skills/create-connector/SKILL.md
+head -20 plugins/connector-creator/skills/create-connector/SKILL.md
 ```
 
 Expected: frontmatter with `name`, `description`, valid YAML.
@@ -2216,7 +2216,7 @@ Expected: frontmatter with `name`, `description`, valid YAML.
 - [ ] **Step 4: Commit**
 
 ```sh
-git add plugins/create-connector/skills/create-connector/SKILL.md
+git add plugins/connector-creator/skills/create-connector/SKILL.md
 git commit -m "feat(create-connector): adaptive flow + 5 flavor recipes in SKILL.md"
 ```
 
@@ -2227,9 +2227,9 @@ git commit -m "feat(create-connector): adaptive flow + 5 flavor recipes in SKILL
 Three reference files reused by the skill: connector contract, flavor authoring guide, research patterns.
 
 **Files:**
-- Create: `plugins/create-connector/skills/create-connector/references/connector-contract.md`
-- Create: `plugins/create-connector/skills/create-connector/references/flavor-authoring.md`
-- Create: `plugins/create-connector/skills/create-connector/references/research-patterns.md`
+- Create: `plugins/connector-creator/skills/create-connector/references/connector-contract.md`
+- Create: `plugins/connector-creator/skills/create-connector/references/flavor-authoring.md`
+- Create: `plugins/connector-creator/skills/create-connector/references/research-patterns.md`
 
 - [ ] **Step 1: Create `connector-contract.md`**
 
@@ -2246,7 +2246,7 @@ Content: when to WebFetch vs WebSearch vs context7 vs grep-existing-connectors. 
 - [ ] **Step 4: Verify the references exist**
 
 ```sh
-ls plugins/create-connector/skills/create-connector/references/
+ls plugins/connector-creator/skills/create-connector/references/
 ```
 
 Expected: shows the three new files plus the existing auth-patterns.md, action-design.md, db-agent-pointer.md.
@@ -2254,7 +2254,7 @@ Expected: shows the three new files plus the existing auth-patterns.md, action-d
 - [ ] **Step 5: Commit**
 
 ```sh
-git add plugins/create-connector/skills/create-connector/references/
+git add plugins/connector-creator/skills/create-connector/references/
 git commit -m "docs(create-connector): connector-contract + flavor-authoring + research-patterns references"
 ```
 
@@ -2265,20 +2265,20 @@ git commit -m "docs(create-connector): connector-contract + flavor-authoring + r
 Tests for the full create-connector flow: stamp a connector, register in config.yaml, wire settings.json, smoke-test the gate. Uses the helpers from Tasks 11-13 against synthetic fixtures.
 
 **Files:**
-- Create: `tests/plugins/create-connector/skill-end-to-end.test.ts`
+- Create: `tests/plugins/connector-creator/skill-end-to-end.test.ts`
 
 - [ ] **Step 1: Write the end-to-end test**
 
 ```ts
-// tests/plugins/create-connector/skill-end-to-end.test.ts
+// tests/plugins/connector-creator/skill-end-to-end.test.ts
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ensureSettingsHook } from "../../../plugins/create-connector/skills/create-connector/lib/settings-wiring.mjs";
-import { registerConnector } from "../../../plugins/create-connector/skills/create-connector/lib/connector-registry.mjs";
+import { ensureSettingsHook } from "../../../plugins/connector-creator/skills/create-connector/lib/settings-wiring.mjs";
+import { registerConnector } from "../../../plugins/connector-creator/skills/create-connector/lib/connector-registry.mjs";
 
 const TEMPLATES = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -2375,7 +2375,7 @@ describe("create-connector end-to-end (shell-gate flavor)", () => {
 
 - [ ] **Step 2: Run the test**
 
-Run: `npx vitest run tests/plugins/create-connector/skill-end-to-end.test.ts`
+Run: `npx vitest run tests/plugins/connector-creator/skill-end-to-end.test.ts`
 Expected: PASS, 1 test passes.
 
 - [ ] **Step 3: Run full suite**
@@ -2386,7 +2386,7 @@ Expected: all tests pass.
 - [ ] **Step 4: Commit**
 
 ```sh
-git add tests/plugins/create-connector/skill-end-to-end.test.ts
+git add tests/plugins/connector-creator/skill-end-to-end.test.ts
 git commit -m "test(create-connector): end-to-end shell-gate flavor smoke test"
 ```
 

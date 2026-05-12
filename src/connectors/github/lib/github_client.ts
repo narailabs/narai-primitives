@@ -1,5 +1,7 @@
 /**
- * github_client.ts — read-only GitHub REST + GraphQL client.
+ * github_client.ts — GitHub REST + GraphQL client. Supports read +
+ * write/admin operations; gating is enforced by the toolkit policy
+ * layer at the connector boundary, not by the HTTP surface itself.
  *
  * Thin wrapper over the shared `HttpClient` in `narai-primitives/toolkit`:
  * supplies Bearer auth + GitHub's API-version + Accept headers, surfaces
@@ -52,15 +54,19 @@ export async function loadGithubCredentials(): Promise<
 export class GithubClient {
   private readonly _http: HttpClient;
   private _defaultOwner: string | null = null;
+  private readonly _authHeaderForLogs: string;
+  private readonly _logsTimeoutMs: number;
 
   constructor(opts: GithubClientOptions) {
     const apiBase = opts.apiBase ?? GITHUB_API_BASE;
     this._defaultOwner = opts.defaultOwner ?? null;
+    this._authHeaderForLogs = `Bearer ${opts.token}`;
+    this._logsTimeoutMs = opts.readTimeoutMs ?? 30000;
     this._http = new HttpClient({
       baseUrl: apiBase,
       authHeader: `Bearer ${opts.token}`,
       serviceName: "GitHub",
-      allowedMethods: new Set(["GET", "POST"]),
+      allowedMethods: new Set(["GET", "POST", "PATCH", "PUT", "DELETE"]),
       defaultHeaders: {
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": GITHUB_API_VERSION,
@@ -260,6 +266,154 @@ export class GithubClient {
     );
   }
 
+  // ─── pull requests ──────────────────────────────────────────────────────
+  public async getPull(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+  ): Promise<GithubResult<GithubPullDetail>> {
+    return this._http.request<GithubPullDetail>(
+      "GET",
+      `/repos/${owner}/${repo}/pulls/${pullNumber}`,
+    );
+  }
+
+  public async createPull(
+    owner: string,
+    repo: string,
+    body: {
+      title: string;
+      head: string;
+      base: string;
+      body?: string;
+      draft?: boolean;
+      maintainer_can_modify?: boolean;
+    },
+  ): Promise<GithubResult<GithubPullDetail>> {
+    return this._http.request<GithubPullDetail>(
+      "POST",
+      `/repos/${owner}/${repo}/pulls`,
+      { body },
+    );
+  }
+
+  public async updatePull(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+    body: {
+      title?: string;
+      body?: string;
+      state?: "open";
+      base?: string;
+      maintainer_can_modify?: boolean;
+    },
+  ): Promise<GithubResult<GithubPullDetail>> {
+    return this._http.request<GithubPullDetail>(
+      "PATCH",
+      `/repos/${owner}/${repo}/pulls/${pullNumber}`,
+      { body },
+    );
+  }
+
+  public async closePull(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+  ): Promise<GithubResult<GithubPullDetail>> {
+    return this._http.request<GithubPullDetail>(
+      "PATCH",
+      `/repos/${owner}/${repo}/pulls/${pullNumber}`,
+      { body: { state: "closed" } },
+    );
+  }
+
+  public async mergePull(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+    body: {
+      commit_title?: string;
+      commit_message?: string;
+      sha?: string;
+      merge_method: "merge" | "squash" | "rebase";
+    },
+  ): Promise<GithubResult<{ sha: string; merged: boolean; message: string }>> {
+    return this._http.request(
+      "PUT",
+      `/repos/${owner}/${repo}/pulls/${pullNumber}/merge`,
+      { body },
+    );
+  }
+
+  // ─── issues ─────────────────────────────────────────────────────────────
+  public async getIssue(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+  ): Promise<GithubResult<GithubIssueDetail>> {
+    return this._http.request<GithubIssueDetail>(
+      "GET",
+      `/repos/${owner}/${repo}/issues/${issueNumber}`,
+    );
+  }
+
+  public async createIssue(
+    owner: string,
+    repo: string,
+    body: {
+      title: string;
+      body?: string;
+      labels?: string[];
+      assignees?: string[];
+      milestone?: number;
+    },
+  ): Promise<GithubResult<GithubIssueDetail>> {
+    return this._http.request<GithubIssueDetail>(
+      "POST",
+      `/repos/${owner}/${repo}/issues`,
+      { body },
+    );
+  }
+
+  public async updateIssue(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    body: {
+      title?: string;
+      body?: string;
+      state?: "open";
+      labels?: string[];
+      assignees?: string[];
+      milestone?: number | null;
+    },
+  ): Promise<GithubResult<GithubIssueDetail>> {
+    return this._http.request<GithubIssueDetail>(
+      "PATCH",
+      `/repos/${owner}/${repo}/issues/${issueNumber}`,
+      { body },
+    );
+  }
+
+  public async closeIssue(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    body?: { state_reason?: "completed" | "not_planned" | "duplicate" | null },
+  ): Promise<GithubResult<GithubIssueDetail>> {
+    const payload: { state: "closed"; state_reason?: string | null } = {
+      state: "closed",
+    };
+    if (body?.state_reason !== undefined)
+      payload.state_reason = body.state_reason;
+    return this._http.request<GithubIssueDetail>(
+      "PATCH",
+      `/repos/${owner}/${repo}/issues/${issueNumber}`,
+      { body: payload },
+    );
+  }
+
   /** List wiki pages via GraphQL (repository has hasWikiEnabled flag). */
   public async listWikiPages(
     owner: string,
@@ -278,6 +432,317 @@ export class GithubClient {
     if (!res.ok) return res;
     const enabled = res.data?.data?.repository?.hasWikiEnabled ?? false;
     return { ok: true, data: { hasWikiEnabled: enabled }, status: res.status };
+  }
+
+  // ─── comments — issue-conversation ──────────────────────────────────────
+  public async addIssueComment(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    body: { body: string },
+  ): Promise<GithubResult<GithubRawIssueComment>> {
+    return this._http.request<GithubRawIssueComment>(
+      "POST",
+      `/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
+      { body },
+    );
+  }
+
+  public async updateIssueComment(
+    owner: string,
+    repo: string,
+    commentId: number,
+    body: { body: string },
+  ): Promise<GithubResult<GithubRawIssueComment>> {
+    return this._http.request<GithubRawIssueComment>(
+      "PATCH",
+      `/repos/${owner}/${repo}/issues/comments/${commentId}`,
+      { body },
+    );
+  }
+
+  public async deleteIssueComment(
+    owner: string,
+    repo: string,
+    commentId: number,
+  ): Promise<GithubResult<unknown>> {
+    return this._http.request<unknown>(
+      "DELETE",
+      `/repos/${owner}/${repo}/issues/comments/${commentId}`,
+    );
+  }
+
+  // ─── comments — PR review-inline ────────────────────────────────────────
+  public async addPrReviewComment(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    body: {
+      body: string;
+      commit_id: string;
+      path: string;
+      line: number;
+      side?: "LEFT" | "RIGHT";
+      start_line?: number;
+      start_side?: "LEFT" | "RIGHT";
+    },
+  ): Promise<GithubResult<GithubRawPullReviewComment>> {
+    return this._http.request<GithubRawPullReviewComment>(
+      "POST",
+      `/repos/${owner}/${repo}/pulls/${prNumber}/comments`,
+      { body },
+    );
+  }
+
+  public async updatePrReviewComment(
+    owner: string,
+    repo: string,
+    commentId: number,
+    body: { body: string },
+  ): Promise<GithubResult<GithubRawPullReviewComment>> {
+    return this._http.request<GithubRawPullReviewComment>(
+      "PATCH",
+      `/repos/${owner}/${repo}/pulls/comments/${commentId}`,
+      { body },
+    );
+  }
+
+  public async deletePrReviewComment(
+    owner: string,
+    repo: string,
+    commentId: number,
+  ): Promise<GithubResult<unknown>> {
+    return this._http.request<unknown>(
+      "DELETE",
+      `/repos/${owner}/${repo}/pulls/comments/${commentId}`,
+    );
+  }
+
+  // ─── releases (mutations) ───────────────────────────────────────────────
+  public async createRelease(
+    owner: string,
+    repo: string,
+    body: {
+      tag_name: string;
+      name?: string;
+      body?: string;
+      draft?: boolean;
+      prerelease?: boolean;
+      target_commitish?: string;
+      make_latest?: "true" | "false" | "legacy";
+    },
+  ): Promise<GithubResult<GithubReleaseDetail>> {
+    return this._http.request<GithubReleaseDetail>(
+      "POST",
+      `/repos/${owner}/${repo}/releases`,
+      { body },
+    );
+  }
+
+  public async updateRelease(
+    owner: string,
+    repo: string,
+    releaseId: number,
+    body: {
+      tag_name?: string;
+      name?: string;
+      body?: string;
+      draft?: boolean;
+      prerelease?: boolean;
+      target_commitish?: string;
+    },
+  ): Promise<GithubResult<GithubReleaseDetail>> {
+    return this._http.request<GithubReleaseDetail>(
+      "PATCH",
+      `/repos/${owner}/${repo}/releases/${releaseId}`,
+      { body },
+    );
+  }
+
+  public async deleteRelease(
+    owner: string,
+    repo: string,
+    releaseId: number,
+  ): Promise<GithubResult<unknown>> {
+    return this._http.request<unknown>(
+      "DELETE",
+      `/repos/${owner}/${repo}/releases/${releaseId}`,
+    );
+  }
+
+  public async deleteReleaseAsset(
+    owner: string,
+    repo: string,
+    assetId: number,
+  ): Promise<GithubResult<unknown>> {
+    return this._http.request<unknown>(
+      "DELETE",
+      `/repos/${owner}/${repo}/releases/assets/${assetId}`,
+    );
+  }
+
+  // ─── workflows / Actions ────────────────────────────────────────────────
+  public async listWorkflowRuns(
+    owner: string,
+    repo: string,
+    query: {
+      branch?: string;
+      event?: string;
+      status?: string;
+      head_sha?: string;
+      per_page?: number;
+      page?: number;
+    },
+  ): Promise<GithubResult<GithubWorkflowRunsList>> {
+    return this._http.request<GithubWorkflowRunsList>(
+      "GET",
+      `/repos/${owner}/${repo}/actions/runs`,
+      { query },
+    );
+  }
+
+  public async getWorkflowRun(
+    owner: string,
+    repo: string,
+    runId: number,
+  ): Promise<GithubResult<GithubWorkflowRun>> {
+    return this._http.request<GithubWorkflowRun>(
+      "GET",
+      `/repos/${owner}/${repo}/actions/runs/${runId}`,
+    );
+  }
+
+  public async listRunJobs(
+    owner: string,
+    repo: string,
+    runId: number,
+    query: { per_page?: number; page?: number } = {},
+  ): Promise<GithubResult<GithubWorkflowJobsList>> {
+    return this._http.request<GithubWorkflowJobsList>(
+      "GET",
+      `/repos/${owner}/${repo}/actions/runs/${runId}/jobs`,
+      { query },
+    );
+  }
+
+  /**
+   * Returns the 302 redirect URL for run logs without downloading the ZIP.
+   * Uses fetchImpl directly with redirect: "manual" so we can capture the
+   * Location header. Falls back to the normal _http.request if fetchImpl
+   * unavailable (testing convenience).
+   */
+  public async getRunLogsRedirect(
+    owner: string,
+    repo: string,
+    runId: number,
+  ): Promise<GithubResult<{ url: string; content_length: number | null }>> {
+    const path = `/repos/${owner}/${repo}/actions/runs/${runId}/logs`;
+    const base = this._http.baseUrl;
+    const baseWithSlash = base.endsWith("/") ? base : base + "/";
+    const relative = path.startsWith("/") ? path.slice(1) : path;
+    const url = baseWithSlash + relative;
+    const fetchFn = (this as unknown as {
+      _http: { _fetch: typeof globalThis.fetch };
+    })._http._fetch;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this._logsTimeoutMs);
+    let resp: Response;
+    try {
+      resp = await fetchFn(url, {
+        method: "GET",
+        redirect: "manual",
+        signal: controller.signal,
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: this._authHeaderForLogs,
+          "X-GitHub-Api-Version": GITHUB_API_VERSION,
+        },
+      });
+    } catch (e) {
+      const isAbort = e instanceof Error && e.name === "AbortError";
+      return {
+        ok: false,
+        code: isAbort ? "TIMEOUT" : "NETWORK_ERROR",
+        message: e instanceof Error ? e.message : String(e),
+        retriable: true,
+      };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    if (resp.status !== 302 && resp.status !== 200) {
+      return {
+        ok: false,
+        code: "HTTP_ERROR",
+        status: resp.status,
+        message: `Unexpected status ${resp.status} from logs endpoint`,
+        retriable: false,
+      };
+    }
+    const location = resp.headers.get("location");
+    if (!location) {
+      return {
+        ok: false,
+        code: "HTTP_ERROR",
+        status: resp.status,
+        message: `Logs endpoint returned ${resp.status} without a Location header`,
+        retriable: false,
+      };
+    }
+    const lenHdr = resp.headers.get("content-length");
+    return {
+      ok: true,
+      status: resp.status,
+      data: {
+        url: location,
+        content_length: lenHdr ? Number(lenHdr) : null,
+      },
+    };
+  }
+
+  public async rerunRun(
+    owner: string,
+    repo: string,
+    runId: number,
+  ): Promise<GithubResult<unknown>> {
+    return this._http.request<unknown>(
+      "POST",
+      `/repos/${owner}/${repo}/actions/runs/${runId}/rerun`,
+    );
+  }
+
+  public async rerunFailedJobs(
+    owner: string,
+    repo: string,
+    runId: number,
+  ): Promise<GithubResult<unknown>> {
+    return this._http.request<unknown>(
+      "POST",
+      `/repos/${owner}/${repo}/actions/runs/${runId}/rerun-failed-jobs`,
+    );
+  }
+
+  public async cancelRun(
+    owner: string,
+    repo: string,
+    runId: number,
+  ): Promise<GithubResult<unknown>> {
+    return this._http.request<unknown>(
+      "POST",
+      `/repos/${owner}/${repo}/actions/runs/${runId}/cancel`,
+    );
+  }
+
+  public async triggerWorkflowDispatch(
+    owner: string,
+    repo: string,
+    workflowIdOrFilename: string,
+    body: { ref: string; inputs?: Record<string, string | number | boolean> },
+  ): Promise<GithubResult<unknown>> {
+    return this._http.request<unknown>(
+      "POST",
+      `/repos/${owner}/${repo}/actions/workflows/${encodeURIComponent(workflowIdOrFilename)}/dispatches`,
+      { body },
+    );
   }
 }
 
@@ -304,12 +769,41 @@ export interface GithubIssue {
   updated_at?: string;
 }
 
+export interface GithubIssueDetail {
+  number: number;
+  title: string;
+  state: "open" | "closed";
+  user?: { login: string };
+  labels?: Array<string | { name?: string }>;
+  html_url?: string;
+  body?: string;
+  updated_at?: string;
+  state_reason?: string | null;
+  assignees?: Array<{ login: string }>;
+}
+
 export interface GithubPull {
   number: number;
   title: string;
   state: string;
   user?: { login?: string };
   html_url?: string;
+  updated_at?: string;
+}
+
+export interface GithubPullDetail {
+  number: number;
+  title: string;
+  state: "open" | "closed";
+  draft?: boolean;
+  user?: { login: string };
+  base?: { ref: string; sha: string };
+  head?: { ref: string; sha: string };
+  html_url?: string;
+  body?: string;
+  merged?: boolean;
+  mergeable?: boolean | null;
+  mergeable_state?: string;
   updated_at?: string;
 }
 
@@ -344,7 +838,7 @@ export interface GithubIssueCommentList {
   results: GithubIssueComment[];
 }
 
-interface GithubRawIssueComment {
+export interface GithubRawIssueComment {
   id: number;
   user?: { login?: string };
   created_at?: string;
@@ -384,7 +878,7 @@ export interface GithubPullInlineComment {
   diff_hunk: string;
 }
 
-interface GithubRawPullReviewComment {
+export interface GithubRawPullReviewComment {
   id: number;
   user?: { login?: string };
   path?: string;
@@ -421,4 +915,51 @@ export interface GithubReleaseWithAssets {
   published_at?: string;
   author?: { login?: string };
   assets: GithubReleaseAsset[];
+}
+
+export interface GithubReleaseDetail {
+  id: number;
+  tag_name: string;
+  name?: string | null;
+  body?: string | null;
+  draft?: boolean;
+  prerelease?: boolean;
+  html_url?: string;
+  published_at?: string | null;
+  target_commitish?: string;
+}
+
+export interface GithubWorkflowRun {
+  id: number;
+  name?: string;
+  status?: string;
+  conclusion?: string | null;
+  event?: string;
+  head_branch?: string;
+  head_sha?: string;
+  run_number?: number;
+  html_url?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface GithubWorkflowRunsList {
+  total_count: number;
+  workflow_runs: GithubWorkflowRun[];
+}
+
+export interface GithubWorkflowJob {
+  id: number;
+  name: string;
+  status: string;
+  conclusion?: string | null;
+  started_at?: string;
+  completed_at?: string | null;
+  html_url?: string;
+  run_id: number;
+}
+
+export interface GithubWorkflowJobsList {
+  total_count: number;
+  jobs: GithubWorkflowJob[];
 }

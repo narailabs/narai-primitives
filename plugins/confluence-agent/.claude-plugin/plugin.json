@@ -1,6 +1,0 @@
-{
-  "name": "confluence-agent-plugin",
-  "version": "1.1.0",
-  "description": "Read + write CRUD on Confluence pages, comments, and attachments. Policy-gated.",
-  "author": "narai"
-}

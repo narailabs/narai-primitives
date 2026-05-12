@@ -38,7 +38,7 @@ Expected: all passing.
 - [ ] **Step 4: Verify no doc strings reference the old version**
 
 ```
-grep -n "3.0.1" src/connectors/github/ plugins/github-agent/
+grep -n "3.0.1" src/connectors/github/ plugins/github-connector/
 ```
 Expected: no matches (or only matches in unrelated context).
 

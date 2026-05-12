@@ -52,7 +52,7 @@ Also fire on near-misses where the intent is clear even without the word "connec
 
 - **Modifying an existing connector**. Just edit the file directly. The skill is for fresh scaffolding only.
 - **Wrapping an MCP server**. MCP servers and connectors are different abstractions in Claude Code. Point the user at the Claude Code MCP docs.
-- **Querying a database**. `db-agent-connector` (already in the workspace) covers postgres, mysql, sqlite, mssql, mongodb, dynamodb, and oracle. See `references/db-agent-pointer.md` for the redirect playbook. The only exception is a database backend db-agent doesn't support — and even then, suggest extending db-agent's driver registry rather than starting fresh.
+- **Querying a database**. `db-agent-connector` (already in the workspace) covers postgres, mysql, sqlite, mssql, mongodb, dynamodb, and oracle. See `references/db-connector-pointer.md` for the redirect playbook. The only exception is a database backend db-agent doesn't support — and even then, suggest extending db-agent's driver registry rather than starting fresh.
 - **Pulling wiki/Mermaid concerns into a connector**. The workspace `CLAUDE.md` calls this split out as load-bearing.
 
 ## Quick triage
@@ -66,7 +66,7 @@ Open with **one** question: *"What system do you want to connect?"* Listen to th
 | GraphQL endpoint | scaffold; client uses single `POST /graphql` pattern |
 | SDK-wrapped service (e.g., a service with a published SDK) | scaffold; SDK goes in `dependencies` |
 | CLI tool to wrap | scaffold; client method bodies shell out via `child_process.execFile` |
-| Database query (Postgres, MySQL, etc.) | redirect to `db-agent-connector` (see `references/db-agent-pointer.md`) |
+| Database query (Postgres, MySQL, etc.) | redirect to `db-agent-connector` (see `references/db-connector-pointer.md`) |
 | MCP server | out of scope; point at Claude Code MCP docs |
 | Unsure | present the menu, let the user pick |
 
@@ -323,6 +323,6 @@ Reference docs in this skill:
 - `references/plugin-layer.md` — what every file in `plugin/` does.
 - `references/auth-patterns.md` — auth scheme → scaffold output mapping.
 - `references/action-design.md` — Zod schema patterns, classifications, handler shape.
-- `references/db-agent-pointer.md` — when to redirect to existing db-agent-connector.
+- `references/db-connector-pointer.md` — when to redirect to existing db-agent-connector.
 - `references/template-sync.md` — how the templates map to canonical files; re-sync procedure.
 - `references/verification.md` — step-by-step smoke test, failure-mode triage.

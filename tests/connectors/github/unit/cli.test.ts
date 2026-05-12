@@ -272,15 +272,42 @@ describe("github connector — fetch()", () => {
   it("exposes validActions", () => {
     const c = buildGithubConnector();
     expect([...c.validActions].sort()).toEqual([
+      "add_issue_comment",
+      "add_pr_review_comment",
+      "cancel_workflow_run",
+      "close_issue",
+      "close_pull_request",
+      "create_issue",
+      "create_pull_request",
+      "create_release",
+      "delete_issue_comment",
+      "delete_pr_review_comment",
+      "delete_release",
+      "delete_release_asset",
       "get_file",
+      "get_issue",
       "get_issue_comments",
       "get_issues",
       "get_pr_review_comments",
+      "get_pull_request",
       "get_pulls",
       "get_release_asset",
+      "get_workflow_run",
+      "get_workflow_run_logs",
       "list_release_assets",
+      "list_workflow_run_jobs",
+      "list_workflow_runs",
+      "merge_pull_request",
       "repo_info",
+      "rerun_failed_jobs",
+      "rerun_workflow_run",
       "search_code",
+      "trigger_workflow_dispatch",
+      "update_issue",
+      "update_issue_comment",
+      "update_pr_review_comment",
+      "update_pull_request",
+      "update_release",
     ]);
   });
 
@@ -560,5 +587,72 @@ describe("envelope is wiki-agnostic — no mermaid", () => {
     if (r.status === "success") {
       expect(r.data["mermaid"]).toBeUndefined();
     }
+  });
+});
+
+describe("fetch() — new write domains escalate by default", () => {
+  // The github connector's defaultPolicy sets write: "escalate".
+  // These tests lock in that each new write action produces a well-formed
+  // escalate envelope (status + action + reason) at the CLI surface.
+  afterEach(() => vi.restoreAllMocks());
+
+  it("create_pull_request escalates with action name in envelope", async () => {
+    const c = makeConnector(makeClient());
+    const r = await c.fetch("create_pull_request", {
+      owner: "o",
+      repo: "r",
+      title: "t",
+      head: "feat/x",
+      base: "main",
+    });
+    expect(r.status).toBe("escalate");
+    expect((r as { action: string }).action).toBe("create_pull_request");
+    expect((r as { reason: string }).reason).toMatch(/write/i);
+  });
+
+  it("create_issue escalates with action name in envelope", async () => {
+    const c = makeConnector(makeClient());
+    const r = await c.fetch("create_issue", {
+      owner: "o",
+      repo: "r",
+      title: "t",
+    });
+    expect(r.status).toBe("escalate");
+    expect((r as { action: string }).action).toBe("create_issue");
+  });
+
+  it("add_issue_comment escalates with action name in envelope", async () => {
+    const c = makeConnector(makeClient());
+    const r = await c.fetch("add_issue_comment", {
+      owner: "o",
+      repo: "r",
+      issue_number: 1,
+      body: "hi",
+    });
+    expect(r.status).toBe("escalate");
+    expect((r as { action: string }).action).toBe("add_issue_comment");
+  });
+
+  it("create_release escalates with action name in envelope", async () => {
+    const c = makeConnector(makeClient());
+    const r = await c.fetch("create_release", {
+      owner: "o",
+      repo: "r",
+      tag_name: "v1.0.0",
+    });
+    expect(r.status).toBe("escalate");
+    expect((r as { action: string }).action).toBe("create_release");
+  });
+
+  it("trigger_workflow_dispatch escalates with action name in envelope", async () => {
+    const c = makeConnector(makeClient());
+    const r = await c.fetch("trigger_workflow_dispatch", {
+      owner: "o",
+      repo: "r",
+      workflow_id_or_filename: "ci.yml",
+      ref: "main",
+    });
+    expect(r.status).toBe("escalate");
+    expect((r as { action: string }).action).toBe("trigger_workflow_dispatch");
   });
 });

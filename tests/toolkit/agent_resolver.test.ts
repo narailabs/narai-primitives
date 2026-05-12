@@ -89,6 +89,52 @@ describe("resolveAgentCli", () => {
     expect(result?.resolvedPath).toBe(cliPath);
   });
 
+  it("plugin cache resolves post-rename connector-plugin entry (jira-connector-plugin-*)", () => {
+    // After the rename, Claude Code's plugin manager creates cache entries
+    // named <name>-connector-plugin-<version>. The resolver must find them
+    // even when only the new-naming form is present.
+    const pluginDir = path.join(
+      fakeHome,
+      ".claude", "plugins", "cache",
+      "jira-connector-plugin-1.0.0",
+      "node_modules", "@narai", "jira-agent-connector",
+    );
+    const cliPath = touchPackageCli(pluginDir);
+    const result = resolveAgentCli({
+      name: "jira",
+      homeOverride: fakeHome,
+      envOverride: {},
+      bundledSelfRoot: null,
+    });
+    expect(result?.source).toBe("plugin-cache");
+    expect(result?.resolvedPath).toBe(cliPath);
+  });
+
+  it("pluginNameContains as single-element array works (back-compat with string-form override)", () => {
+    // Callers that previously passed pluginNameContains: "custom-plugin" as a
+    // string should get equivalent behaviour if they pass ["custom-plugin"].
+    const pluginDir = path.join(
+      fakeHome,
+      ".claude", "plugins", "cache",
+      "custom-plugin-2.0.0",
+      "node_modules", "@myorg", "thing",
+    );
+    const cliPath = path.join(pluginDir, "build", "main.js");
+    fs.mkdirSync(path.dirname(cliPath), { recursive: true });
+    fs.writeFileSync(cliPath, "");
+    const result = resolveAgentCli({
+      name: "thing",
+      homeOverride: fakeHome,
+      envOverride: {},
+      pluginNameContains: ["custom-plugin"],
+      packageName: "@myorg/thing",
+      cliRelativePath: "build/main.js",
+      bundledSelfRoot: null,
+    });
+    expect(result?.source).toBe("plugin-cache");
+    expect(result?.resolvedPath).toBe(cliPath);
+  });
+
   it("CLAUDE_PLUGIN_DATA path is checked when plugin cache misses", () => {
     const pluginData = fs.mkdtempSync(path.join(os.tmpdir(), "claude-plugin-data-"));
     try {

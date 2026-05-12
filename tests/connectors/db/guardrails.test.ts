@@ -1,9 +1,9 @@
 /**
- * Tests for the db-agent guardrail enforced via the shared dispatcher's
+ * Tests for the db-connector guardrail enforced via the shared dispatcher's
  * PreToolUse handler (`plugin-hooks/dispatcher.mjs` with kind=db).
  *
  * The dispatcher is invoked as a subprocess with CLAUDE_PLUGIN_ROOT set to
- * the db-agent plugin directory — mirrors how Claude Code invokes it at
+ * the db-connector plugin directory — mirrors how Claude Code invokes it at
  * runtime. Tests assert the public contract: exit 0 always, stdout JSON with
  * permissionDecision: "deny" for a denied command, empty stdout for allowed.
  *
@@ -26,7 +26,7 @@ const ROOT = path.resolve(
 );
 
 const DISPATCHER_PATH = path.join(ROOT, "plugin-hooks", "dispatcher.mjs");
-const DB_PLUGIN_ROOT = path.join(ROOT, "plugins", "db-agent");
+const DB_PLUGIN_ROOT = path.join(ROOT, "plugins", "db-connector");
 
 type HookResult = { stdout: string; stderr: string; status: number | null };
 
@@ -100,8 +100,8 @@ const DENY_CASES: [string, string][] = [
 ];
 
 const ALLOW_CASES: [string, string][] = [
-  ["db-agent invocation", `db-agent --action query --params '{"env":"prod","sql":"SELECT 1"}'`],
-  ["db-agent absolute path", `/plugin/bin/db-agent --action schema --params '{"env":"dev"}'`],
+  ["db-connector invocation", `db-connector --action query --params '{"env":"prod","sql":"SELECT 1"}'`],
+  ["db-connector absolute path", `/plugin/bin/db-connector --action schema --params '{"env":"dev"}'`],
   ["which helper", "which psql"],
   ["whereis helper", "whereis mongosh"],
   ["man page lookup", "man psql"],
@@ -122,12 +122,12 @@ describe("db-guard hook", () => {
         const r = runHook(bash(cmd));
         expect(r.status).toBe(0);
         expect(isDenied(r.stdout)).toBe(true);
-        // Deny reason should cite the db-agent CLI so the model knows how to recover.
+        // Deny reason should cite the db-connector CLI so the model knows how to recover.
         const parsed = JSON.parse(r.stdout) as {
           hookSpecificOutput?: { permissionDecisionReason?: string };
         };
         const reason = parsed.hookSpecificOutput?.permissionDecisionReason ?? "";
-        expect(reason).toMatch(/db-agent/);
+        expect(reason).toMatch(/db-connector/);
       });
     }
   });

@@ -48,15 +48,15 @@ encode the bundled layout:
   legacy per-package layout. The discriminator is whether the segment after
   `dist/` is literal `connectors`.
 - `skillMdCandidates(root, name)` returns
-  `[<root>/plugins/<name>-agent/skills/<name>-agent/SKILL.md, <root>/plugin/skills/<name>-agent/SKILL.md]`
-  — bundled first (note the plural `plugins` and the doubled `<name>-agent`
-  segment), legacy second.
+  `[<root>/plugins/<name>-connector/skills/<name>-connector/SKILL.md, <root>/plugin/skills/<name>-agent/SKILL.md]`
+  — bundled first (note the plural `plugins` and the doubled `<name>-connector`
+  segment), legacy second (`<name>-agent` path kept for pre-2.0 back-compat).
 
 **Where it lives.** `src/hub/index.ts`, `packageRootFromCli` (~line 54),
 `skillMdCandidates` (~line 66), used inside `prepareConnector` (~line 139).
 
 **Why it exists.** The legacy plugin layout was singular `plugin/skills/<name>-agent/`.
-The bundled monorepo-style layout under `plugins/` nests one extra level
+The bundled monorepo-style layout under `plugins/` uses `<name>-connector` and nests one extra level
 because the package now owns multiple plugin directories side by side. If
 either helper reverts to the legacy assumptions, `prepareConnector` returns
 `SKILL_NOT_FOUND` and `gather()` fails before ever spawning a connector — even
@@ -64,7 +64,7 @@ though the resolver found the CLI correctly.
 
 **How it's locked in.** `tests/hub/gather.test.ts`, two tests:
 
-- `"loads SKILL.md from the bundled 2.x layout (plugins/<name>-agent/skills/<name>-agent/SKILL.md)"`
+- `"loads SKILL.md from the bundled 2.x layout (plugins/<name>-connector/skills/<name>-connector/SKILL.md)"`
 - `"falls back to the legacy plugin/skills/<name>-agent/SKILL.md layout when the bundled path is absent"`
 
 Both build a fake on-disk layout, stub the CLI resolver to return the

@@ -1,0 +1,8 @@
+{
+  "name": "confluence-connector-plugin-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "narai-primitives": "^2.1.3"
+  }
+}

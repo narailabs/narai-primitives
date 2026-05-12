@@ -3,16 +3,16 @@
 Update the plugin's user-facing docs to reflect the expanded write surface and the `require_draft_pr` knob.
 
 **Files:**
-- Modify: `plugins/github-agent/skills/github-agent/SKILL.md`
-- Modify: `plugins/github-agent/README.md`
+- Modify: `plugins/github-connector/skills/github-connector/SKILL.md`
+- Modify: `plugins/github-connector/README.md`
 
 - [ ] **Step 1: Rewrite `SKILL.md`**
 
-Overwrite `plugins/github-agent/skills/github-agent/SKILL.md` with:
+Overwrite `plugins/github-connector/skills/github-connector/SKILL.md` with:
 
 ```md
 ---
-name: github-agent
+name: github-connector
 description: |
   Use when the user asks about GitHub data or wants to act on GitHub —
   repository info, code search, issue/PR/release/workflow inspection,
@@ -22,16 +22,16 @@ description: |
 context: fork
 ---
 
-# GitHub Agent
+# GitHub Connector
 
-Answer the user's question by invoking the `github-agent` binary
+Answer the user's question by invoking the `github-connector` binary
 exposed by this plugin. It delegates to `narai-primitives/github`
 via GitHub's REST v3 + GraphQL APIs.
 
 ## Invocation
 
 ```
-github-agent --action <action> --params '<json>'
+github-connector --action <action> --params '<json>'
 ```
 
 Return the connector's JSON envelope verbatim.
@@ -119,12 +119,12 @@ operator explicitly opts in via YAML. The `delete` aspect is floored —
 operator config cannot downgrade it to `success`.
 ```
 
-- [ ] **Step 2: Update `plugins/github-agent/README.md`**
+- [ ] **Step 2: Update `plugins/github-connector/README.md`**
 
-Read the current `plugins/github-agent/README.md` and replace its body with:
+Read the current `plugins/github-connector/README.md` and replace its body with:
 
 ```md
-# github-agent plugin
+# github-connector plugin
 
 Read and write GitHub data — repository info, code search, issues,
 pull requests, comments, releases, and Actions workflows — through the
@@ -167,7 +167,7 @@ Invalid values throw at startup.
 ## Action surface
 
 36 actions across reads (15), writes (20), and admin (1). See
-`skills/github-agent/SKILL.md` for the full table.
+`skills/github-connector/SKILL.md` for the full table.
 
 ## License
 
@@ -179,14 +179,14 @@ See repo root.
 Skim both files for stale references (e.g., "read-only", "Never modifies"). Run:
 
 ```
-grep -n "read-only\|Never modifies" plugins/github-agent/
+grep -n "read-only\|Never modifies" plugins/github-connector/
 ```
 Expected: no matches.
 
 - [ ] **Step 4: Commit**
 
 ```
-git add plugins/github-agent/skills/github-agent/SKILL.md plugins/github-agent/README.md
+git add plugins/github-connector/skills/github-connector/SKILL.md plugins/github-connector/README.md
 git commit -m "docs(github): rewrite SKILL.md + README for write actions
 
 Removes the read-only / 'Never modifies' framing. Documents all 36
