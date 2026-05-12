@@ -559,4 +559,60 @@ export class GitlabClient {
       `/projects/${this.projectPath(namespace, project)}/${this.noteSegment(noteableType)}/${iid}/notes/${noteId}`,
     );
   }
+
+  // ── Release mutations ────────────────────────────────────────────────────
+
+  public async createRelease(
+    namespace: string,
+    project: string,
+    body: {
+      tag_name: string;
+      name: string;
+      description?: string;
+      ref?: string;
+      assets?: { links: { name: string; url: string; link_type?: string }[] };
+    },
+  ): Promise<GitlabResult<Record<string, unknown>>> {
+    return this.post<Record<string, unknown>>(
+      `/projects/${this.projectPath(namespace, project)}/releases`,
+      body as Record<string, unknown>,
+    );
+  }
+
+  public async updateRelease(
+    namespace: string,
+    project: string,
+    tag: string,
+    body: {
+      name?: string;
+      description?: string;
+      milestones?: string[];
+    },
+  ): Promise<GitlabResult<Record<string, unknown>>> {
+    return this.put<Record<string, unknown>>(
+      `/projects/${this.projectPath(namespace, project)}/releases/${encodeURIComponent(tag)}`,
+      body as Record<string, unknown>,
+    );
+  }
+
+  public async deleteRelease(
+    namespace: string,
+    project: string,
+    tag: string,
+  ): Promise<GitlabResult<null>> {
+    return this.delete<null>(
+      `/projects/${this.projectPath(namespace, project)}/releases/${encodeURIComponent(tag)}`,
+    );
+  }
+
+  public async deleteReleaseLink(
+    namespace: string,
+    project: string,
+    tag: string,
+    linkId: number,
+  ): Promise<GitlabResult<null>> {
+    return this.delete<null>(
+      `/projects/${this.projectPath(namespace, project)}/releases/${encodeURIComponent(tag)}/assets/links/${linkId}`,
+    );
+  }
 }

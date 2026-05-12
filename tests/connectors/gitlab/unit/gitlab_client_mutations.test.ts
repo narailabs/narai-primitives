@@ -321,3 +321,107 @@ describe("GitlabClient.deleteNote", () => {
     expect(usedUrl).toMatch(/\/projects\/mygroup%2Fmyproject\/merge_requests\/5\/notes\/7$/);
   });
 });
+
+// ── createRelease ─────────────────────────────────────────────────────────────
+
+const releaseBody = {
+  tag_name: "v1.0.0",
+  name: "Version 1.0.0",
+  description: "First release",
+  created_at: "2024-01-01T00:00:00Z",
+};
+
+describe("GitlabClient.createRelease", () => {
+  it("calls POST /projects/<encoded>/releases with body", async () => {
+    let usedUrl = "";
+    let usedMethod = "";
+    let usedBody: unknown;
+    const client = makeClient(async (url, init) => {
+      usedUrl = url;
+      usedMethod = String(init?.method);
+      usedBody = JSON.parse(String(init?.body));
+      return jsonResponse(releaseBody, 201);
+    });
+    const r = await client.createRelease("mygroup", "myproject", {
+      tag_name: "v1.0.0",
+      name: "Version 1.0.0",
+      description: "First release",
+    });
+    expect(r.ok).toBe(true);
+    expect(usedMethod).toBe("POST");
+    expect(usedUrl).toMatch(/\/projects\/mygroup%2Fmyproject\/releases$/);
+    expect((usedBody as Record<string, unknown>)["tag_name"]).toBe("v1.0.0");
+    expect((usedBody as Record<string, unknown>)["name"]).toBe("Version 1.0.0");
+  });
+});
+
+// ── updateRelease ─────────────────────────────────────────────────────────────
+
+describe("GitlabClient.updateRelease", () => {
+  it("calls PUT /projects/<encoded>/releases/:tag with body", async () => {
+    let usedUrl = "";
+    let usedMethod = "";
+    let usedBody: unknown;
+    const client = makeClient(async (url, init) => {
+      usedUrl = url;
+      usedMethod = String(init?.method);
+      usedBody = JSON.parse(String(init?.body));
+      return jsonResponse({ ...releaseBody, name: "Updated" });
+    });
+    const r = await client.updateRelease("mygroup", "myproject", "v1.0.0", {
+      name: "Updated",
+    });
+    expect(r.ok).toBe(true);
+    expect(usedMethod).toBe("PUT");
+    expect(usedUrl).toMatch(/\/projects\/mygroup%2Fmyproject\/releases\/v1\.0\.0$/);
+    expect((usedBody as Record<string, unknown>)["name"]).toBe("Updated");
+  });
+
+  it("percent-encodes tag with slashes", async () => {
+    let usedUrl = "";
+    const client = makeClient(async (url) => {
+      usedUrl = url;
+      return jsonResponse({ ...releaseBody, tag_name: "release/1.0" });
+    });
+    await client.updateRelease("g", "p", "release/1.0", { name: "X" });
+    expect(usedUrl).toMatch(/releases\/release%2F1\.0$/);
+  });
+});
+
+// ── deleteRelease ─────────────────────────────────────────────────────────────
+
+describe("GitlabClient.deleteRelease", () => {
+  it("calls DELETE /projects/<encoded>/releases/:tag", async () => {
+    let usedUrl = "";
+    let usedMethod = "";
+    const client = makeClient(async (url, init) => {
+      usedUrl = url;
+      usedMethod = String(init?.method);
+      return new Response(null, { status: 204 });
+    });
+    const r = await client.deleteRelease("mygroup", "myproject", "v1.0.0");
+    expect(r.ok).toBe(true);
+    expect(usedMethod).toBe("DELETE");
+    expect(usedUrl).toMatch(/\/projects\/mygroup%2Fmyproject\/releases\/v1\.0\.0$/);
+  });
+});
+
+// ── deleteReleaseLink ─────────────────────────────────────────────────────────
+
+describe("GitlabClient.deleteReleaseLink", () => {
+  it("calls DELETE /projects/<encoded>/releases/:tag/assets/links/:id", async () => {
+    let usedUrl = "";
+    let usedMethod = "";
+    const client = makeClient(async (url, init) => {
+      usedUrl = url;
+      usedMethod = String(init?.method);
+      return new Response(null, { status: 204 });
+    });
+    const r = await client.deleteReleaseLink("mygroup", "myproject", "v1.0.0", 42);
+    expect(r.ok).toBe(true);
+    expect(usedMethod).toBe("DELETE");
+    expect(usedUrl).toMatch(
+      /\/projects\/mygroup%2Fmyproject\/releases\/v1\.0\.0\/assets\/links\/42$/,
+    );
+  });
+});
