@@ -269,6 +269,17 @@ describe("GitlabClient.listPipelineJobs", () => {
     expect(r.ok).toBe(true);
     expect(usedUrl).toMatch(/\/projects\/ns%2Fproj\/pipelines\/100\/jobs$/);
   });
+
+  it("passes page and per_page query params when opts are provided", async () => {
+    let usedUrl = "";
+    const client = makeClient(async (url) => {
+      usedUrl = url;
+      return jsonResponse([]);
+    });
+    await client.listPipelineJobs("ns", "proj", 100, { page: 2, perPage: 50 });
+    expect(usedUrl).toContain("page=2");
+    expect(usedUrl).toContain("per_page=50");
+  });
 });
 
 // ── getJobLogs ────────────────────────────────────────────────────────────────

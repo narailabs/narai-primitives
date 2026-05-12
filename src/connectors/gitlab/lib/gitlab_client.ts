@@ -96,6 +96,23 @@ export interface GitlabNote {
   system?: boolean;
 }
 
+export interface GitlabDiscussion {
+  id: string;
+  individual_note: boolean;
+  notes: GitlabNote[];
+}
+
+export interface GitlabPositionPayload {
+  base_sha: string;
+  start_sha: string;
+  head_sha: string;
+  position_type: "text";
+  new_path: string;
+  old_path?: string | undefined;
+  new_line?: number | undefined;
+  old_line?: number | undefined;
+}
+
 export interface GitlabReleaseLink {
   id: number;
   name: string;
@@ -377,9 +394,14 @@ export class GitlabClient {
     namespace: string,
     project: string,
     pipelineId: number,
+    opts: { page?: number; perPage?: number } = {},
   ): Promise<GitlabResult<GitlabJob[]>> {
+    const query: Record<string, string | number> = {};
+    if (opts.page !== undefined) query.page = opts.page;
+    if (opts.perPage !== undefined) query.per_page = opts.perPage;
     return this.get<GitlabJob[]>(
       `/projects/${this.projectPath(namespace, project)}/pipelines/${pipelineId}/jobs`,
+      query,
     );
   }
 
@@ -536,10 +558,33 @@ export class GitlabClient {
     project: string,
     noteableType: "issue" | "merge_request",
     iid: number,
-    body: { body: string; position?: Record<string, unknown> },
+    body: { body: string; position?: GitlabPositionPayload },
   ): Promise<GitlabResult<GitlabNote>> {
+    const projectPath = this.projectPath(namespace, project);
+    const segment = this.noteSegment(noteableType);
+    // For MR diff notes (with position payload), GitLab requires the
+    // /discussions endpoint — /notes silently strips position and creates
+    // a non-diff conversation comment.
+    if (noteableType === "merge_request" && body.position) {
+      const discussionResult = await this.post<GitlabDiscussion>(
+        `/projects/${projectPath}/${segment}/${iid}/discussions`,
+        body as Record<string, unknown>,
+      );
+      if (!discussionResult.ok) return discussionResult as unknown as GitlabResult<GitlabNote>;
+      const firstNote = discussionResult.data.notes?.[0];
+      if (!firstNote) {
+        return {
+          ok: false,
+          code: "SERVER_ERROR",
+          status: discussionResult.status,
+          message: "discussion created but no notes returned",
+          retriable: false,
+        };
+      }
+      return { ok: true, status: discussionResult.status, data: firstNote };
+    }
     return this.post<GitlabNote>(
-      `/projects/${this.projectPath(namespace, project)}/${this.noteSegment(noteableType)}/${iid}/notes`,
+      `/projects/${projectPath}/${segment}/${iid}/notes`,
       body as Record<string, unknown>,
     );
   }

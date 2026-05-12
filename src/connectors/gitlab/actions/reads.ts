@@ -87,6 +87,7 @@ const getPipelineParams = projectParams.extend({
 
 const listPipelineJobsParams = projectParams.extend({
   pipeline_id: pipelineIdField,
+  max_results: z.coerce.number().int().positive().default(MAX_RESULTS_DEFAULT),
 });
 
 const getJobLogsParams = projectParams.extend({
@@ -396,17 +397,18 @@ export function buildReadActions(_deps: GitlabActionDeps): GitlabActions {
       params: listPipelineJobsParams,
       classify: { kind: "read" },
       handler: async (p: z.infer<typeof listPipelineJobsParams>, ctx) => {
-        const result = await ctx.sdk.listPipelineJobs(
-          p.namespace,
-          p.project,
-          p.pipeline_id,
+        const limit = Math.min(p.max_results, MAX_RESULTS_CAP);
+        const page = await paginateGitlab(limit, (pageNum, perPage) =>
+          ctx.sdk.listPipelineJobs(p.namespace, p.project, p.pipeline_id, {
+            page: pageNum,
+            perPage,
+          }),
         );
-        throwIfHttpError(result);
-        const jobs = result.data ?? [];
         return {
           pipeline_id: p.pipeline_id,
-          total: jobs.length,
-          jobs: jobs.map((j) => ({
+          total: page.items.length,
+          truncated: page.truncated,
+          jobs: page.items.map((j) => ({
             id: j.id,
             name: j.name,
             stage: j.stage ?? "",

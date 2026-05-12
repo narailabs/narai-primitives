@@ -252,7 +252,7 @@ describe("GitlabClient.addNote", () => {
     expect((usedBody as Record<string, unknown>)["body"]).toBe("Hello");
   });
 
-  it("calls POST /projects/<encoded>/merge_requests/:iid/notes for merge_request", async () => {
+  it("calls POST /projects/<encoded>/merge_requests/:iid/notes for merge_request (no position)", async () => {
     let usedUrl = "";
     const client = makeClient(async (url) => {
       usedUrl = url;
@@ -260,6 +260,58 @@ describe("GitlabClient.addNote", () => {
     });
     await client.addNote("mygroup", "myproject", "merge_request", 5, { body: "Hello" });
     expect(usedUrl).toMatch(/\/projects\/mygroup%2Fmyproject\/merge_requests\/5\/notes$/);
+  });
+
+  it("POSTs to /discussions when MR note has position payload", async () => {
+    let usedUrl = "";
+    let usedMethod = "";
+    const discussionResp = {
+      id: "abc123",
+      individual_note: false,
+      notes: [noteBody],
+    };
+    const client = makeClient(async (url, init) => {
+      usedUrl = url;
+      usedMethod = String(init?.method);
+      return jsonResponse(discussionResp, 201);
+    });
+    const r = await client.addNote("mygroup", "myproject", "merge_request", 5, {
+      body: "diff comment",
+      position: {
+        base_sha: "aabb",
+        start_sha: "aabb",
+        head_sha: "ccdd",
+        position_type: "text",
+        new_path: "src/foo.ts",
+        new_line: 10,
+      },
+    });
+    expect(r.ok).toBe(true);
+    expect(usedMethod).toBe("POST");
+    expect(usedUrl).toMatch(/\/projects\/mygroup%2Fmyproject\/merge_requests\/5\/discussions$/);
+    if (r.ok) {
+      expect(r.data.id).toBe(noteBody.id);
+      expect(r.data.body).toBe(noteBody.body);
+    }
+  });
+
+  it("returns SERVER_ERROR when discussion endpoint returns empty notes array", async () => {
+    const emptyDiscussion = { id: "abc123", individual_note: false, notes: [] };
+    const client = makeClient(async () => jsonResponse(emptyDiscussion, 201));
+    const r = await client.addNote("mygroup", "myproject", "merge_request", 5, {
+      body: "diff comment",
+      position: {
+        base_sha: "aabb",
+        start_sha: "aabb",
+        head_sha: "ccdd",
+        position_type: "text",
+        new_path: "src/foo.ts",
+      },
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe("SERVER_ERROR");
+    }
   });
 });
 

@@ -578,8 +578,35 @@ describe("list_pipeline_jobs", () => {
       actions["list_pipeline_jobs"]!,
       { namespace: "mygroup", project: "my-project", pipeline_id: 100 },
       sdk,
-    )) as { jobs: unknown[] };
+    )) as { jobs: unknown[]; truncated: boolean };
     expect(r.jobs[0]).toMatchObject({ id: 300, name: "test", stage: "test", status: "success" });
+    expect(r.truncated).toBe(false);
+  });
+
+  it("paginates across multiple pages until max_results is reached", async () => {
+    let callCount = 0;
+    const sdk = fakeSdk({
+      listPipelineJobs: async (_ns, _proj, _id, opts) => {
+        callCount++;
+        const perPage = opts?.perPage ?? 30;
+        const data = Array.from({ length: perPage }, (_, i) => ({
+          id: (callCount - 1) * perPage + i + 1,
+          name: `job-${(callCount - 1) * perPage + i + 1}`,
+          stage: "test",
+          status: "success",
+        }));
+        return { ok: true as const, status: 200, data };
+      },
+    });
+    const actions = buildReadActions(deps);
+    const r = (await runHandler(
+      actions["list_pipeline_jobs"]!,
+      { namespace: "mygroup", project: "my-project", pipeline_id: 100, max_results: 5 },
+      sdk,
+    )) as { total: number; jobs: unknown[]; truncated: boolean };
+    expect(r.total).toBe(5);
+    expect(r.truncated).toBe(true);
+    expect(callCount).toBeGreaterThanOrEqual(1);
   });
 });
 
