@@ -385,4 +385,82 @@ export class GitlabClient {
       { responseType: "text" },
     );
   }
+
+  // ── Merge request mutations ──────────────────────────────────────────────
+
+  public async createMergeRequest(
+    namespace: string,
+    project: string,
+    body: {
+      source_branch: string;
+      target_branch: string;
+      title: string;
+      description?: string;
+      assignee_ids?: number[];
+      reviewer_ids?: number[];
+      labels?: string;
+      milestone_id?: number;
+      remove_source_branch?: boolean;
+      squash?: boolean;
+      draft?: boolean;
+    },
+  ): Promise<GitlabResult<GitlabMergeRequest>> {
+    return this.post<GitlabMergeRequest>(
+      `/projects/${this.projectPath(namespace, project)}/merge_requests`,
+      body as Record<string, unknown>,
+    );
+  }
+
+  public async updateMergeRequest(
+    namespace: string,
+    project: string,
+    iid: number,
+    body: {
+      title?: string;
+      description?: string;
+      target_branch?: string;
+      assignee_ids?: number[];
+      reviewer_ids?: number[];
+      labels?: string;
+      milestone_id?: number;
+      state_event?: "reopen";
+      remove_source_branch?: boolean;
+      squash?: boolean;
+    },
+  ): Promise<GitlabResult<GitlabMergeRequest>> {
+    return this.put<GitlabMergeRequest>(
+      `/projects/${this.projectPath(namespace, project)}/merge_requests/${iid}`,
+      body as Record<string, unknown>,
+    );
+  }
+
+  public async closeMergeRequest(
+    namespace: string,
+    project: string,
+    iid: number,
+  ): Promise<GitlabResult<GitlabMergeRequest>> {
+    return this.put<GitlabMergeRequest>(
+      `/projects/${this.projectPath(namespace, project)}/merge_requests/${iid}`,
+      { state_event: "close" },
+    );
+  }
+
+  public async mergeMergeRequest(
+    namespace: string,
+    project: string,
+    iid: number,
+    body: {
+      merge_commit_message?: string;
+      squash_commit_message?: string;
+      should_remove_source_branch?: boolean;
+      merge_when_pipeline_succeeds?: boolean;
+      sha?: string;
+      squash?: boolean;
+    } = {},
+  ): Promise<GitlabResult<{ sha: string; merged: boolean; message: string }>> {
+    return this.put<{ sha: string; merged: boolean; message: string }>(
+      `/projects/${this.projectPath(namespace, project)}/merge_requests/${iid}/merge`,
+      body as Record<string, unknown>,
+    );
+  }
 }
