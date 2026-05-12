@@ -3,8 +3,9 @@
  * `HttpClient` in `narai-primitives/toolkit`: supplies Bearer auth,
  * sets baseUrl to `<host>/api/v4`, and allows all five HTTP methods.
  *
- * Per-domain methods (createMr, addNote, retryPipeline, etc.) are added
- * in later tasks; only `getProject` is present here for extras tests.
+ * Read methods added in Task 3: searchCode, listIssues, getIssue,
+ * listMergeRequests, getMergeRequest, getFile, getNotes, listReleaseLinks,
+ * getReleaseLink, listPipelines, getPipeline, listPipelineJobs, getJobLogs.
  */
 import {
   HttpClient,
@@ -39,6 +40,91 @@ export interface GitlabProject {
   web_url?: string;
   ssh_url_to_repo?: string;
   http_url_to_repo?: string;
+}
+
+export interface GitlabSearchBlob {
+  filename: string;
+  path: string;
+  ref: string;
+  startline: number;
+  project_id: number;
+}
+
+export interface GitlabIssue {
+  iid: number;
+  title: string;
+  state: string;
+  author?: { username?: string };
+  labels?: string[];
+  description?: string | null;
+  web_url?: string;
+  updated_at?: string;
+}
+
+export interface GitlabMergeRequest {
+  iid: number;
+  title: string;
+  state: string;
+  author?: { username?: string };
+  description?: string | null;
+  source_branch?: string;
+  target_branch?: string;
+  sha?: string;
+  draft?: boolean;
+  web_url?: string;
+  updated_at?: string;
+}
+
+export interface GitlabFileContent {
+  file_name: string;
+  file_path: string;
+  size: number;
+  encoding: string;
+  content: string;
+  ref: string;
+  blob_id?: string;
+  commit_id?: string;
+  last_commit_id?: string;
+}
+
+export interface GitlabNote {
+  id: number;
+  body: string;
+  author?: { username?: string };
+  created_at?: string;
+  updated_at?: string;
+  system?: boolean;
+}
+
+export interface GitlabReleaseLink {
+  id: number;
+  name: string;
+  url: string;
+  link_type?: string;
+}
+
+export interface GitlabPipeline {
+  id: number;
+  status: string;
+  ref: string;
+  sha?: string;
+  web_url?: string;
+  created_at?: string;
+  updated_at?: string;
+  duration?: number | null;
+  finished_at?: string | null;
+}
+
+export interface GitlabJob {
+  id: number;
+  name: string;
+  stage?: string;
+  status: string;
+  created_at?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  duration?: number | null;
+  web_url?: string;
 }
 
 // ── Credential loader ────────────────────────────────────────────────────────
@@ -140,12 +226,163 @@ export class GitlabClient {
     return this._http.request<T>("DELETE", relPath);
   }
 
-  // ── Concrete method (for extras tests; domain methods land in later tasks) ─
+  // ── Read methods ─────────────────────────────────────────────────────────
 
   public async getProject(
     namespace: string,
     project: string,
   ): Promise<GitlabResult<GitlabProject>> {
     return this.get<GitlabProject>(`/projects/${this.projectPath(namespace, project)}`);
+  }
+
+  public async searchCode(
+    namespace: string,
+    project: string,
+    query: string,
+  ): Promise<GitlabResult<GitlabSearchBlob[]>> {
+    return this.get<GitlabSearchBlob[]>(
+      `/projects/${this.projectPath(namespace, project)}/search`,
+      { scope: "blobs", search: query },
+    );
+  }
+
+  public async listIssues(
+    namespace: string,
+    project: string,
+    query: { state?: string; per_page?: number; page?: number } = {},
+  ): Promise<GitlabResult<GitlabIssue[]>> {
+    return this.get<GitlabIssue[]>(
+      `/projects/${this.projectPath(namespace, project)}/issues`,
+      { state: query.state, per_page: query.per_page, page: query.page },
+    );
+  }
+
+  public async getIssue(
+    namespace: string,
+    project: string,
+    iid: number,
+  ): Promise<GitlabResult<GitlabIssue>> {
+    return this.get<GitlabIssue>(
+      `/projects/${this.projectPath(namespace, project)}/issues/${iid}`,
+    );
+  }
+
+  public async listMergeRequests(
+    namespace: string,
+    project: string,
+    query: { state?: string; per_page?: number; page?: number } = {},
+  ): Promise<GitlabResult<GitlabMergeRequest[]>> {
+    return this.get<GitlabMergeRequest[]>(
+      `/projects/${this.projectPath(namespace, project)}/merge_requests`,
+      { state: query.state, per_page: query.per_page, page: query.page },
+    );
+  }
+
+  public async getMergeRequest(
+    namespace: string,
+    project: string,
+    iid: number,
+  ): Promise<GitlabResult<GitlabMergeRequest>> {
+    return this.get<GitlabMergeRequest>(
+      `/projects/${this.projectPath(namespace, project)}/merge_requests/${iid}`,
+    );
+  }
+
+  /**
+   * Fetches a file at a given ref. The path itself is URL-encoded because
+   * GitLab requires the file path to be encoded in the URL segment.
+   */
+  public async getFile(
+    namespace: string,
+    project: string,
+    filePath: string,
+    ref = "main",
+  ): Promise<GitlabResult<GitlabFileContent>> {
+    return this.get<GitlabFileContent>(
+      `/projects/${this.projectPath(namespace, project)}/repository/files/${encodeURIComponent(filePath)}`,
+      { ref },
+    );
+  }
+
+  /**
+   * Fetches notes (comments) on an issue or merge request.
+   * `noteableType` is "issue" | "merge_request"; maps to URL segment
+   * "issues" or "merge_requests".
+   */
+  public async getNotes(
+    namespace: string,
+    project: string,
+    noteableType: "issue" | "merge_request",
+    iid: number,
+  ): Promise<GitlabResult<GitlabNote[]>> {
+    const segment = noteableType === "issue" ? "issues" : "merge_requests";
+    return this.get<GitlabNote[]>(
+      `/projects/${this.projectPath(namespace, project)}/${segment}/${iid}/notes`,
+    );
+  }
+
+  public async listReleaseLinks(
+    namespace: string,
+    project: string,
+    tag: string,
+  ): Promise<GitlabResult<GitlabReleaseLink[]>> {
+    return this.get<GitlabReleaseLink[]>(
+      `/projects/${this.projectPath(namespace, project)}/releases/${encodeURIComponent(tag)}/assets/links`,
+    );
+  }
+
+  public async getReleaseLink(
+    namespace: string,
+    project: string,
+    tag: string,
+    linkId: number,
+  ): Promise<GitlabResult<GitlabReleaseLink>> {
+    return this.get<GitlabReleaseLink>(
+      `/projects/${this.projectPath(namespace, project)}/releases/${encodeURIComponent(tag)}/assets/links/${linkId}`,
+    );
+  }
+
+  public async listPipelines(
+    namespace: string,
+    project: string,
+    query: { ref?: string; status?: string; per_page?: number; page?: number } = {},
+  ): Promise<GitlabResult<GitlabPipeline[]>> {
+    return this.get<GitlabPipeline[]>(
+      `/projects/${this.projectPath(namespace, project)}/pipelines`,
+      { ref: query.ref, status: query.status, per_page: query.per_page, page: query.page },
+    );
+  }
+
+  public async getPipeline(
+    namespace: string,
+    project: string,
+    pipelineId: number,
+  ): Promise<GitlabResult<GitlabPipeline>> {
+    return this.get<GitlabPipeline>(
+      `/projects/${this.projectPath(namespace, project)}/pipelines/${pipelineId}`,
+    );
+  }
+
+  public async listPipelineJobs(
+    namespace: string,
+    project: string,
+    pipelineId: number,
+  ): Promise<GitlabResult<GitlabJob[]>> {
+    return this.get<GitlabJob[]>(
+      `/projects/${this.projectPath(namespace, project)}/pipelines/${pipelineId}/jobs`,
+    );
+  }
+
+  /** Returns the job trace log as a plain text string. */
+  public async getJobLogs(
+    namespace: string,
+    project: string,
+    jobId: number,
+  ): Promise<GitlabResult<string>> {
+    return this._http.request<string>(
+      "GET",
+      `/projects/${this.projectPath(namespace, project)}/jobs/${jobId}/trace`,
+      { responseType: "text" },
+    );
   }
 }
