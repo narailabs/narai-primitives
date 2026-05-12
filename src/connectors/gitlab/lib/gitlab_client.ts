@@ -514,4 +514,49 @@ export class GitlabClient {
       body as Record<string, unknown>,
     );
   }
+
+  // ── Note mutations ───────────────────────────────────────────────────────
+
+  private noteSegment(noteableType: "issue" | "merge_request"): string {
+    return noteableType === "issue" ? "issues" : "merge_requests";
+  }
+
+  public async addNote(
+    namespace: string,
+    project: string,
+    noteableType: "issue" | "merge_request",
+    iid: number,
+    body: { body: string; position?: Record<string, unknown> },
+  ): Promise<GitlabResult<GitlabNote>> {
+    return this.post<GitlabNote>(
+      `/projects/${this.projectPath(namespace, project)}/${this.noteSegment(noteableType)}/${iid}/notes`,
+      body as Record<string, unknown>,
+    );
+  }
+
+  public async updateNote(
+    namespace: string,
+    project: string,
+    noteableType: "issue" | "merge_request",
+    iid: number,
+    noteId: number,
+    body: { body: string },
+  ): Promise<GitlabResult<GitlabNote>> {
+    return this.put<GitlabNote>(
+      `/projects/${this.projectPath(namespace, project)}/${this.noteSegment(noteableType)}/${iid}/notes/${noteId}`,
+      body as Record<string, unknown>,
+    );
+  }
+
+  public async deleteNote(
+    namespace: string,
+    project: string,
+    noteableType: "issue" | "merge_request",
+    iid: number,
+    noteId: number,
+  ): Promise<GitlabResult<null>> {
+    return this.delete<null>(
+      `/projects/${this.projectPath(namespace, project)}/${this.noteSegment(noteableType)}/${iid}/notes/${noteId}`,
+    );
+  }
 }

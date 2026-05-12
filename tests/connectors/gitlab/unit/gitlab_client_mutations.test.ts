@@ -222,3 +222,102 @@ describe("GitlabClient.closeIssue", () => {
     expect((usedBody as Record<string, unknown>)["state_event"]).toBe("close");
   });
 });
+
+// ── addNote ───────────────────────────────────────────────────────────────────
+
+const noteBody = {
+  id: 42,
+  body: "Hello",
+  author: { username: "alice" },
+  created_at: "2024-01-01T00:00:00Z",
+  updated_at: "2024-01-01T00:00:00Z",
+  system: false,
+};
+
+describe("GitlabClient.addNote", () => {
+  it("calls POST /projects/<encoded>/issues/:iid/notes for issue", async () => {
+    let usedUrl = "";
+    let usedMethod = "";
+    let usedBody: unknown;
+    const client = makeClient(async (url, init) => {
+      usedUrl = url;
+      usedMethod = String(init?.method);
+      usedBody = JSON.parse(String(init?.body));
+      return jsonResponse(noteBody, 201);
+    });
+    const r = await client.addNote("mygroup", "myproject", "issue", 3, { body: "Hello" });
+    expect(r.ok).toBe(true);
+    expect(usedMethod).toBe("POST");
+    expect(usedUrl).toMatch(/\/projects\/mygroup%2Fmyproject\/issues\/3\/notes$/);
+    expect((usedBody as Record<string, unknown>)["body"]).toBe("Hello");
+  });
+
+  it("calls POST /projects/<encoded>/merge_requests/:iid/notes for merge_request", async () => {
+    let usedUrl = "";
+    const client = makeClient(async (url) => {
+      usedUrl = url;
+      return jsonResponse(noteBody, 201);
+    });
+    await client.addNote("mygroup", "myproject", "merge_request", 5, { body: "Hello" });
+    expect(usedUrl).toMatch(/\/projects\/mygroup%2Fmyproject\/merge_requests\/5\/notes$/);
+  });
+});
+
+// ── updateNote ────────────────────────────────────────────────────────────────
+
+describe("GitlabClient.updateNote", () => {
+  it("calls PUT /projects/<encoded>/issues/:iid/notes/:note_id for issue", async () => {
+    let usedUrl = "";
+    let usedMethod = "";
+    let usedBody: unknown;
+    const client = makeClient(async (url, init) => {
+      usedUrl = url;
+      usedMethod = String(init?.method);
+      usedBody = JSON.parse(String(init?.body));
+      return jsonResponse({ ...noteBody, body: "Updated" });
+    });
+    const r = await client.updateNote("mygroup", "myproject", "issue", 3, 42, { body: "Updated" });
+    expect(r.ok).toBe(true);
+    expect(usedMethod).toBe("PUT");
+    expect(usedUrl).toMatch(/\/projects\/mygroup%2Fmyproject\/issues\/3\/notes\/42$/);
+    expect((usedBody as Record<string, unknown>)["body"]).toBe("Updated");
+  });
+
+  it("calls PUT .../merge_requests/:iid/notes/:note_id for merge_request", async () => {
+    let usedUrl = "";
+    const client = makeClient(async (url) => {
+      usedUrl = url;
+      return jsonResponse({ ...noteBody, body: "Updated" });
+    });
+    await client.updateNote("mygroup", "myproject", "merge_request", 5, 7, { body: "Updated" });
+    expect(usedUrl).toMatch(/\/projects\/mygroup%2Fmyproject\/merge_requests\/5\/notes\/7$/);
+  });
+});
+
+// ── deleteNote ────────────────────────────────────────────────────────────────
+
+describe("GitlabClient.deleteNote", () => {
+  it("calls DELETE /projects/<encoded>/issues/:iid/notes/:note_id for issue", async () => {
+    let usedUrl = "";
+    let usedMethod = "";
+    const client = makeClient(async (url, init) => {
+      usedUrl = url;
+      usedMethod = String(init?.method);
+      return new Response(null, { status: 204 });
+    });
+    const r = await client.deleteNote("mygroup", "myproject", "issue", 3, 42);
+    expect(r.ok).toBe(true);
+    expect(usedMethod).toBe("DELETE");
+    expect(usedUrl).toMatch(/\/projects\/mygroup%2Fmyproject\/issues\/3\/notes\/42$/);
+  });
+
+  it("calls DELETE .../merge_requests/:iid/notes/:note_id for merge_request", async () => {
+    let usedUrl = "";
+    const client = makeClient(async (url) => {
+      usedUrl = url;
+      return new Response(null, { status: 204 });
+    });
+    await client.deleteNote("mygroup", "myproject", "merge_request", 5, 7);
+    expect(usedUrl).toMatch(/\/projects\/mygroup%2Fmyproject\/merge_requests\/5\/notes\/7$/);
+  });
+});
