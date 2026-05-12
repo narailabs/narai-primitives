@@ -386,6 +386,57 @@ export class GitlabClient {
     );
   }
 
+  // ── Issue mutations ──────────────────────────────────────────────────────
+
+  public async createIssue(
+    namespace: string,
+    project: string,
+    body: {
+      title: string;
+      description?: string;
+      assignee_ids?: number[];
+      labels?: string;
+      milestone_id?: number;
+      due_date?: string;
+    },
+  ): Promise<GitlabResult<GitlabIssue>> {
+    return this.post<GitlabIssue>(
+      `/projects/${this.projectPath(namespace, project)}/issues`,
+      body as Record<string, unknown>,
+    );
+  }
+
+  public async updateIssue(
+    namespace: string,
+    project: string,
+    iid: number,
+    body: {
+      title?: string;
+      description?: string;
+      assignee_ids?: number[];
+      labels?: string;
+      milestone_id?: number;
+      due_date?: string;
+      state_event?: "reopen";
+    },
+  ): Promise<GitlabResult<GitlabIssue>> {
+    return this.put<GitlabIssue>(
+      `/projects/${this.projectPath(namespace, project)}/issues/${iid}`,
+      body as Record<string, unknown>,
+    );
+  }
+
+  public async closeIssue(
+    namespace: string,
+    project: string,
+    iid: number,
+  ): Promise<GitlabResult<GitlabIssue>> {
+    return this.put<GitlabIssue>(
+      `/projects/${this.projectPath(namespace, project)}/issues/${iid}`,
+      { state_event: "close" },
+    );
+  }
+
   // ── Merge request mutations ──────────────────────────────────────────────
 
   public async createMergeRequest(

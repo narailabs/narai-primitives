@@ -138,3 +138,87 @@ describe("GitlabClient.mergeMergeRequest", () => {
     expect((usedBody as Record<string, unknown>)["should_remove_source_branch"]).toBe(true);
   });
 });
+
+// ── createIssue ───────────────────────────────────────────────────────────────
+
+const issueBody = {
+  iid: 3,
+  title: "Test issue",
+  state: "opened",
+  author: { username: "bob" },
+  labels: ["bug"],
+  description: null,
+  web_url: "https://gitlab.com/g/p/-/issues/3",
+  updated_at: "2024-01-01T00:00:00Z",
+};
+
+describe("GitlabClient.createIssue", () => {
+  it("calls POST /projects/<encoded>/issues with body", async () => {
+    let usedUrl = "";
+    let usedMethod = "";
+    let usedBody: unknown;
+    const client = makeClient(async (url, init) => {
+      usedUrl = url;
+      usedMethod = String(init?.method);
+      usedBody = JSON.parse(String(init?.body));
+      return jsonResponse(issueBody, 201);
+    });
+    const r = await client.createIssue("mygroup", "myproject", {
+      title: "Test issue",
+      labels: "bug",
+      assignee_ids: [1],
+    });
+    expect(r.ok).toBe(true);
+    expect(usedMethod).toBe("POST");
+    expect(usedUrl).toMatch(/\/projects\/mygroup%2Fmyproject\/issues$/);
+    expect((usedBody as Record<string, unknown>)["title"]).toBe("Test issue");
+    expect((usedBody as Record<string, unknown>)["labels"]).toBe("bug");
+    expect((usedBody as Record<string, unknown>)["assignee_ids"]).toEqual([1]);
+  });
+});
+
+// ── updateIssue ───────────────────────────────────────────────────────────────
+
+describe("GitlabClient.updateIssue", () => {
+  it("calls PUT /projects/<encoded>/issues/:iid with body", async () => {
+    let usedUrl = "";
+    let usedMethod = "";
+    let usedBody: unknown;
+    const client = makeClient(async (url, init) => {
+      usedUrl = url;
+      usedMethod = String(init?.method);
+      usedBody = JSON.parse(String(init?.body));
+      return jsonResponse({ ...issueBody, title: "Updated" });
+    });
+    const r = await client.updateIssue("mygroup", "myproject", 3, {
+      title: "Updated",
+      state_event: "reopen",
+    });
+    expect(r.ok).toBe(true);
+    expect(usedMethod).toBe("PUT");
+    expect(usedUrl).toMatch(/\/projects\/mygroup%2Fmyproject\/issues\/3$/);
+    expect((usedBody as Record<string, unknown>)["title"]).toBe("Updated");
+    expect((usedBody as Record<string, unknown>)["state_event"]).toBe("reopen");
+  });
+});
+
+// ── closeIssue ────────────────────────────────────────────────────────────────
+
+describe("GitlabClient.closeIssue", () => {
+  it("calls PUT /projects/<encoded>/issues/:iid with state_event=close", async () => {
+    let usedUrl = "";
+    let usedMethod = "";
+    let usedBody: unknown;
+    const client = makeClient(async (url, init) => {
+      usedUrl = url;
+      usedMethod = String(init?.method);
+      usedBody = JSON.parse(String(init?.body));
+      return jsonResponse({ ...issueBody, state: "closed" });
+    });
+    const r = await client.closeIssue("mygroup", "myproject", 3);
+    expect(r.ok).toBe(true);
+    expect(usedMethod).toBe("PUT");
+    expect(usedUrl).toMatch(/\/projects\/mygroup%2Fmyproject\/issues\/3$/);
+    expect((usedBody as Record<string, unknown>)["state_event"]).toBe("close");
+  });
+});
