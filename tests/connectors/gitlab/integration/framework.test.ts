@@ -15,21 +15,30 @@ let tmpHome: string;
 let tmpCwd: string;
 let origHome: string | undefined;
 let origCwd: string;
+let origGitlabHost: string | undefined;
+let origGitlabToken: string | undefined;
 
 beforeEach(() => {
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "gl-home-"));
   tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), "gl-cwd-"));
   origHome = process.env["HOME"];
   origCwd = process.cwd();
+  origGitlabHost = process.env["GITLAB_HOST"];
+  origGitlabToken = process.env["GITLAB_TOKEN"];
   process.env["HOME"] = tmpHome;
   process.chdir(tmpCwd);
   delete process.env["GITLAB_TOKEN"];
+  delete process.env["GITLAB_HOST"];
 });
 
 afterEach(() => {
   process.chdir(origCwd);
   if (origHome !== undefined) process.env["HOME"] = origHome;
   else delete process.env["HOME"];
+  if (origGitlabHost !== undefined) process.env["GITLAB_HOST"] = origGitlabHost;
+  else delete process.env["GITLAB_HOST"];
+  if (origGitlabToken !== undefined) process.env["GITLAB_TOKEN"] = origGitlabToken;
+  else delete process.env["GITLAB_TOKEN"];
   fs.rmSync(tmpHome, { recursive: true, force: true });
   fs.rmSync(tmpCwd, { recursive: true, force: true });
 });
@@ -177,6 +186,73 @@ describe("hardship logging integration", () => {
     const entry = JSON.parse(fs.readFileSync(logPath, "utf-8").trim());
     expect(entry.connector).toBe("gitlab");
     expect(entry.kind).toBe("rate_limited");
+  });
+});
+
+describe("defaultSdk uses behavior.host (YAML-only host config)", () => {
+  it("picks up gitlab.host from ~/.gitlab-agent/config.yaml when GITLAB_HOST env is absent", async () => {
+    // Write YAML with a custom host to tmpHome (which is already set as HOME)
+    const agentDir = path.join(tmpHome, ".gitlab-agent");
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(agentDir, "config.yaml"),
+      "gitlab:\n  host: https://gitlab.mycorp\n",
+    );
+    process.env["GITLAB_TOKEN"] = "glpat_yaml_test";
+    // GITLAB_HOST is absent (cleared in beforeEach)
+
+    let capturedUrl = "";
+    // Stub globalThis.fetch so defaultSdk's GitlabClient can make the request
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url: RequestInfo | URL): Promise<Response> => {
+      capturedUrl = String(url);
+      return new Response(
+        JSON.stringify({ id: 1, name: "p", path_with_namespace: "g/p", default_branch: "main" }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+    try {
+      // No sdk override — forces defaultSdk to run
+      const c = buildGitlabConnector({
+        credentials: async () => ({ token: "glpat_yaml_test", host: "https://gitlab.mycorp" }),
+      });
+      await c.fetch("project_info", { namespace: "g", project: "p" });
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+    expect(capturedUrl).toMatch(/^https:\/\/gitlab\.mycorp\/api\/v4\//);
+  });
+
+  it("GITLAB_HOST env wins over YAML host", async () => {
+    const agentDir = path.join(tmpHome, ".gitlab-agent");
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(agentDir, "config.yaml"),
+      "gitlab:\n  host: https://yaml.example\n",
+    );
+    process.env["GITLAB_TOKEN"] = "glpat_env_test";
+    process.env["GITLAB_HOST"] = "https://env.example";
+
+    let capturedUrl = "";
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url: RequestInfo | URL): Promise<Response> => {
+      capturedUrl = String(url);
+      return new Response(
+        JSON.stringify({ id: 1, name: "p", path_with_namespace: "g/p", default_branch: "main" }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+    try {
+      // No sdk override — forces defaultSdk to run; behavior.host should be env value
+      const c = buildGitlabConnector({
+        credentials: async () => ({ token: "glpat_env_test", host: "https://env.example" }),
+      });
+      await c.fetch("project_info", { namespace: "g", project: "p" });
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+    expect(capturedUrl).toMatch(/^https:\/\/env\.example\/api\/v4\//);
+    expect(capturedUrl).not.toContain("yaml.example");
   });
 });
 

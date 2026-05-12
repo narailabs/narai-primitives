@@ -239,10 +239,11 @@ export class GitlabClient {
     namespace: string,
     project: string,
     query: string,
+    opts: { page?: number; perPage?: number } = {},
   ): Promise<GitlabResult<GitlabSearchBlob[]>> {
     return this.get<GitlabSearchBlob[]>(
       `/projects/${this.projectPath(namespace, project)}/search`,
-      { scope: "blobs", search: query },
+      { scope: "blobs", search: query, page: opts.page, per_page: opts.perPage },
     );
   }
 

@@ -55,6 +55,17 @@ describe("GitlabClient.searchCode", () => {
     expect(usedUrl).toContain("scope=blobs");
     expect(usedUrl).toContain("search=hello");
   });
+
+  it("passes page and per_page query params when opts are provided", async () => {
+    let usedUrl = "";
+    const client = makeClient(async (url) => {
+      usedUrl = url;
+      return jsonResponse([]);
+    });
+    await client.searchCode("ns", "proj", "myquery", { page: 2, perPage: 50 });
+    expect(usedUrl).toContain("page=2");
+    expect(usedUrl).toContain("per_page=50");
+  });
 });
 
 // ── listIssues ────────────────────────────────────────────────────────────────

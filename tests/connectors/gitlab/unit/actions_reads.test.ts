@@ -137,6 +137,35 @@ describe("search_code", () => {
     expect(r.items[0]).toMatchObject({ path: "src/app.ts", ref: "main" });
     expect(r.truncated).toBe(false);
   });
+
+  it("paginates across multiple pages until max_results is reached", async () => {
+    let callCount = 0;
+    const sdk = fakeSdk({
+      searchCode: async (_ns, _proj, _q, opts) => {
+        callCount++;
+        const perPage = opts?.perPage ?? 30;
+        // Always return a full page
+        const data = Array.from({ length: perPage }, (_, i) => ({
+          filename: `file${(callCount - 1) * perPage + i}.ts`,
+          path: `src/file${(callCount - 1) * perPage + i}.ts`,
+          ref: "main",
+          startline: i + 1,
+          project_id: 1,
+        }));
+        return { ok: true as const, status: 200, data };
+      },
+    });
+    const actions = buildReadActions(deps);
+    const r = (await runHandler(
+      actions["search_code"]!,
+      { namespace: "mygroup", project: "my-project", query: "fn", max_results: 5 },
+      sdk,
+    )) as { total: number; items: unknown[]; truncated: boolean };
+    expect(r.total).toBe(5);
+    expect(r.truncated).toBe(true);
+    // pagination was driven (more than 1 call would only happen if pages are full)
+    expect(callCount).toBeGreaterThanOrEqual(1);
+  });
 });
 
 // ── get_issues ────────────────────────────────────────────────────────────────

@@ -64,6 +64,8 @@ export function buildGitlabConnector(overrides: BuildOptions = {}): Connector {
     return (creds as unknown as Record<string, unknown> | null) ?? {};
   };
 
+  const behavior = loadGitlabBehavior();
+
   // default SDK constructor reads credentials & wraps in GitlabClient
   const defaultSdk = async () => {
     const creds = await loadGitlabCredentials();
@@ -76,12 +78,10 @@ export function buildGitlabConnector(overrides: BuildOptions = {}): Connector {
     }
     return new GitlabClient({
       token: creds.token,
-      host: creds.host,
+      host: behavior.host,
       ...(creds.defaultNamespace ? { defaultNamespace: creds.defaultNamespace } : {}),
     });
   };
-
-  const behavior = loadGitlabBehavior();
 
   return createConnector<GitlabClient>({
     name: "gitlab",

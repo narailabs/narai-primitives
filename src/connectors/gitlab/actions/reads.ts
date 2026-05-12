@@ -124,18 +124,18 @@ export function buildReadActions(_deps: GitlabActionDeps): GitlabActions {
       classify: { kind: "read" },
       handler: async (p: z.infer<typeof searchCodeParams>, ctx) => {
         const limit = Math.min(p.max_results, MAX_RESULTS_CAP);
-        const result = await ctx.sdk.searchCode(p.namespace, p.project, p.query);
-        throwIfHttpError(result);
-        const items = (result.data ?? []).slice(0, limit);
+        const page = await paginateGitlab(limit, (pageNum, perPage) =>
+          ctx.sdk.searchCode(p.namespace, p.project, p.query, { page: pageNum, perPage }),
+        );
         return {
-          total: items.length,
-          items: items.map((it) => ({
+          total: page.items.length,
+          items: page.items.map((it) => ({
             path: it.path,
             filename: it.filename,
             ref: it.ref,
             startline: it.startline,
           })),
-          truncated: result.data.length > limit,
+          truncated: page.truncated,
         };
       },
     },
