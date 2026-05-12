@@ -24,8 +24,8 @@ Optional environment variables:
 
 ## Config
 
-Place YAML at `~/.gitlab-connector/config.yaml` (user-level) or
-`<cwd>/.gitlab-connector/config.yaml` (repo overlay). Repo overlay wins on
+Place YAML at `~/.gitlab-agent/config.yaml` (user-level) or
+`<cwd>/.gitlab-agent/config.yaml` (repo overlay). Repo overlay wins on
 collisions.
 
 ```yaml

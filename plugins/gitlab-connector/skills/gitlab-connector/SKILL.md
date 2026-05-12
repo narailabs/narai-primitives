@@ -72,7 +72,7 @@ Return the connector's JSON envelope verbatim.
 | `merge_merge_request` | `namespace`, `project`, `mr_iid`, optional `merge_commit_message`/`squash_commit_message`/`should_remove_source_branch`/`merge_when_pipeline_succeeds`/`sha`/`squash` |
 
 To enable `merge_merge_request`, set `policy.admin: escalate` in
-`~/.gitlab-connector/config.yaml` (or the repo-level overlay).
+`~/.gitlab-agent/config.yaml` (or the repo-level overlay).
 
 ## Credentials
 
@@ -85,8 +85,8 @@ Optional:
 
 ## Config
 
-`~/.gitlab-connector/config.yaml` (user-level) merges with
-`<cwd>/.gitlab-connector/config.yaml` (repo overlay). Beyond the toolkit's
+`~/.gitlab-agent/config.yaml` (user-level) merges with
+`<cwd>/.gitlab-agent/config.yaml` (repo overlay). Beyond the toolkit's
 standard `policy` and `approval_mode` keys, the connector reads:
 
 ```yaml

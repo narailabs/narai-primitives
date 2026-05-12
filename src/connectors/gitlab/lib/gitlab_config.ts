@@ -8,8 +8,8 @@
  *
  * Precedence (highest wins):
  *   1. GITLAB_REQUIRE_DRAFT_MR / GITLAB_HOST env vars
- *   2. <cwd>/.gitlab-connector/config.yaml `gitlab.*`
- *   3. ~/.gitlab-connector/config.yaml  `gitlab.*`
+ *   2. <cwd>/.gitlab-agent/config.yaml `gitlab.*`
+ *   3. ~/.gitlab-agent/config.yaml  `gitlab.*`
  *   4. defaults: requireDraftMr=false, host="https://gitlab.com"
  *
  * Replicates the toolkit's discover-and-merge pattern locally so we don't
@@ -117,8 +117,8 @@ export function loadGitlabBehavior(
   let requireDraftMr = false;
   let host = "https://gitlab.com";
 
-  const userCfg = path.join(home, ".gitlab-connector", "config.yaml");
-  const repoCfg = path.join(cwd, ".gitlab-connector", "config.yaml");
+  const userCfg = path.join(home, ".gitlab-agent", "config.yaml");
+  const repoCfg = path.join(cwd, ".gitlab-agent", "config.yaml");
 
   const userDraft = readGitlabSectionFlag(userCfg, "require_draft_mr");
   if (userDraft !== undefined) requireDraftMr = userDraft;

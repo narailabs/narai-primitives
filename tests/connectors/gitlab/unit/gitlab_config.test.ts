@@ -3,8 +3,8 @@
  * runtime knobs that aren't part of the toolkit's policy/approval YAML.
  * Precedence (highest wins):
  *   1. GITLAB_REQUIRE_DRAFT_MR / GITLAB_HOST env vars
- *   2. <cwd>/.gitlab-connector/config.yaml `gitlab.*`
- *   3. ~/.gitlab-connector/config.yaml  `gitlab.*`
+ *   2. <cwd>/.gitlab-agent/config.yaml `gitlab.*`
+ *   3. ~/.gitlab-agent/config.yaml  `gitlab.*`
  *   4. defaults: requireDraftMr=false, host="https://gitlab.com"
  */
 import * as fs from "node:fs";
@@ -17,7 +17,7 @@ let tmpHome = "";
 let tmpCwd = "";
 
 function writeYaml(rootDir: string, body: string): void {
-  const dir = path.join(rootDir, ".gitlab-connector");
+  const dir = path.join(rootDir, ".gitlab-agent");
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "config.yaml"), body, "utf-8");
 }

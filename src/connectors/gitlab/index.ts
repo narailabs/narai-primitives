@@ -4,7 +4,7 @@
  * Exposes 14 read, 18 write, and 1 admin action across projects,
  * issues, merge requests, notes, releases, and CI pipelines. Writes
  * escalate by default and admin is denied until the operator opts in
- * via ~/.gitlab-connector/config.yaml; see SKILL.md for the full surface.
+ * via ~/.gitlab-agent/config.yaml; see SKILL.md for the full surface.
  *
  * Built on @narai/connector-toolkit. Self-hosted GitLab is supported
  * via GITLAB_HOST env var or YAML config.

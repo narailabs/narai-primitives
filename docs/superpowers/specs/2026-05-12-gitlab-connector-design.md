@@ -62,7 +62,7 @@
 
 | Action | Endpoint |
 |---|---|
-| `merge_merge_request` | `PUT /projects/:id/merge_requests/:iid/merge`. Returns 405/406 on conflict — mapped to `VALIDATION_ERROR` via a `CONFLICT` code in CODE_MAP, mirroring github's 409 handling. Denied by default until operator sets `policy.admin: escalate` in `~/.gitlab-connector/config.yaml`. |
+| `merge_merge_request` | `PUT /projects/:id/merge_requests/:iid/merge`. Returns 405/406 on conflict — mapped to `VALIDATION_ERROR` via a `CONFLICT` code in CODE_MAP, mirroring github's 409 handling. Denied by default until operator sets `policy.admin: escalate` in `~/.gitlab-agent/config.yaml`. |
 
 ## 4. Architecture
 
@@ -101,7 +101,7 @@ Client wraps the shared toolkit `HttpClient` with `allowedMethods: {GET, POST, P
 
 ## 6. Behavior config
 
-`~/.gitlab-connector/config.yaml` (user) merges with `<cwd>/.gitlab-connector/config.yaml` (repo overlay):
+`~/.gitlab-agent/config.yaml` (user) merges with `<cwd>/.gitlab-agent/config.yaml` (repo overlay):
 
 ```yaml
 gitlab:

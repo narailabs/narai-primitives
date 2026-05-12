@@ -8,9 +8,15 @@ import { z } from "zod";
 export const namespaceField = z
   .string()
   .regex(
-    /^[a-zA-Z0-9_.-]+$/,
-    "namespace: alphanumeric, dots, dashes, underscores only",
-  );
+    /^[a-zA-Z0-9_.-][a-zA-Z0-9_./-]*$/,
+    "namespace: alphanumeric, dots, dashes, underscores, or slash-separated subgroups (no leading/trailing slash)",
+  )
+  .refine((v) => !v.includes("//"), {
+    message: "namespace: consecutive slashes are not allowed",
+  })
+  .refine((v) => !v.endsWith("/"), {
+    message: "namespace: trailing slash is not allowed",
+  });
 
 export const projectField = z
   .string()
