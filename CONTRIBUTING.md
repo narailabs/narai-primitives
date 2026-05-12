@@ -51,7 +51,7 @@ This triggers `npm publish --provenance` plus a GitHub Release. The workflow fai
 
 Before you start:
 
-- Check that the service isn't already covered. Today's builtins: `aws`, `confluence`, `db` (postgres / mysql / sqlite / mssql / mongodb / dynamodb / oracle), `gcp`, `github`, `jira`, `notion`. Database backends not yet supported by `db` should usually go into `db`'s driver registry rather than start fresh.
+- Check that the service isn't already covered. Today's builtins: `aws`, `confluence`, `db` (postgres / mysql / sqlite / mssql / mongodb / dynamodb / oracle), `gcp`, `github`, `gitlab`, `jira`, `notion`. Database backends not yet supported by `db` should usually go into `db`'s driver registry rather than start fresh.
 - File an issue first if you're unsure whether the connector belongs here. Adding a builtin is a long-term commitment to maintain it.
 - The connector must be **read-only** by default (or have a clearly delineated read-only mode). Write/delete/admin actions go through the toolkit's policy gate; we expect the contributor to explicitly classify them.
 

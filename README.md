@@ -15,6 +15,7 @@ Bundles what used to ship as eleven separate `@narai/*` packages:
 - `@narai/github-agent-connector` → `narai-primitives/github`
 - `@narai/jira-agent-connector` → `narai-primitives/jira`
 - `@narai/notion-agent-connector` → `narai-primitives/notion`
+- `@narai/gitlab-agent-connector` → `narai-primitives/gitlab`
 
 ## Install
 
