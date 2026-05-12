@@ -183,6 +183,17 @@ describe("GitlabClient.getNotes", () => {
     await client.getNotes("ns", "proj", "merge_request", 3);
     expect(usedUrl).toMatch(/\/projects\/ns%2Fproj\/merge_requests\/3\/notes$/);
   });
+
+  it("passes page and per_page query params when opts are provided", async () => {
+    let usedUrl = "";
+    const client = makeClient(async (url) => {
+      usedUrl = url;
+      return jsonResponse([]);
+    });
+    await client.getNotes("ns", "proj", "issue", 1, { page: 3, perPage: 25 });
+    expect(usedUrl).toContain("page=3");
+    expect(usedUrl).toContain("per_page=25");
+  });
 });
 
 // ── listReleaseLinks ──────────────────────────────────────────────────────────

@@ -351,6 +351,23 @@ describe("defaultSdk host precedence: secret > env > YAML > default", () => {
 
     expect(capturedUrl).toMatch(/^https:\/\/gitlab\.com\/api\/v4\//);
   });
+
+  it("GITLAB_HOST='' is treated as unset so YAML host wins", async () => {
+    const agentDir = path.join(tmpHome, ".gitlab-agent");
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(path.join(agentDir, "config.yaml"), "gitlab:\n  host: https://yaml.example\n");
+    process.env["GITLAB_TOKEN"] = "tok";
+    process.env["GITLAB_HOST"] = "";
+
+    let capturedUrl = "";
+    const restore = stubFetch((url) => { capturedUrl = url; });
+    try {
+      const c = buildGitlabConnector();
+      await c.fetch("project_info", { namespace: "g", project: "p" });
+    } finally { restore(); }
+
+    expect(capturedUrl).toMatch(/^https:\/\/yaml\.example\/api\/v4\//);
+  });
 });
 
 describe("--curate flag", () => {

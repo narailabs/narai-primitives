@@ -129,26 +129,33 @@ export interface GitlabJob {
 
 // ── Credential loader ────────────────────────────────────────────────────────
 
+function emptyToNull(v: string | null | undefined): string | null {
+  return v == null || v === "" ? null : v;
+}
+
 export async function loadGitlabCredentials(): Promise<{
   token: string;
   host: string | null;
   defaultNamespace: string | null;
 } | null> {
-  const token =
+  const token = emptyToNull(
     (await resolveSecret("GITLAB_TOKEN")) ??
     process.env["GITLAB_TOKEN"] ??
-    null;
+    null,
+  );
   if (!token) return null;
 
-  const host =
+  const host = emptyToNull(
     (await resolveSecret("GITLAB_HOST")) ??
     process.env["GITLAB_HOST"] ??
-    null;
+    null,
+  );
 
-  const defaultNamespace =
+  const defaultNamespace = emptyToNull(
     (await resolveSecret("GITLAB_NAMESPACE")) ??
     process.env["GITLAB_NAMESPACE"] ??
-    null;
+    null,
+  );
 
   return { token, host, defaultNamespace };
 }
@@ -315,10 +322,12 @@ export class GitlabClient {
     project: string,
     noteableType: "issue" | "merge_request",
     iid: number,
+    opts: { page?: number; perPage?: number } = {},
   ): Promise<GitlabResult<GitlabNote[]>> {
     const segment = noteableType === "issue" ? "issues" : "merge_requests";
     return this.get<GitlabNote[]>(
       `/projects/${this.projectPath(namespace, project)}/${segment}/${iid}/notes`,
+      { page: opts.page, per_page: opts.perPage },
     );
   }
 

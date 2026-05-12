@@ -402,6 +402,34 @@ describe("get_notes", () => {
     )) as { notes: unknown[] };
     expect(r.notes[0]).toMatchObject({ id: 202, author: "frank" });
   });
+
+  it("paginates across multiple pages until max_results is reached", async () => {
+    let callCount = 0;
+    const sdk = fakeSdk({
+      getNotes: async (_ns, _proj, _type, _iid, opts) => {
+        callCount++;
+        const perPage = opts?.perPage ?? 30;
+        const data = Array.from({ length: perPage }, (_, i) => ({
+          id: (callCount - 1) * perPage + i + 1,
+          body: `note ${(callCount - 1) * perPage + i + 1}`,
+          author: { username: "alice" },
+          created_at: "2026-05-01T00:00:00Z",
+          updated_at: "2026-05-01T00:00:00Z",
+          system: false,
+        }));
+        return { ok: true as const, status: 200, data };
+      },
+    });
+    const actions = buildReadActions(deps);
+    const r = (await runHandler(
+      actions["get_notes"]!,
+      { namespace: "mygroup", project: "my-project", noteable_type: "issue", noteable_iid: 1, max_results: 5 },
+      sdk,
+    )) as { total: number; notes: unknown[]; truncated: boolean };
+    expect(r.total).toBe(5);
+    expect(r.truncated).toBe(true);
+    expect(callCount).toBeGreaterThanOrEqual(1);
+  });
 });
 
 // ── list_release_links ────────────────────────────────────────────────────────

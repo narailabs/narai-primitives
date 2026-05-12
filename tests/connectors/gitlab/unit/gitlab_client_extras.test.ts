@@ -341,4 +341,27 @@ describe("loadGitlabCredentials()", () => {
     const r = await loadGitlabCredentials();
     expect(r?.host).toBe("https://env-only.example");
   });
+
+  it("GITLAB_HOST='' normalizes to host: null (empty string treated as unset)", async () => {
+    vi.mocked(resolveSecret).mockResolvedValue(null);
+    process.env["GITLAB_TOKEN"] = "tok";
+    process.env["GITLAB_HOST"] = "";
+    const r = await loadGitlabCredentials();
+    expect(r?.host).toBeNull();
+  });
+
+  it("GITLAB_TOKEN='' normalizes to null (returns null credentials)", async () => {
+    vi.mocked(resolveSecret).mockResolvedValue(null);
+    process.env["GITLAB_TOKEN"] = "";
+    const r = await loadGitlabCredentials();
+    expect(r).toBeNull();
+  });
+
+  it("GITLAB_NAMESPACE='' normalizes to defaultNamespace: null", async () => {
+    vi.mocked(resolveSecret).mockResolvedValue(null);
+    process.env["GITLAB_TOKEN"] = "tok";
+    process.env["GITLAB_NAMESPACE"] = "";
+    const r = await loadGitlabCredentials();
+    expect(r?.defaultNamespace).toBeNull();
+  });
 });

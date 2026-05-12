@@ -63,6 +63,7 @@ const getFileParams = projectParams.extend({
 const getNotesParams = projectParams.extend({
   noteable_type: z.enum(["issue", "merge_request"]),
   noteable_iid: z.coerce.number().int().positive(),
+  max_results: z.coerce.number().int().positive().default(MAX_RESULTS_DEFAULT),
 });
 
 const listReleaseLinksParams = projectParams.extend({
@@ -269,19 +270,19 @@ export function buildReadActions(_deps: GitlabActionDeps): GitlabActions {
       params: getNotesParams,
       classify: { kind: "read" },
       handler: async (p: z.infer<typeof getNotesParams>, ctx) => {
-        const result = await ctx.sdk.getNotes(
-          p.namespace,
-          p.project,
-          p.noteable_type,
-          p.noteable_iid,
+        const limit = Math.min(p.max_results, MAX_RESULTS_CAP);
+        const page = await paginateGitlab(limit, (pageNum, perPage) =>
+          ctx.sdk.getNotes(p.namespace, p.project, p.noteable_type, p.noteable_iid, {
+            page: pageNum,
+            perPage,
+          }),
         );
-        throwIfHttpError(result);
-        const notes = result.data ?? [];
         return {
           noteable_type: p.noteable_type,
           noteable_iid: p.noteable_iid,
-          total: notes.length,
-          notes: notes.map((n) => ({
+          total: page.items.length,
+          truncated: page.truncated,
+          notes: page.items.map((n) => ({
             id: n.id,
             body: n.body,
             author: n.author?.username ?? "",
