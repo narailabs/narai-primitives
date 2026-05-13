@@ -72,6 +72,7 @@ describe("add_note — schema validation", () => {
           head_sha: "aabbccd",
           position_type: "text",
           new_path: "src/file.ts",
+          old_path: "src/file.ts",
           new_line: 10,
         },
       }),
@@ -91,10 +92,71 @@ describe("add_note — schema validation", () => {
         head_sha: "aabbccd",
         position_type: "text",
         new_path: "src/file.ts",
+        old_path: "src/file.ts",
         new_line: 10,
       },
     });
     expect(parsed).toMatchObject({ noteable_type: "merge_request", body: "diff comment" });
+  });
+
+  it("rejects position missing old_path", () => {
+    expect(() =>
+      spec.params.parse({
+        namespace: "mygroup",
+        project: "myproject",
+        noteable_type: "merge_request",
+        noteable_iid: 5,
+        body: "diff comment",
+        position: {
+          base_sha: "aabbccd",
+          start_sha: "aabbccd",
+          head_sha: "aabbccd",
+          position_type: "text",
+          new_path: "src/file.ts",
+          new_line: 10,
+        },
+      }),
+    ).toThrow();
+  });
+
+  it("rejects position missing both old_line and new_line", () => {
+    expect(() =>
+      spec.params.parse({
+        namespace: "mygroup",
+        project: "myproject",
+        noteable_type: "merge_request",
+        noteable_iid: 5,
+        body: "diff comment",
+        position: {
+          base_sha: "aabbccd",
+          start_sha: "aabbccd",
+          head_sha: "aabbccd",
+          position_type: "text",
+          new_path: "src/file.ts",
+          old_path: "src/file.ts",
+        },
+      }),
+    ).toThrow("at least one of old_line or new_line must be set");
+  });
+
+  it("accepts position with only old_line set (removed-line context)", () => {
+    const parsed = spec.params.parse({
+      namespace: "mygroup",
+      project: "myproject",
+      noteable_type: "merge_request",
+      noteable_iid: 5,
+      body: "removed line comment",
+      position: {
+        base_sha: "aabbccd",
+        start_sha: "aabbccd",
+        head_sha: "aabbccd",
+        position_type: "text",
+        new_path: "src/file.ts",
+        old_path: "src/file.ts",
+        old_line: 5,
+      },
+    });
+    expect(parsed).toMatchObject({ body: "removed line comment" });
   });
 
   it("accepts body-only note with no position for 'issue'", () => {
@@ -191,6 +253,7 @@ describe("add_note — handler", () => {
           head_sha: "aabbccd",
           position_type: "text",
           new_path: "src/file.ts",
+          old_path: "src/file.ts",
           new_line: 10,
         },
       },

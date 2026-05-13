@@ -502,6 +502,115 @@ describe("get_notes", () => {
     expect(r.truncated).toBe(true);
     expect(callCount).toBeGreaterThanOrEqual(1);
   });
+
+  it("caps notes after flattening when a discussion has many notes (note-count truncation)", async () => {
+    // Single discussion with 10 notes, but max_results=3 — secondary cap must fire.
+    const sdk = fakeSdk({
+      getDiscussions: async () => ({
+        ok: true as const,
+        status: 200,
+        data: [
+          {
+            id: "disc-big",
+            individual_note: false,
+            notes: Array.from({ length: 10 }, (_, i) => ({
+              id: i + 1,
+              body: `note ${i + 1}`,
+              author: { username: "alice" },
+              created_at: "2026-05-01T00:00:00Z",
+              updated_at: "2026-05-01T00:00:00Z",
+              system: false,
+            })),
+          },
+        ],
+      }),
+    });
+    const actions = buildReadActions(deps);
+    const r = (await runHandler(
+      actions["get_notes"]!,
+      { namespace: "mygroup", project: "my-project", noteable_type: "merge_request", noteable_iid: 7, max_results: 3 },
+      sdk,
+    )) as { total: number; notes: unknown[]; truncated: boolean };
+    expect(r.notes.length).toBe(3);
+    expect(r.total).toBe(3);
+    expect(r.truncated).toBe(true);
+  });
+
+  it("sets truncated=true when flattened note count exceeds max_results even if discussion paginator did not truncate", async () => {
+    // Two discussions, 3 notes each → 6 total, max_results=4.
+    const sdk = fakeSdk({
+      getDiscussions: async () => ({
+        ok: true as const,
+        status: 200,
+        data: [
+          {
+            id: "disc-1",
+            individual_note: false,
+            notes: Array.from({ length: 3 }, (_, i) => ({
+              id: i + 1,
+              body: `d1 note ${i + 1}`,
+              author: { username: "alice" },
+              created_at: "2026-05-01T00:00:00Z",
+              updated_at: "2026-05-01T00:00:00Z",
+              system: false,
+            })),
+          },
+          {
+            id: "disc-2",
+            individual_note: false,
+            notes: Array.from({ length: 3 }, (_, i) => ({
+              id: i + 10,
+              body: `d2 note ${i + 1}`,
+              author: { username: "bob" },
+              created_at: "2026-05-01T00:00:00Z",
+              updated_at: "2026-05-01T00:00:00Z",
+              system: false,
+            })),
+          },
+        ],
+      }),
+    });
+    const actions = buildReadActions(deps);
+    const r = (await runHandler(
+      actions["get_notes"]!,
+      { namespace: "mygroup", project: "my-project", noteable_type: "merge_request", noteable_iid: 8, max_results: 4 },
+      sdk,
+    )) as { total: number; notes: unknown[]; truncated: boolean };
+    expect(r.notes.length).toBe(4);
+    expect(r.truncated).toBe(true);
+  });
+
+  it("sets truncated=false when flattened note count fits exactly within max_results", async () => {
+    // One discussion with exactly 3 notes, max_results=5 — no truncation.
+    const sdk = fakeSdk({
+      getDiscussions: async () => ({
+        ok: true as const,
+        status: 200,
+        data: [
+          {
+            id: "disc-exact",
+            individual_note: false,
+            notes: Array.from({ length: 3 }, (_, i) => ({
+              id: i + 1,
+              body: `note ${i + 1}`,
+              author: { username: "alice" },
+              created_at: "2026-05-01T00:00:00Z",
+              updated_at: "2026-05-01T00:00:00Z",
+              system: false,
+            })),
+          },
+        ],
+      }),
+    });
+    const actions = buildReadActions(deps);
+    const r = (await runHandler(
+      actions["get_notes"]!,
+      { namespace: "mygroup", project: "my-project", noteable_type: "merge_request", noteable_iid: 9, max_results: 5 },
+      sdk,
+    )) as { total: number; notes: unknown[]; truncated: boolean };
+    expect(r.notes.length).toBe(3);
+    expect(r.truncated).toBe(false);
+  });
 });
 
 // ── list_release_links ────────────────────────────────────────────────────────

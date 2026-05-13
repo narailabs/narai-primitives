@@ -20,16 +20,26 @@ const baseNoteParams = z.object({
   noteable_iid: z.coerce.number().int().positive(),
 });
 
-const positionSchema = z.object({
-  base_sha: shaField,
-  start_sha: shaField,
-  head_sha: shaField,
-  position_type: z.literal("text"),
-  new_path: filePathField,
-  old_path: filePathField.optional(),
-  new_line: z.coerce.number().int().positive().optional(),
-  old_line: z.coerce.number().int().positive().optional(),
-});
+const positionSchema = z
+  .object({
+    base_sha: shaField,
+    start_sha: shaField,
+    head_sha: shaField,
+    position_type: z.literal("text"),
+    new_path: filePathField,
+    old_path: filePathField,
+    new_line: z.coerce.number().int().positive().optional(),
+    old_line: z.coerce.number().int().positive().optional(),
+  })
+  .superRefine((val, ctx) => {
+    if (val.new_line === undefined && val.old_line === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["new_line"],
+        message: "at least one of old_line or new_line must be set",
+      });
+    }
+  });
 
 const addNoteParams = baseNoteParams
   .extend({

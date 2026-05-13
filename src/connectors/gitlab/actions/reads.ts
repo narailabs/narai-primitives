@@ -327,12 +327,17 @@ export function buildReadActions(_deps: GitlabActionDeps): GitlabActions {
             });
           }
         }
+        // Apply secondary cap: one discussion can contain many notes, so the
+        // flattened count may exceed the requested limit even when the discussion
+        // paginator did not report truncation.
+        const notesTruncated = flatNotes.length > limit;
+        const cappedNotes = flatNotes.slice(0, limit);
         return {
           noteable_type: p.noteable_type,
           noteable_iid: p.noteable_iid,
-          total: flatNotes.length,
-          truncated: page.truncated,
-          notes: flatNotes,
+          total: cappedNotes.length,
+          truncated: page.truncated || notesTruncated,
+          notes: cappedNotes,
         };
       },
     },
