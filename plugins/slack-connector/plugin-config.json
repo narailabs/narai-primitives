@@ -1,0 +1,4 @@
+{
+  "name": "slack",
+  "binPath": "narai-primitives/dist/connectors/slack"
+}

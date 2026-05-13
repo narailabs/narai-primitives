@@ -1,0 +1,6 @@
+{
+  "name": "slack-connector-plugin",
+  "version": "1.0.0",
+  "description": "Read + write CRUD on Slack channels, messages, threads, files, and reactions. Policy-gated.",
+  "author": "narai"
+}

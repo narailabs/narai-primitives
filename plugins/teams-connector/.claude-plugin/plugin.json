@@ -1,0 +1,6 @@
+{
+  "name": "teams-connector-plugin",
+  "version": "1.0.0",
+  "description": "Read + write Microsoft Teams connector — channels, chats, messages, meetings (transcripts + recordings), and attachments. Policy-gated. Built on narai-primitives.",
+  "author": "narailabs"
+}
