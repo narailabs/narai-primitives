@@ -112,6 +112,22 @@ export interface GraphOnlineMeeting {
   participants?: unknown;
 }
 
+export interface GraphCalendarEvent {
+  id: string;
+  subject?: string | null;
+  start?: { dateTime?: string; timeZone?: string };
+  end?: { dateTime?: string; timeZone?: string };
+  organizer?: { emailAddress?: { name?: string; address?: string } } | null;
+  isOnlineMeeting?: boolean;
+  onlineMeeting?: { joinUrl?: string } | null;
+  iCalUId?: string;
+}
+
+export interface CalendarEventListResponse {
+  value: GraphCalendarEvent[];
+  "@odata.nextLink"?: string;
+}
+
 export interface GraphMeetingTranscript {
   id: string;
   meetingOrganizer?: unknown;
@@ -701,6 +717,59 @@ export class TeamsClient {
   }
 
   // ── Meetings ───────────────────────────────────────────────────────────────
+
+  /**
+   * List the signed-in user's calendar events in a date range. Graph's
+   * `/me/onlineMeetings` endpoint does not support date-range filters
+   * (only joinWebUrl / joinMeetingId equality), so "find meetings in a
+   * window" goes through `/me/calendar/events` instead.
+   *
+   * When `onlineOnly` is true the filter narrows to events flagged as
+   * Teams meetings (`isOnlineMeeting eq true`). Results are paginated
+   * via `@odata.nextLink` up to `top` total items.
+   */
+  public async listCalendarEvents(params: {
+    startDateTime: string;
+    endDateTime: string;
+    onlineOnly: boolean;
+    top: number;
+  }): Promise<TeamsResult<{ items: GraphCalendarEvent[]; truncated: boolean }>> {
+    const filterParts: string[] = [
+      `start/dateTime ge '${params.startDateTime}'`,
+      `start/dateTime le '${params.endDateTime}'`,
+    ];
+    if (params.onlineOnly) filterParts.push("isOnlineMeeting eq true");
+    const filter = filterParts.join(" and ");
+    return this.paginate<GraphCalendarEvent>("/me/calendar/events", params.top, {
+      $filter: filter,
+      $select:
+        "id,subject,start,end,onlineMeeting,organizer,isOnlineMeeting,iCalUId",
+      $orderby: "start/dateTime",
+      $top: Math.min(params.top, 100),
+    });
+  }
+
+  /**
+   * Resolve a Teams join URL (typically `event.onlineMeeting.joinUrl`) to
+   * the underlying `onlineMeeting` resource. Returns `null` when the
+   * filter matches nothing — events with third-party join URLs (Zoom,
+   * Webex, ...) won't have a corresponding Teams onlineMeeting.
+   */
+  public async getOnlineMeetingByJoinUrl(
+    joinUrl: string,
+  ): Promise<TeamsResult<GraphOnlineMeeting | null>> {
+    // OData strings are wrapped in single quotes; embedded single quotes
+    // must be doubled. URL encoding is handled by the query builder.
+    const escaped = joinUrl.replace(/'/g, "''");
+    const result = await this.request<GraphCollection<GraphOnlineMeeting>>(
+      "GET",
+      "/me/onlineMeetings",
+      { query: { $filter: `joinWebUrl eq '${escaped}'` } },
+    );
+    if (!result.ok) return result;
+    const first = result.data.value?.[0] ?? null;
+    return { ok: true, data: first, status: result.status };
+  }
 
   public async listOnlineMeetings(
     filter: string,

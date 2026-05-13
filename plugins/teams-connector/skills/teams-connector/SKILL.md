@@ -69,18 +69,27 @@ Return the connector's JSON envelope verbatim.
 
 | Action                          | Required params |
 |---------------------------------|-----------------|
-| `list_meetings`                 | `since` (ISO), optional `until`, `max_results` |
-| `get_meeting`                   | `meeting_id` |
+| `list_meetings`                 | `since` (ISO), optional `until`, `max_results`, `resolve_meeting_ids` (default false — when true, resolves each event's `join_url` to an `onlineMeeting.id`; costs an extra Graph call per event) |
+| `get_meeting`                   | exactly one of `meeting_id` (onlineMeeting id) or `event_id` (calendar event id; resolved via its joinUrl) |
 | `list_meeting_transcripts`      | `meeting_id`, optional `max_results` |
 | `get_meeting_transcript`        | `meeting_id`, `transcript_id` (returns WebVTT text) |
 | `list_meeting_recordings`       | `meeting_id`, optional `max_results` |
 | `get_meeting_recording`         | `meeting_id`, `recording_id` (returns metadata + sha256 checksum; no text extraction) |
 | `search_meeting_transcripts`    | `query`, `since`, optional `until`, `max_meetings` (default 50, cap 200), `max_transcripts_per_meeting` (default 1, cap 5) |
 
+`list_meetings` and `search_meeting_transcripts` walk `/me/calendar/events`
+(`isOnlineMeeting eq true`) because Graph's `/me/onlineMeetings` does not
+support date-range filters. The calendar endpoint returns event-derived
+data including `join_url`; the underlying onlineMeeting resource (needed
+for transcripts/recordings) is resolved via
+`/me/onlineMeetings?$filter=joinWebUrl eq '<url>'`.
+
 Transcripts and recordings are scoped to meetings the signed-in user
 organized or attended. Meetings hosted by others — and meetings whose
 recording policy disables transcript access — return 403; the
-`search_meeting_transcripts` fan-out silently skips them.
+`search_meeting_transcripts` fan-out silently skips them. Events whose
+`joinUrl` doesn't resolve to a Teams onlineMeeting (e.g. third-party Zoom
+links) are also skipped and counted in `unresolvable_events_count`.
 
 ### Attachments
 
@@ -134,6 +143,7 @@ mailbox/recording access):
 - `ChannelMessage.Read.All`, `ChannelMessage.Send`, `ChannelMessage.Edit`, `ChannelMessage.SoftDelete`
 - `Chat.ReadWrite`, `ChatMessage.Send`
 - `OnlineMeetings.Read`, `OnlineMeetingTranscript.Read.All`, `OnlineMeetingRecording.Read.All`
+- `Calendars.Read` (required by `list_meetings` and `search_meeting_transcripts`, which walk `/me/calendar/events` because Graph's `/me/onlineMeetings` does not support date-range filters)
 - `Files.ReadWrite` (for OneDrive uploads when attaching files)
 - `Search` / `Search.Read` (for `search_messages`)
 

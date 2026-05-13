@@ -1,8 +1,17 @@
 /**
- * Meetings action specs: online meetings list / get, transcripts (list +
- * VTT content), recordings (list + binary), and a local fan-out
- * `search_meeting_transcripts` that fetches each meeting's first transcript
- * and substring-searches the VTT text.
+ * Meetings action specs: calendar-derived meeting list + get, transcripts
+ * (list + VTT content), recordings (list + binary), and a local fan-out
+ * `search_meeting_transcripts` that resolves each calendar event to an
+ * onlineMeeting and substring-searches its first transcript.
+ *
+ * Why calendar events: Microsoft Graph's `/me/onlineMeetings` only supports
+ * filtering by `joinWebUrl` or `joinMeetingIdSettings/joinMeetingId` — there
+ * is no date-range filter. The canonical "meetings in a window" flow is
+ * `/me/calendar/events?$filter=isOnlineMeeting eq true and start/dateTime ...`,
+ * which returns events with `onlineMeeting.joinUrl`. That join URL can be
+ * resolved to the actual onlineMeeting resource via
+ * `/me/onlineMeetings?$filter=joinWebUrl eq ...` when transcripts/recordings
+ * are needed.
  *
  * Every action is `{ kind: "read" }`. The recording-content handler returns
  * `{filename, media_type, size_bytes, checksum, source_url}` without running
@@ -15,6 +24,7 @@ import type { TeamsActions } from "./_types.js";
 import { MAX_RESULTS_DEFAULT, capMax } from "./_pagination.js";
 
 const meetingIdField = z.string().min(1, "meeting_id required");
+const eventIdField = z.string().min(1, "event_id required");
 const transcriptIdField = z.string().min(1, "transcript_id required");
 const recordingIdField = z.string().min(1, "recording_id required");
 const isoField = z.string().min(1, "ISO datetime required");
@@ -23,11 +33,25 @@ const listMeetingsParams = z.object({
   since: isoField,
   until: isoField.optional(),
   max_results: z.coerce.number().int().positive().default(MAX_RESULTS_DEFAULT),
+  resolve_meeting_ids: z.coerce.boolean().optional().default(false),
 });
 
-const getMeetingParams = z.object({
-  meeting_id: meetingIdField,
-});
+// `get_meeting` accepts exactly one of `meeting_id` (onlineMeeting id) or
+// `event_id` (calendar event id, resolved via its joinUrl).
+const getMeetingParams = z
+  .object({
+    meeting_id: meetingIdField.optional(),
+    event_id: eventIdField.optional(),
+  })
+  .refine(
+    (v) =>
+      (v.meeting_id !== undefined && v.event_id === undefined) ||
+      (v.meeting_id === undefined && v.event_id !== undefined),
+    {
+      message:
+        "Provide exactly one of meeting_id (onlineMeeting id) or event_id (calendar event id)",
+    },
+  );
 
 const listMeetingTranscriptsParams = z.object({
   meeting_id: meetingIdField,
@@ -66,11 +90,6 @@ const searchTranscriptsParams = z.object({
     .default(SEARCH_DEFAULT_PER_MEETING),
 });
 
-function buildFilter(since: string, until: string | undefined): string {
-  const u = until ?? new Date().toISOString();
-  return `startDateTime ge ${since} and startDateTime le ${u}`;
-}
-
 function snippetAround(text: string, idx: number, window = 300): string {
   const start = Math.max(0, idx - Math.floor(window / 2));
   const end = Math.min(text.length, start + window);
@@ -80,41 +99,111 @@ function snippetAround(text: string, idx: number, window = 300): string {
 export function buildMeetingsActions(): TeamsActions {
   return {
     list_meetings: {
-      description: "List the signed-in user's online meetings in a date range",
+      description:
+        "List the signed-in user's Teams meetings (calendar events flagged as online meetings) in a date range. Returns event-derived data including `join_url`; pass `resolve_meeting_ids: true` to also resolve each event's join_url to an onlineMeeting id (extra Graph calls per event).",
       params: listMeetingsParams,
       classify: { kind: "read" },
       handler: async (p: z.infer<typeof listMeetingsParams>, ctx) => {
         const max = capMax(p.max_results);
-        const filter = buildFilter(p.since, p.until);
-        const r = await ctx.sdk.listOnlineMeetings(filter, max);
-        throwIfHttpError(r);
+        const until = p.until ?? new Date().toISOString();
+        const eventsRes = await ctx.sdk.listCalendarEvents({
+          startDateTime: p.since,
+          endDateTime: until,
+          onlineOnly: true,
+          top: max,
+        });
+        throwIfHttpError(eventsRes);
+        const events = eventsRes.data.items;
+
+        // Optional resolve: walk events with a joinUrl and look up the
+        // matching onlineMeeting resource. Missing/unresolvable events are
+        // returned with `meeting_id: null`.
+        const meetings = await Promise.all(
+          events.map(async (e) => {
+            const joinUrl = e.onlineMeeting?.joinUrl ?? null;
+            let meetingId: string | null = null;
+            if (p.resolve_meeting_ids && joinUrl) {
+              const mRes = await ctx.sdk.getOnlineMeetingByJoinUrl(joinUrl);
+              if (mRes.ok && mRes.data) meetingId = mRes.data.id;
+            }
+            return {
+              event_id: e.id,
+              meeting_id: meetingId,
+              subject: e.subject ?? null,
+              start: e.start?.dateTime ?? null,
+              end: e.end?.dateTime ?? null,
+              start_time_zone: e.start?.timeZone ?? null,
+              end_time_zone: e.end?.timeZone ?? null,
+              organizer: e.organizer?.emailAddress
+                ? {
+                    name: e.organizer.emailAddress.name ?? null,
+                    address: e.organizer.emailAddress.address ?? null,
+                  }
+                : null,
+              join_url: joinUrl,
+              ical_uid: e.iCalUId ?? null,
+            };
+          }),
+        );
+
         return {
           since: p.since,
           until: p.until ?? null,
-          total: r.data.items.length,
-          truncated: r.data.truncated,
-          meetings: r.data.items.map((m) => ({
-            id: m.id,
-            subject: m.subject ?? null,
-            start_at: m.startDateTime ?? null,
-            end_at: m.endDateTime ?? null,
-            join_web_url: m.joinWebUrl ?? null,
-            join_meeting_id: m.joinMeetingId ?? null,
-          })),
+          total: meetings.length,
+          truncated: eventsRes.data.truncated,
+          resolved_meeting_ids: p.resolve_meeting_ids,
+          meetings,
         };
       },
     },
 
     get_meeting: {
-      description: "Fetch a single online meeting by id",
+      description:
+        "Fetch a single online meeting. Provide exactly one of `meeting_id` (onlineMeeting id) or `event_id` (calendar event id; resolved via its joinUrl).",
       params: getMeetingParams,
       classify: { kind: "read" },
       handler: async (p: z.infer<typeof getMeetingParams>, ctx) => {
-        const r = await ctx.sdk.getOnlineMeeting(p.meeting_id);
+        let meetingId = p.meeting_id ?? null;
+        let eventId: string | null = p.event_id ?? null;
+        if (eventId && !meetingId) {
+          const eventRes = await ctx.sdk.request<{
+            id: string;
+            subject?: string | null;
+            onlineMeeting?: { joinUrl?: string } | null;
+            isOnlineMeeting?: boolean;
+          }>("GET", `/me/calendar/events/${encodeURIComponent(eventId)}`, {
+            query: {
+              $select: "id,subject,onlineMeeting,isOnlineMeeting",
+            },
+          });
+          throwIfHttpError(eventRes);
+          const joinUrl = eventRes.data.onlineMeeting?.joinUrl ?? null;
+          if (!joinUrl) {
+            throw new ConnectorError(
+              "NOT_FOUND",
+              "Calendar event has no onlineMeeting.joinUrl — not a Teams meeting",
+              false,
+              404,
+            );
+          }
+          const resolved = await ctx.sdk.getOnlineMeetingByJoinUrl(joinUrl);
+          throwIfHttpError(resolved);
+          if (!resolved.data) {
+            throw new ConnectorError(
+              "NOT_FOUND",
+              "Could not resolve event's joinUrl to an onlineMeeting (third-party join link or insufficient scope)",
+              false,
+              404,
+            );
+          }
+          meetingId = resolved.data.id;
+        }
+        const r = await ctx.sdk.getOnlineMeeting(meetingId!);
         throwIfHttpError(r);
         const m = r.data;
         return {
           id: m.id,
+          event_id: eventId,
           subject: m.subject ?? null,
           start_at: m.startDateTime ?? null,
           end_at: m.endDateTime ?? null,
@@ -212,7 +301,7 @@ export function buildMeetingsActions(): TeamsActions {
 
     search_meeting_transcripts: {
       description:
-        "Search meeting transcripts in a date range for a substring (case-insensitive); fan-out across meetings",
+        "Search meeting transcripts in a date range for a substring (case-insensitive). Walks calendar events in the window, resolves each event's joinUrl to an onlineMeeting, fetches the first N transcripts, and matches against their VTT content.",
       params: searchTranscriptsParams,
       classify: { kind: "read" },
       handler: async (p: z.infer<typeof searchTranscriptsParams>, ctx) => {
@@ -221,12 +310,18 @@ export function buildMeetingsActions(): TeamsActions {
           p.max_transcripts_per_meeting,
           SEARCH_MAX_PER_MEETING,
         );
-        const filter = buildFilter(p.since, p.until);
-        const meetingsRes = await ctx.sdk.listOnlineMeetings(filter, maxMeetings);
-        throwIfHttpError(meetingsRes);
-        const meetings = meetingsRes.data.items;
+        const until = p.until ?? new Date().toISOString();
+        const eventsRes = await ctx.sdk.listCalendarEvents({
+          startDateTime: p.since,
+          endDateTime: until,
+          onlineOnly: true,
+          top: maxMeetings,
+        });
+        throwIfHttpError(eventsRes);
+        const events = eventsRes.data.items;
         const queryLower = p.query.toLowerCase();
         const matches: Array<{
+          event_id: string;
           meeting_id: string;
           meeting_subject: string | null;
           transcript_id: string;
@@ -235,16 +330,45 @@ export function buildMeetingsActions(): TeamsActions {
         }> = [];
         let meetingsSearched = 0;
         let transcriptsSearched = 0;
-        for (const meeting of meetings) {
+        let unresolvableEventsCount = 0;
+
+        for (const event of events) {
+          const joinUrl = event.onlineMeeting?.joinUrl ?? null;
+          if (!joinUrl) {
+            unresolvableEventsCount++;
+            continue;
+          }
+          const resolved = await ctx.sdk.getOnlineMeetingByJoinUrl(joinUrl);
+          if (!resolved.ok) {
+            // Forbidden / not-found on the lookup itself: silently skip;
+            // surfacing fatal errors would defeat the fan-out helper.
+            if (resolved.status === 403 || resolved.status === 404) {
+              unresolvableEventsCount++;
+              continue;
+            }
+            throw new ConnectorError(
+              resolved.code,
+              resolved.message,
+              resolved.retriable,
+              resolved.status,
+            );
+          }
+          if (!resolved.data) {
+            // Third-party join link (Zoom, Webex, etc.) — no matching
+            // Teams onlineMeeting.
+            unresolvableEventsCount++;
+            continue;
+          }
+          const meeting = resolved.data;
           meetingsSearched++;
           const transcriptsRes = await ctx.sdk.listMeetingTranscripts(
             meeting.id,
             maxPerMeeting,
           );
           if (!transcriptsRes.ok) {
-            // Skip meetings whose transcripts the user cannot read (forbidden,
-            // not-found, etc.) — surfacing a fatal error here would defeat the
-            // fan-out helper.
+            // Skip meetings whose transcripts the user cannot read
+            // (forbidden, not-found, etc.) — surfacing a fatal error here
+            // would defeat the fan-out helper.
             if (transcriptsRes.status === 403 || transcriptsRes.status === 404) {
               continue;
             }
@@ -283,8 +407,9 @@ export function buildMeetingsActions(): TeamsActions {
               pos += queryLower.length;
             }
             matches.push({
+              event_id: event.id,
               meeting_id: meeting.id,
-              meeting_subject: meeting.subject ?? null,
+              meeting_subject: meeting.subject ?? event.subject ?? null,
               transcript_id: t.id,
               snippet: snippetAround(text, idx),
               match_count: count,
@@ -297,6 +422,7 @@ export function buildMeetingsActions(): TeamsActions {
           until: p.until ?? null,
           meetings_searched: meetingsSearched,
           transcripts_searched: transcriptsSearched,
+          unresolvable_events_count: unresolvableEventsCount,
           total_matches: matches.length,
           matches,
         };

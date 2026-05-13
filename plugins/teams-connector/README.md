@@ -27,6 +27,7 @@ Configure the following delegated permissions on the app registration
 - `ChannelMessage.Read.All`, `ChannelMessage.Send`, `ChannelMessage.Edit`, `ChannelMessage.SoftDelete`
 - `Chat.ReadWrite`, `ChatMessage.Send`
 - `OnlineMeetings.Read`, `OnlineMeetingTranscript.Read.All`, `OnlineMeetingRecording.Read.All`
+- `Calendars.Read` (required by `list_meetings` and `search_meeting_transcripts`, which walk `/me/calendar/events` because Graph's `/me/onlineMeetings` does not support date-range filters)
 - `Files.ReadWrite` (OneDrive uploads for attachments)
 - `Search` / `Search.Read` (tenant-wide message search)
 
