@@ -106,10 +106,15 @@ const replyToMessageParams = z
     comment: z.string().optional(),
     body: contentInput.optional(),
   })
+  // Microsoft Graph's POST /me/messages/{id}/reply rejects requests that
+  // include BOTH `comment` and `message.body` with HTTP 400. Enforce XOR
+  // here so callers get a clear validation error instead of a 400 from
+  // Graph at request time.
   .refine(
-    (v) => v.comment !== undefined || v.body !== undefined,
+    (v) => (v.comment !== undefined) !== (v.body !== undefined),
     {
-      message: "reply_to_message requires either 'comment' or 'body'",
+      message:
+        "reply_to_message requires exactly one of 'comment' or 'body' (not both, not neither)",
       path: ["comment"],
     },
   );

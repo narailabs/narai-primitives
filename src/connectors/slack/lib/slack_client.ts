@@ -138,12 +138,34 @@ interface SlackListResponse<T> extends SlackEnvelope {
   members?: T[];
   messages?: T[];
   files?: T[];
-  matches?: T[];
   response_metadata?: {
     next_cursor?: string;
     messages?: string[];
   };
   has_more?: boolean;
+}
+
+interface SlackSearchPagination {
+  page?: number;
+  page_count?: number;
+  per_page?: number;
+  total_count?: number;
+}
+
+interface SlackSearchMessagesResponse extends SlackEnvelope {
+  messages?: {
+    matches?: SlackMessage[];
+    total?: number;
+    pagination?: SlackSearchPagination;
+  };
+}
+
+interface SlackSearchFilesResponse extends SlackEnvelope {
+  files?: {
+    matches?: SlackFile[];
+    total?: number;
+    pagination?: SlackSearchPagination;
+  };
 }
 
 interface SlackPostMessageResponse extends SlackEnvelope {
@@ -355,8 +377,8 @@ export class SlackClient {
   public async searchMessages(
     query: string,
     count: number,
-  ): Promise<SlackResult<SlackListResponse<SlackMessage>>> {
-    return this._call<SlackListResponse<SlackMessage>>(
+  ): Promise<SlackResult<SlackSearchMessagesResponse>> {
+    return this._call<SlackSearchMessagesResponse>(
       "search.messages",
       { query, count },
       "user",
@@ -366,8 +388,8 @@ export class SlackClient {
   public async searchFiles(
     query: string,
     count: number,
-  ): Promise<SlackResult<SlackListResponse<SlackFile>>> {
-    return this._call<SlackListResponse<SlackFile>>(
+  ): Promise<SlackResult<SlackSearchFilesResponse>> {
+    return this._call<SlackSearchFilesResponse>(
       "search.files",
       { query, count },
       "user",

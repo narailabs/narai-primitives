@@ -540,15 +540,21 @@ export function buildSlackConnector(overrides: BuildOptions = {}): Connector {
           const limit = Math.min(p.max_results, 100);
           const result = await ctx.sdk.searchMessages(p.query, limit);
           throwIfHttpError(result);
-          const matches = result.data.matches ?? [];
+          // Slack's search.messages nests matches under `messages.matches`,
+          // not at the top level — distinct shape from list endpoints.
+          const matches = result.data.messages?.matches ?? [];
+          const total = result.data.messages?.total ?? matches.length;
+          const pagination = result.data.messages?.pagination;
           return {
-            total: matches.length,
+            total,
             results: matches.map((m) => ({
               ts: m.ts,
               user: m.user ?? null,
               text: m.text ?? "",
             })),
-            truncated: false,
+            truncated:
+              pagination !== undefined &&
+              (pagination.page ?? 1) < (pagination.page_count ?? 1),
           };
         },
       },
@@ -561,9 +567,13 @@ export function buildSlackConnector(overrides: BuildOptions = {}): Connector {
           const limit = Math.min(p.max_results, 100);
           const result = await ctx.sdk.searchFiles(p.query, limit);
           throwIfHttpError(result);
-          const matches = result.data.matches ?? [];
+          // Slack's search.files nests matches under `files.matches`,
+          // not at the top level — distinct shape from list endpoints.
+          const matches = result.data.files?.matches ?? [];
+          const total = result.data.files?.total ?? matches.length;
+          const pagination = result.data.files?.pagination;
           return {
-            total: matches.length,
+            total,
             results: matches.map((f) => ({
               id: f.id,
               name: f.name ?? null,
@@ -571,7 +581,9 @@ export function buildSlackConnector(overrides: BuildOptions = {}): Connector {
               mime_type: f.mimetype ?? null,
               permalink: f.permalink ?? null,
             })),
-            truncated: false,
+            truncated:
+              pagination !== undefined &&
+              (pagination.page ?? 1) < (pagination.page_count ?? 1),
           };
         },
       },
