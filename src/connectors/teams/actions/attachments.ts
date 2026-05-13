@@ -34,8 +34,12 @@ const getAttachmentParams = z
     attachment_id: z.string().min(1, "attachment_id required"),
   })
   .refine(
-    (v) => (v.team_id && v.channel_id) || v.chat_id,
-    "Either team_id+channel_id (channel message) or chat_id (chat message) must be supplied",
+    (v) => {
+      const isChannel = Boolean(v.team_id && v.channel_id);
+      const isChat = Boolean(v.chat_id);
+      return isChannel !== isChat;
+    },
+    "Provide exactly one target: team_id+channel_id (channel message) OR chat_id (chat message) — not both",
   );
 
 const uploadAttachmentParams = z
@@ -53,8 +57,12 @@ const uploadAttachmentParams = z
     "Provide exactly one of content_base64 or path",
   )
   .refine(
-    (v) => (v.team_id && v.channel_id) || v.chat_id,
-    "Either team_id+channel_id (channel post) or chat_id (chat post) must be supplied",
+    (v) => {
+      const isChannel = Boolean(v.team_id && v.channel_id);
+      const isChat = Boolean(v.chat_id);
+      return isChannel !== isChat;
+    },
+    "Provide exactly one target: team_id+channel_id (channel post) OR chat_id (chat post) — not both",
   );
 
 function getMessageAttachment(

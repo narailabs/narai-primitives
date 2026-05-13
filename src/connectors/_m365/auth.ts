@@ -119,6 +119,28 @@ function buildCachePlugin(cachePath: string) {
 }
 
 /**
+ * Classify an MSAL error from `acquireTokenSilent`. Cache-invalid /
+ * interaction-required errors mean the persisted refresh token is unusable
+ * and a re-bootstrap is needed — not retriable. Other failures (network,
+ * server, throttling) are treated as retriable so callers can try again.
+ */
+function isRetriableMsalError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name === "InteractionRequiredAuthError") return false;
+  const message = (err.message ?? "").toLowerCase();
+  if (
+    message.includes("interaction_required") ||
+    message.includes("invalid_grant") ||
+    message.includes("consent_required") ||
+    message.includes("login_required") ||
+    message.includes("aadsts70008") // refresh token expired
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * Process-instance MSAL wrapper. One instance per connector client. Lazy-inits
  * `ConfidentialClientApplication` on first `getAccessToken()` call. Persists
  * the MSAL token cache to disk so refresh-token rotation survives restarts.
@@ -180,11 +202,18 @@ export class M365Auth {
 
   /**
    * Prefer `acquireTokenSilent` against the persisted cache (which holds the
-   * latest rotated refresh token). On first run / cache loss, fall back to
-   * `acquireTokenByRefreshToken` with the env-supplied bootstrap RT, which
-   * populates the cache so subsequent calls go silent.
+   * latest rotated refresh token). On first run / cache loss / expired RT,
+   * fall back to `acquireTokenByRefreshToken` with the env-supplied
+   * bootstrap RT, which populates the cache so subsequent calls go silent.
+   *
+   * If silent acquisition throws AND no bootstrap RT is configured, surface
+   * the silent error directly (preserving its message + retriable bit)
+   * rather than collapsing it into a generic "no refresh token" — that
+   * would convert transient network/server failures into non-retriable
+   * auth errors in cache-only deployments.
    */
   private async _acquire(app: ConfidentialClientApplication) {
+    let silentError: unknown = null;
     try {
       const accounts = await app.getTokenCache().getAllAccounts();
       const account = accounts[0];
@@ -195,11 +224,19 @@ export class M365Auth {
         });
         if (silent) return silent;
       }
-    } catch {
-      // Silent path failed (cache stale, account mismatch, etc.) — fall
-      // through to the bootstrap refresh-token grant.
+    } catch (err) {
+      silentError = err;
     }
     if (this._bootstrapRefreshToken === undefined) {
+      if (silentError !== null) {
+        const message =
+          silentError instanceof Error ? silentError.message : String(silentError);
+        throw new M365Error(
+          "AUTH_ERROR",
+          `Silent token acquisition failed and no MS_REFRESH_TOKEN is configured for bootstrap: ${message}`,
+          isRetriableMsalError(silentError),
+        );
+      }
       throw new M365Error(
         "AUTH_ERROR",
         "MSAL cache has no usable account and no MS_REFRESH_TOKEN was configured. " +
