@@ -143,6 +143,14 @@ interface SlackListResponse<T> extends SlackEnvelope {
     messages?: string[];
   };
   has_more?: boolean;
+  // files.list uses 1-based page pagination (count/total/page/pages),
+  // distinct from the cursor pagination on other list endpoints.
+  paging?: {
+    count?: number;
+    total?: number;
+    page?: number;
+    pages?: number;
+  };
 }
 
 interface SlackSearchPagination {

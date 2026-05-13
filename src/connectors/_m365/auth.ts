@@ -2,10 +2,11 @@
  * _m365/auth.ts — Microsoft 365 (Microsoft Graph) shared authentication.
  * Used by teams-connector and outlook-connector.
  *
- * Loads MS_TENANT_ID / MS_CLIENT_ID / MS_CLIENT_SECRET / MS_REFRESH_TOKEN
- * via the credentials resolver (env + provider chain), and wraps a single
- * `ConfidentialClientApplication` per `M365Auth` instance. Access tokens
- * are cached in memory until <5min of `expiresOn` remains.
+ * Loads MS_TENANT_ID / MS_CLIENT_ID / MS_CLIENT_SECRET (required) and
+ * MS_REFRESH_TOKEN (optional bootstrap — only consulted when the persisted
+ * cache has no usable account) via the credentials resolver. Wraps a
+ * single `ConfidentialClientApplication` per `M365Auth` instance. Access
+ * tokens are cached in memory until <5min of `expiresOn` remains.
  *
  * The MSAL token cache (account + rotated refresh token) is persisted to
  * disk via the standard `cachePlugin` pattern. Default location:
@@ -38,7 +39,13 @@ export interface M365Credentials {
   tenantId: string;
   clientId: string;
   clientSecret: string;
-  refreshToken: string;
+  /**
+   * Bootstrap refresh token. Optional — only required when the persisted
+   * MSAL cache has no usable account (first run, cache loss, secret rotation).
+   * When present, used as the seed grant; the rotated RT lives in the cache
+   * thereafter.
+   */
+  refreshToken?: string;
 }
 
 function emptyToNull(v: string | null | undefined): string | null {
@@ -58,8 +65,17 @@ export async function loadM365Credentials(): Promise<M365Credentials | null> {
   const refreshToken = emptyToNull(
     (await resolveSecret("MS_REFRESH_TOKEN")) ?? process.env["MS_REFRESH_TOKEN"] ?? null,
   );
-  if (!tenantId || !clientId || !clientSecret || !refreshToken) return null;
-  return { tenantId, clientId, clientSecret, refreshToken };
+  // Only tenant/client/secret are strictly required. MS_REFRESH_TOKEN is
+  // optional — when the persisted cache has a valid account, MSAL's silent
+  // path uses the cached (rotated) refresh token without needing the env
+  // bootstrap. Missing RT only fails if the cache is also empty/unusable.
+  if (!tenantId || !clientId || !clientSecret) return null;
+  return {
+    tenantId,
+    clientId,
+    clientSecret,
+    ...(refreshToken !== null ? { refreshToken } : {}),
+  };
 }
 
 interface CachedToken {
@@ -111,7 +127,7 @@ export class M365Auth {
   private readonly _tenantId: string;
   private readonly _clientId: string;
   private readonly _clientSecret: string;
-  private readonly _bootstrapRefreshToken: string;
+  private readonly _bootstrapRefreshToken: string | undefined;
   private readonly _cachePath: string;
   private _app: ConfidentialClientApplication | null = null;
   private _cached: CachedToken | null = null;
@@ -182,6 +198,14 @@ export class M365Auth {
     } catch {
       // Silent path failed (cache stale, account mismatch, etc.) — fall
       // through to the bootstrap refresh-token grant.
+    }
+    if (this._bootstrapRefreshToken === undefined) {
+      throw new M365Error(
+        "AUTH_ERROR",
+        "MSAL cache has no usable account and no MS_REFRESH_TOKEN was configured. " +
+          "Set MS_REFRESH_TOKEN to bootstrap, or restore the persisted cache file.",
+        false,
+      );
     }
     try {
       return await app.acquireTokenByRefreshToken({

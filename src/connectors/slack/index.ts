@@ -456,8 +456,9 @@ export function buildSlackConnector(overrides: BuildOptions = {}): Connector {
           );
           throwIfHttpError(result);
           const files = result.data.files ?? [];
+          const paging = result.data.paging;
           return {
-            total: files.length,
+            total: paging?.total ?? files.length,
             files: files.map((f) => ({
               id: f.id,
               name: f.name ?? null,
@@ -469,7 +470,9 @@ export function buildSlackConnector(overrides: BuildOptions = {}): Connector {
               created: f.created ?? null,
               permalink: f.permalink ?? null,
             })),
-            truncated: false,
+            truncated:
+              paging !== undefined &&
+              (paging.page ?? 1) < (paging.pages ?? 1),
           };
         },
       },
