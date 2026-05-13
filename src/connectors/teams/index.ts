@@ -16,84 +16,17 @@ import {
   ConnectorError,
   createConnector,
   type Connector,
-  type ErrorCode,
-  type ErrorEnvelope,
 } from "narai-primitives/toolkit";
 import { TeamsClient } from "./lib/teams_client.js";
-import { TeamsAuth, loadTeamsCredentials } from "./lib/teams_auth.js";
-import { TeamsError } from "./lib/teams_error.js";
+import {
+  M365Auth as TeamsAuth,
+  loadM365Credentials as loadTeamsCredentials,
+} from "../_m365/auth.js";
+import { makeM365MapError } from "../_m365/error.js";
 import { buildDirectoryActions } from "./actions/directory.js";
 import { buildMessagesActions } from "./actions/messages.js";
 import { buildMeetingsActions } from "./actions/meetings.js";
 import { buildAttachmentsActions } from "./actions/attachments.js";
-
-// ── Error-code translation: Graph code → toolkit canonical ErrorCode ───────
-
-const GRAPH_CODE_MAP: Record<string, ErrorCode> = {
-  // Authentication / authorization
-  InvalidAuthenticationToken: "AUTH_ERROR",
-  UnauthenticatedRequest: "AUTH_ERROR",
-  Authorization_IdentityNotFound: "AUTH_ERROR",
-  Forbidden: "AUTH_ERROR",
-  AccessDenied: "AUTH_ERROR",
-  Authorization_RequestDenied: "AUTH_ERROR",
-  AUTH_ERROR: "AUTH_ERROR",
-  // Not found
-  NotFound: "NOT_FOUND",
-  itemNotFound: "NOT_FOUND",
-  Request_ResourceNotFound: "NOT_FOUND",
-  ResourceNotFound: "NOT_FOUND",
-  // Rate-limit
-  TooManyRequests: "RATE_LIMITED",
-  activityLimitReached: "RATE_LIMITED",
-  // Validation
-  BadRequest: "VALIDATION_ERROR",
-  invalidRequest: "VALIDATION_ERROR",
-  Request_BadRequest: "VALIDATION_ERROR",
-  VALIDATION_ERROR: "VALIDATION_ERROR",
-  // 5xx / availability
-  ServiceNotAvailable: "CONNECTION_ERROR",
-  ServiceUnavailable: "CONNECTION_ERROR",
-  InternalServerError: "CONNECTION_ERROR",
-  generalException: "CONNECTION_ERROR",
-  UnknownError: "CONNECTION_ERROR",
-  NetworkError: "CONNECTION_ERROR",
-  // Timeout
-  timeout: "TIMEOUT",
-  Timeout: "TIMEOUT",
-  gatewayTimeout: "TIMEOUT",
-  // Config
-  CONFIG_ERROR: "CONFIG_ERROR",
-};
-
-function mapByHttpStatus(status: number | undefined): ErrorCode {
-  if (status === undefined) return "CONNECTION_ERROR";
-  if (status === 401 || status === 403) return "AUTH_ERROR";
-  if (status === 404) return "NOT_FOUND";
-  if (status === 408 || status === 504) return "TIMEOUT";
-  if (status === 429) return "RATE_LIMITED";
-  if (status >= 400 && status < 500) return "VALIDATION_ERROR";
-  if (status >= 500) return "CONNECTION_ERROR";
-  return "CONNECTION_ERROR";
-}
-
-const RETRIABLE: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
-  "RATE_LIMITED",
-  "TIMEOUT",
-  "CONNECTION_ERROR",
-]);
-
-function customMapError(err: unknown, _action: string): Partial<ErrorEnvelope> | undefined {
-  if (err instanceof TeamsError || err instanceof ConnectorError) {
-    const mapped = GRAPH_CODE_MAP[err.code] ?? mapByHttpStatus(err.httpStatus);
-    return {
-      error_code: mapped,
-      message: err.message,
-      retriable: err.retriable || RETRIABLE.has(mapped),
-    };
-  }
-  return undefined;
-}
 
 // ── Factory ────────────────────────────────────────────────────────────────
 
@@ -148,7 +81,7 @@ export function buildTeamsConnector(overrides: BuildOptions = {}): Connector {
       ...buildMeetingsActions(),
       ...buildAttachmentsActions(),
     },
-    mapError: customMapError,
+    mapError: makeM365MapError(),
   });
 }
 
@@ -163,5 +96,9 @@ export {
   type TeamsClientOptions,
   type TeamsResult,
 } from "./lib/teams_client.js";
-export { TeamsAuth, loadTeamsCredentials, type TeamsCredentials } from "./lib/teams_auth.js";
-export { TeamsError } from "./lib/teams_error.js";
+export {
+  M365Auth as TeamsAuth,
+  loadM365Credentials as loadTeamsCredentials,
+  type M365Credentials as TeamsCredentials,
+} from "../_m365/auth.js";
+export { M365Error as TeamsError } from "../_m365/error.js";

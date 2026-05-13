@@ -1,5 +1,6 @@
 /**
- * markdown_to_html.ts — minimal markdown→HTML converter for Teams messages.
+ * markdown_to_html.ts — minimal markdown→HTML converter for Microsoft 365
+ * (Teams chat messages, Outlook mail bodies). Shared by both connectors.
  *
  * Supported syntax (intentionally tiny; no new dependency):
  *   - Paragraphs (`\n\n+` separated, wrapped in `<p>...</p>`)

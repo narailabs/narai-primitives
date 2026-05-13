@@ -11,7 +11,7 @@
 import type { ActionSpec } from "narai-primitives/toolkit";
 import { z } from "zod";
 import type { TeamsClient } from "../lib/teams_client.js";
-import { markdownToHtml } from "../lib/markdown_to_html.js";
+import { markdownToHtml } from "../../_m365/markdown_to_html.js";
 
 export type TeamsActions = Record<string, ActionSpec<any, TeamsClient>>;
 

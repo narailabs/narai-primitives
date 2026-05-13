@@ -24,8 +24,6 @@ import {
   sanitizeLabel,
   throwIfHttpError,
   type Connector,
-  type ErrorCode,
-  type ErrorEnvelope,
 } from "narai-primitives/toolkit";
 import { z } from "zod";
 import {
@@ -34,81 +32,12 @@ import {
   type GraphMessageAttachment,
   type GraphRecipient,
 } from "./lib/outlook_client.js";
-import { loadOutlookCredentials, OutlookAuth } from "./lib/outlook_auth.js";
-import { OutlookError } from "./lib/outlook_error.js";
-import { markdownToHtml } from "./lib/markdown_to_html.js";
-
-// ── Error-code translation: Graph code → toolkit canonical ErrorCode ─────────
-
-const GRAPH_CODE_MAP: Record<string, ErrorCode> = {
-  // Authentication / authorization
-  InvalidAuthenticationToken: "AUTH_ERROR",
-  UnauthenticatedRequest: "AUTH_ERROR",
-  Authorization_IdentityNotFound: "AUTH_ERROR",
-  Forbidden: "AUTH_ERROR",
-  AccessDenied: "AUTH_ERROR",
-  ErrorAccessDenied: "AUTH_ERROR",
-  Authorization_RequestDenied: "AUTH_ERROR",
-  AUTH_ERROR: "AUTH_ERROR",
-  // Not found
-  NotFound: "NOT_FOUND",
-  itemNotFound: "NOT_FOUND",
-  ErrorItemNotFound: "NOT_FOUND",
-  Request_ResourceNotFound: "NOT_FOUND",
-  ResourceNotFound: "NOT_FOUND",
-  // Rate-limit
-  TooManyRequests: "RATE_LIMITED",
-  activityLimitReached: "RATE_LIMITED",
-  ApplicationThrottled: "RATE_LIMITED",
-  // Validation
-  BadRequest: "VALIDATION_ERROR",
-  invalidRequest: "VALIDATION_ERROR",
-  Request_BadRequest: "VALIDATION_ERROR",
-  ErrorInvalidIdMalformed: "VALIDATION_ERROR",
-  VALIDATION_ERROR: "VALIDATION_ERROR",
-  // 5xx / availability
-  ServiceNotAvailable: "CONNECTION_ERROR",
-  ServiceUnavailable: "CONNECTION_ERROR",
-  InternalServerError: "CONNECTION_ERROR",
-  generalException: "CONNECTION_ERROR",
-  UnknownError: "CONNECTION_ERROR",
-  NetworkError: "CONNECTION_ERROR",
-  // Timeout
-  timeout: "TIMEOUT",
-  Timeout: "TIMEOUT",
-  gatewayTimeout: "TIMEOUT",
-  // Config
-  CONFIG_ERROR: "CONFIG_ERROR",
-};
-
-function mapByHttpStatus(status: number | undefined): ErrorCode {
-  if (status === undefined) return "CONNECTION_ERROR";
-  if (status === 401 || status === 403) return "AUTH_ERROR";
-  if (status === 404) return "NOT_FOUND";
-  if (status === 408 || status === 504) return "TIMEOUT";
-  if (status === 429) return "RATE_LIMITED";
-  if (status >= 400 && status < 500) return "VALIDATION_ERROR";
-  if (status >= 500) return "CONNECTION_ERROR";
-  return "CONNECTION_ERROR";
-}
-
-const RETRIABLE: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
-  "RATE_LIMITED",
-  "TIMEOUT",
-  "CONNECTION_ERROR",
-]);
-
-function customMapError(err: unknown, _action: string): Partial<ErrorEnvelope> | undefined {
-  if (err instanceof OutlookError || err instanceof ConnectorError) {
-    const mapped = GRAPH_CODE_MAP[err.code] ?? mapByHttpStatus(err.httpStatus);
-    return {
-      error_code: mapped,
-      message: err.message,
-      retriable: err.retriable || RETRIABLE.has(mapped),
-    };
-  }
-  return undefined;
-}
+import {
+  M365Auth as OutlookAuth,
+  loadM365Credentials as loadOutlookCredentials,
+} from "../_m365/auth.js";
+import { makeM365MapError } from "../_m365/error.js";
+import { markdownToHtml } from "../_m365/markdown_to_html.js";
 
 // ── Param schemas ────────────────────────────────────────────────────────────
 
@@ -615,7 +544,7 @@ export function buildOutlookConnector(overrides: BuildOptions = {}): Connector {
         },
       },
     },
-    mapError: customMapError,
+    mapError: makeM365MapError(),
   });
 }
 
@@ -631,8 +560,8 @@ export {
   type OutlookResult,
 } from "./lib/outlook_client.js";
 export {
-  OutlookAuth,
-  loadOutlookCredentials,
-  type OutlookCredentials,
-} from "./lib/outlook_auth.js";
-export { OutlookError } from "./lib/outlook_error.js";
+  M365Auth as OutlookAuth,
+  loadM365Credentials as loadOutlookCredentials,
+  type M365Credentials as OutlookCredentials,
+} from "../_m365/auth.js";
+export { M365Error as OutlookError } from "../_m365/error.js";

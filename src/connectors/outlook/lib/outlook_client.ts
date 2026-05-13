@@ -17,8 +17,8 @@
  * `{ ok: true, data: { accepted: true }, status: 202 }` — these endpoints
  * intentionally return no body.
  */
-import { OutlookAuth } from "./outlook_auth.js";
-import { OutlookError } from "./outlook_error.js";
+import { M365Auth as OutlookAuth } from "../../_m365/auth.js";
+import { M365Error as OutlookError } from "../../_m365/error.js";
 
 const GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0";
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;

@@ -1,9 +1,10 @@
 /**
- * teams_auth.ts — Microsoft Graph delegated OAuth, refresh-token flow.
+ * _m365/auth.ts — Microsoft 365 (Microsoft Graph) shared authentication.
+ * Used by teams-connector and outlook-connector.
  *
  * Loads MS_TENANT_ID / MS_CLIENT_ID / MS_CLIENT_SECRET / MS_REFRESH_TOKEN
  * via the credentials resolver (env + provider chain), and wraps a single
- * `ConfidentialClientApplication` per `TeamsAuth` instance. Access tokens
+ * `ConfidentialClientApplication` per `M365Auth` instance. Access tokens
  * are cached in memory until <5min of their `expiresOn` remains, then a
  * refresh-token grant is issued against `https://graph.microsoft.com/.default`
  * (the `.default` scope tells Entra to use the app registration's
@@ -11,18 +12,18 @@
  *
  * MSAL rotates the refresh token internally inside its `TokenCache`. We do
  * not persist that cache to disk for v0 — the in-memory cache lives as long
- * as the `TeamsAuth` instance does. On restart, the env-supplied
+ * as the `M365Auth` instance does. On restart, the env-supplied
  * MS_REFRESH_TOKEN is used again. Operators rotating refresh tokens out of
  * band must update the env var.
  */
 import { ConfidentialClientApplication } from "@azure/msal-node";
 import { resolveSecret } from "narai-primitives/credentials";
-import { TeamsError } from "./teams_error.js";
+import { M365Error } from "./error.js";
 
 const GRAPH_DEFAULT_SCOPE = "https://graph.microsoft.com/.default";
 const EXPIRY_SAFETY_MARGIN_MS = 5 * 60 * 1000; // 5 minutes
 
-export interface TeamsCredentials {
+export interface M365Credentials {
   tenantId: string;
   clientId: string;
   clientSecret: string;
@@ -33,7 +34,7 @@ function emptyToNull(v: string | null | undefined): string | null {
   return v == null || v === "" ? null : v;
 }
 
-export async function loadTeamsCredentials(): Promise<TeamsCredentials | null> {
+export async function loadM365Credentials(): Promise<M365Credentials | null> {
   const tenantId = emptyToNull(
     (await resolveSecret("MS_TENANT_ID")) ?? process.env["MS_TENANT_ID"] ?? null,
   );
@@ -56,10 +57,10 @@ interface CachedToken {
 }
 
 /**
- * Process-instance MSAL wrapper. One instance per `TeamsClient`. Lazy-inits
+ * Process-instance MSAL wrapper. One instance per connector client. Lazy-inits
  * `ConfidentialClientApplication` on first `getAccessToken()` call.
  */
-export class TeamsAuth {
+export class M365Auth {
   private readonly _tenantId: string;
   private readonly _clientId: string;
   private readonly _clientSecret: string;
@@ -67,7 +68,7 @@ export class TeamsAuth {
   private _app: ConfidentialClientApplication | null = null;
   private _cached: CachedToken | null = null;
 
-  constructor(creds: TeamsCredentials) {
+  constructor(creds: M365Credentials) {
     this._tenantId = creds.tenantId;
     this._clientId = creds.clientId;
     this._clientSecret = creds.clientSecret;
@@ -101,14 +102,14 @@ export class TeamsAuth {
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      throw new TeamsError(
+      throw new M365Error(
         "AUTH_ERROR",
         `Failed to acquire access token: ${message}`,
         false,
       );
     }
     if (!result || !result.accessToken) {
-      throw new TeamsError(
+      throw new M365Error(
         "AUTH_ERROR",
         "Failed to acquire access token: empty response",
         false,
@@ -116,7 +117,7 @@ export class TeamsAuth {
     }
     const expiresAt = result.expiresOn?.getTime() ?? Date.now();
     if (this._isExpiringSoon(expiresAt)) {
-      throw new TeamsError(
+      throw new M365Error(
         "AUTH_ERROR",
         "Failed to acquire access token: token expired immediately",
         false,

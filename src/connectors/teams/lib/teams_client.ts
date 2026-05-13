@@ -13,8 +13,8 @@
  * client can rely on `throwIfHttpError` for the same error-throwing
  * contract as `HttpClient`-backed clients.
  */
-import { TeamsAuth } from "./teams_auth.js";
-import { TeamsError } from "./teams_error.js";
+import { M365Auth as TeamsAuth } from "../../_m365/auth.js";
+import { M365Error as TeamsError } from "../../_m365/error.js";
 
 const GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0";
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
