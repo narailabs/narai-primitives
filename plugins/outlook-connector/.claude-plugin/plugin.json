@@ -1,0 +1,6 @@
+{
+  "name": "outlook-connector-plugin",
+  "version": "1.0.0",
+  "description": "Outlook (Microsoft 365) connector: list/search/send/reply/move email + attachments via Microsoft Graph. Policy-gated.",
+  "author": "narailabs"
+}
