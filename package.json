@@ -69,6 +69,10 @@
     "./linear": {
       "types": "./dist/connectors/linear/index.d.ts",
       "import": "./dist/connectors/linear/index.js"
+    },
+    "./gitlab": {
+      "types": "./dist/connectors/gitlab/index.d.ts",
+      "import": "./dist/connectors/gitlab/index.js"
     }
   },
   "bin": {
@@ -81,6 +85,7 @@
     "jira-agent-connector": "./dist/connectors/jira/cli.js",
     "notion-agent-connector": "./dist/connectors/notion/cli.js",
     "linear-agent-connector": "./dist/connectors/linear/cli.js",
+    "gitlab-agent-connector": "./dist/connectors/gitlab/cli.js",
     "usage-report": "./dist/toolkit/cli/usage-report.js"
   },
   "engines": {
