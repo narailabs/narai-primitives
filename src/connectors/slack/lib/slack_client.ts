@@ -15,7 +15,8 @@
  *   picks the right token per method and surfaces a `CONFIG_ERROR` when
  *   the user token is missing.
  * - `files.getUploadURLExternal` returns an absolute `upload_url`; raw
- *   bytes are PUT there outside the toolkit's retry loop via `rawPut`.
+ *   bytes are POSTed there outside the toolkit's retry loop via
+ *   `uploadBytes` (Slack's external upload service rejects PUT).
  */
 import {
   HttpClient,
@@ -453,13 +454,14 @@ export class SlackClient {
   }
 
   /**
-   * Raw PUT of bytes to the absolute `upload_url` returned by
-   * `files.getUploadURLExternal`. Slack hosts this on a separate domain,
-   * so it doesn't go through the API base URL or the shared retry loop —
-   * we use the injected fetch impl directly. Validates the URL scheme
-   * via the toolkit's `validateUrl` before making the call.
+   * Raw upload of bytes to the absolute `upload_url` returned by
+   * `files.getUploadURLExternal`. Uses POST — Slack's external upload
+   * service rejects PUT (responds 405). Slack hosts this on a separate
+   * domain, so it doesn't go through the API base URL or the shared
+   * retry loop — we use the injected fetch impl directly. Validates the
+   * URL scheme via the toolkit's `validateUrl` before making the call.
    */
-  public async rawPut(
+  public async uploadBytes(
     url: string,
     bytes: Uint8Array,
     contentType?: string,

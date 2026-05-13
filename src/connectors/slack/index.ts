@@ -725,7 +725,7 @@ export function buildSlackConnector(overrides: BuildOptions = {}): Connector {
               true,
             );
           }
-          await ctx.sdk.rawPut(uploadUrl, bytes, p.mime_type);
+          await ctx.sdk.uploadBytes(uploadUrl, bytes, p.mime_type);
           const step2 = await ctx.sdk.completeUploadExternal(
             fileId,
             filename,

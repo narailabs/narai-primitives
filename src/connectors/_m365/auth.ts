@@ -5,18 +5,29 @@
  * Loads MS_TENANT_ID / MS_CLIENT_ID / MS_CLIENT_SECRET / MS_REFRESH_TOKEN
  * via the credentials resolver (env + provider chain), and wraps a single
  * `ConfidentialClientApplication` per `M365Auth` instance. Access tokens
- * are cached in memory until <5min of their `expiresOn` remains, then a
- * refresh-token grant is issued against `https://graph.microsoft.com/.default`
- * (the `.default` scope tells Entra to use the app registration's
- * pre-consented delegated scopes).
+ * are cached in memory until <5min of `expiresOn` remains.
  *
- * MSAL rotates the refresh token internally inside its `TokenCache`. We do
- * not persist that cache to disk for v0 — the in-memory cache lives as long
- * as the `M365Auth` instance does. On restart, the env-supplied
- * MS_REFRESH_TOKEN is used again. Operators rotating refresh tokens out of
- * band must update the env var.
+ * The MSAL token cache (account + rotated refresh token) is persisted to
+ * disk via the standard `cachePlugin` pattern. Default location:
+ * `~/.connectors/m365/cache.json` (override with `M365_CACHE_PATH`). File
+ * mode 0600, parent dir 0700. Atomic writes (tmpfile + rename).
+ *
+ * On startup, MSAL deserializes the cache, finds the cached account, and
+ * uses `acquireTokenSilent` — the cached (already-rotated) refresh token
+ * is used internally. The env-supplied `MS_REFRESH_TOKEN` is only consulted
+ * on first run (or after cache loss) as the bootstrap grant.
+ *
+ * Single-process assumption — no file locking. Concurrent processes
+ * writing to the same cache get last-writer-wins on rotation; acceptable
+ * for v0 since Entra accepts the previous RT for ~24h after rotation.
  */
-import { ConfidentialClientApplication } from "@azure/msal-node";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import {
+  ConfidentialClientApplication,
+  type TokenCacheContext,
+} from "@azure/msal-node";
 import { resolveSecret } from "narai-primitives/credentials";
 import { M365Error } from "./error.js";
 
@@ -56,23 +67,61 @@ interface CachedToken {
   expiresAt: number; // epoch millis
 }
 
+function defaultCachePath(): string {
+  return (
+    process.env["M365_CACHE_PATH"] ??
+    path.join(os.homedir(), ".connectors", "m365", "cache.json")
+  );
+}
+
+function buildCachePlugin(cachePath: string) {
+  return {
+    beforeCacheAccess: async (ctx: TokenCacheContext): Promise<void> => {
+      try {
+        const data = await fs.promises.readFile(cachePath, "utf-8");
+        ctx.tokenCache.deserialize(data);
+      } catch (err) {
+        // Missing file on first run is expected — proceed with empty cache.
+        // Other errors (perms, corruption) also fall through to empty cache;
+        // the bootstrap refresh-token grant will re-seed it on next acquire.
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+          // intentionally swallow — see comment above
+        }
+      }
+    },
+    afterCacheAccess: async (ctx: TokenCacheContext): Promise<void> => {
+      if (!ctx.cacheHasChanged) return;
+      const dir = path.dirname(cachePath);
+      await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
+      const tmp = `${cachePath}.${process.pid}.tmp`;
+      await fs.promises.writeFile(tmp, ctx.tokenCache.serialize(), {
+        mode: 0o600,
+      });
+      await fs.promises.rename(tmp, cachePath);
+    },
+  };
+}
+
 /**
  * Process-instance MSAL wrapper. One instance per connector client. Lazy-inits
- * `ConfidentialClientApplication` on first `getAccessToken()` call.
+ * `ConfidentialClientApplication` on first `getAccessToken()` call. Persists
+ * the MSAL token cache to disk so refresh-token rotation survives restarts.
  */
 export class M365Auth {
   private readonly _tenantId: string;
   private readonly _clientId: string;
   private readonly _clientSecret: string;
-  private _refreshToken: string;
+  private readonly _bootstrapRefreshToken: string;
+  private readonly _cachePath: string;
   private _app: ConfidentialClientApplication | null = null;
   private _cached: CachedToken | null = null;
 
-  constructor(creds: M365Credentials) {
+  constructor(creds: M365Credentials, opts: { cachePath?: string } = {}) {
     this._tenantId = creds.tenantId;
     this._clientId = creds.clientId;
     this._clientSecret = creds.clientSecret;
-    this._refreshToken = creds.refreshToken;
+    this._bootstrapRefreshToken = creds.refreshToken;
+    this._cachePath = opts.cachePath ?? defaultCachePath();
   }
 
   /** Tenant id reachable from the factory's `scope()` callback. */
@@ -93,21 +142,7 @@ export class M365Auth {
       return this._cached.accessToken;
     }
     const app = this._getApp();
-    let result;
-    try {
-      result = await app.acquireTokenByRefreshToken({
-        refreshToken: this._refreshToken,
-        scopes: [GRAPH_DEFAULT_SCOPE],
-        forceCache: true,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new M365Error(
-        "AUTH_ERROR",
-        `Failed to acquire access token: ${message}`,
-        false,
-      );
-    }
+    const result = await this._acquire(app);
     if (!result || !result.accessToken) {
       throw new M365Error(
         "AUTH_ERROR",
@@ -123,12 +158,45 @@ export class M365Auth {
         false,
       );
     }
-    // MSAL rotates the refresh token internally in its TokenCache; attempt
-    // to extract the new RT from the serialized cache and update our copy
-    // so subsequent in-memory calls always use the freshest one.
-    this._captureRotatedRefreshToken();
     this._cached = { accessToken: result.accessToken, expiresAt };
     return result.accessToken;
+  }
+
+  /**
+   * Prefer `acquireTokenSilent` against the persisted cache (which holds the
+   * latest rotated refresh token). On first run / cache loss, fall back to
+   * `acquireTokenByRefreshToken` with the env-supplied bootstrap RT, which
+   * populates the cache so subsequent calls go silent.
+   */
+  private async _acquire(app: ConfidentialClientApplication) {
+    try {
+      const accounts = await app.getTokenCache().getAllAccounts();
+      const account = accounts[0];
+      if (account !== undefined) {
+        const silent = await app.acquireTokenSilent({
+          account,
+          scopes: [GRAPH_DEFAULT_SCOPE],
+        });
+        if (silent) return silent;
+      }
+    } catch {
+      // Silent path failed (cache stale, account mismatch, etc.) — fall
+      // through to the bootstrap refresh-token grant.
+    }
+    try {
+      return await app.acquireTokenByRefreshToken({
+        refreshToken: this._bootstrapRefreshToken,
+        scopes: [GRAPH_DEFAULT_SCOPE],
+        forceCache: true,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new M365Error(
+        "AUTH_ERROR",
+        `Failed to acquire access token: ${message}`,
+        false,
+      );
+    }
   }
 
   private _getApp(): ConfidentialClientApplication {
@@ -139,39 +207,12 @@ export class M365Auth {
         authority: `https://login.microsoftonline.com/${this._tenantId}`,
         clientSecret: this._clientSecret,
       },
+      cache: { cachePlugin: buildCachePlugin(this._cachePath) },
     });
     return this._app;
   }
 
   private _isExpiringSoon(expiresAt: number): boolean {
     return expiresAt - Date.now() < EXPIRY_SAFETY_MARGIN_MS;
-  }
-
-  /**
-   * Best-effort: read the MSAL in-memory cache, find the most recently
-   * stored refresh-token entry, and update `_refreshToken`. If anything
-   * fails we silently keep the existing RT — the next call will still work
-   * because MSAL itself uses the cached RT internally.
-   */
-  private _captureRotatedRefreshToken(): void {
-    if (this._app === null) return;
-    try {
-      const serialized = this._app.getTokenCache().serialize();
-      const parsed = JSON.parse(serialized) as {
-        RefreshToken?: Record<string, { secret?: string }>;
-      };
-      const rts = parsed.RefreshToken;
-      if (!rts) return;
-      // There should be at most one RT per principal in our flow. Pick the
-      // first secret we see.
-      for (const entry of Object.values(rts)) {
-        if (entry && typeof entry.secret === "string" && entry.secret.length > 0) {
-          this._refreshToken = entry.secret;
-          return;
-        }
-      }
-    } catch {
-      // Cache shape may evolve across MSAL versions — never let this throw.
-    }
   }
 }
