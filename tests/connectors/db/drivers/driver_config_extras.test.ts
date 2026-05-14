@@ -155,10 +155,10 @@ describe("MysqlDriver — connect config branches", () => {
     return p;
   }
 
-  it("ssl=true => { rejectUnauthorized: false }", async () => {
+  it("ssl=true => { rejectUnauthorized: true }", async () => {
     const drv = new MysqlDriver();
     await drv.connect({ database: "app", ssl: true });
-    expect(latest().config["ssl"]).toEqual({ rejectUnauthorized: false });
+    expect(latest().config["ssl"]).toEqual({ rejectUnauthorized: true });
   });
 
   it("ssl=object passes through", async () => {
@@ -232,10 +232,10 @@ describe("PostgresDriver — connect config branches", () => {
     return p;
   }
 
-  it("ssl=true => { rejectUnauthorized: false }", async () => {
+  it("ssl=true => { rejectUnauthorized: true }", async () => {
     const drv = new PostgresDriver();
     await drv.connect({ database: "app", ssl: true });
-    expect(latest().config["ssl"]).toEqual({ rejectUnauthorized: false });
+    expect(latest().config["ssl"]).toEqual({ rejectUnauthorized: true });
   });
 
   it("ssl=object passes through", async () => {

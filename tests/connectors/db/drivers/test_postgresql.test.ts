@@ -96,7 +96,7 @@ describe("wiki_db.drivers.postgresql (unit)", () => {
     expect(pool.config["database"]).toBe("app");
     expect(pool.config["user"]).toBe("svc");
     expect(pool.config["password"]).toBe("secret");
-    expect(pool.config["ssl"]).toEqual({ rejectUnauthorized: false });
+    expect(pool.config["ssl"]).toEqual({ rejectUnauthorized: true });
     expect(handle.schema).toBe("public");
     expect(handle.client).toBe(lastClient());
     expect(pool.connectSpy).toHaveBeenCalledTimes(1);

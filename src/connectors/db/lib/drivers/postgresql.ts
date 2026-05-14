@@ -113,7 +113,7 @@ export class PostgresDriver extends DatabaseDriver {
           : undefined;
       const ssl =
         envConfig["ssl"] === true
-          ? { rejectUnauthorized: false }
+          ? { rejectUnauthorized: true }
           : typeof envConfig["ssl"] === "object" && envConfig["ssl"] !== null
             ? (envConfig["ssl"] as Record<string, unknown>)
             : undefined;
