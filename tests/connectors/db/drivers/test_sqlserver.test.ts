@@ -243,6 +243,7 @@ describe("wiki_db.drivers.sqlserver (unit)", () => {
         return {
           recordset: [
             {
+              table_name: "products",
               column_name: "id",
               data_type: "int",
               is_nullable: "NO",
@@ -250,6 +251,7 @@ describe("wiki_db.drivers.sqlserver (unit)", () => {
               is_pk: 1,
             },
             {
+              table_name: "products",
               column_name: "name",
               data_type: "nvarchar",
               is_nullable: "YES",
