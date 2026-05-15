@@ -128,14 +128,22 @@ export class SQLiteDriver extends DatabaseDriver {
         cursor = db.prepare(baseQuery).all() as Array<{ name: string }>;
       }
 
-      const tables: Table[] = [];
-      for (const row of cursor) {
-        const tableName = row.name;
-        // PRAGMA table_info returns rows shaped like:
-        //   {cid, name, type, notnull, dflt_value, pk}
-        const colCursor = db
-          .prepare(`PRAGMA table_info(${tableName})`)
-          .all() as Array<{
+      const tableNames: string[] = cursor.map((row) => row.name);
+      if (tableNames.length === 0) return [];
+
+      // G-SCHEMA-BATCH: Use a single query joining sqlite_master and pragma_table_info
+      // to avoid N+1 queries when fetching column metadata for many tables.
+      let colsQuery =
+        "SELECT m.name as table_name, p.cid, p.name, p.type, p.[notnull], p.dflt_value, p.pk " +
+        "FROM sqlite_master m " +
+        "JOIN pragma_table_info(m.name) p " +
+        "WHERE m.type='table' AND m.name NOT LIKE 'sqlite_%'";
+      let colsCursor;
+
+      if (tableFilter !== null && tableFilter !== undefined) {
+        colsQuery += " AND m.name LIKE ? ORDER BY m.name, p.cid";
+        colsCursor = db.prepare(colsQuery).all(tableFilter) as Array<{
+          table_name: string;
           cid: number;
           name: string;
           type: string;
@@ -143,24 +151,50 @@ export class SQLiteDriver extends DatabaseDriver {
           dflt_value: string | null;
           pk: number;
         }>;
-        const columns: Column[] = [];
-        for (const colRow of colCursor) {
-          columns.push(
-            new Column({
-              name: colRow.name,
-              data_type: colRow.type,
-              nullable: !colRow.notnull,
-              is_primary_key: Boolean(colRow.pk),
-              default: colRow.dflt_value,
-            }),
-          );
+      } else {
+        colsQuery += " ORDER BY m.name, p.cid";
+        colsCursor = db.prepare(colsQuery).all() as Array<{
+          table_name: string;
+          cid: number;
+          name: string;
+          type: string;
+          notnull: number;
+          dflt_value: string | null;
+          pk: number;
+        }>;
+      }
+
+      const colsByTable = new Map<string, Column[]>();
+      for (const colRow of colsCursor) {
+        const t = colRow.table_name;
+        let list = colsByTable.get(t);
+        if (list === undefined) {
+          list = [];
+          colsByTable.set(t, list);
         }
+        list.push(
+          new Column({
+            name: colRow.name,
+            data_type: colRow.type,
+            nullable: !colRow.notnull,
+            is_primary_key: Boolean(colRow.pk),
+            default: colRow.dflt_value,
+          }),
+        );
+      }
+
+      const tables: Table[] = [];
+      for (const tableName of tableNames) {
         tables.push(
-          new Table({ name: tableName, schema: schemaName, columns }),
+          new Table({
+            name: tableName,
+            schema: schemaName,
+            columns: colsByTable.get(tableName) ?? [],
+          }),
         );
       }
       return tables;
-    } catch {
+    } catch (e) {
       return [];
     }
   }
