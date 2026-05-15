@@ -222,6 +222,15 @@ describe("wiki_db.audit", () => {
     );
   });
 
+  it("scrubSqlSecrets masks literals containing escaped quotes", () => {
+    expect(
+      scrubSqlSecrets("SELECT * FROM u WHERE password = 'my\\'escaped\\'password' AND id = 1"),
+    ).toBe("SELECT * FROM u WHERE password='[REDACTED]' AND id = 1");
+    expect(
+      scrubSqlSecrets('SELECT * FROM u WHERE password = "my\\"escaped\\"password" AND id = 1'),
+    ).toBe('SELECT * FROM u WHERE password="[REDACTED]" AND id = 1');
+  });
+
   it("scrubSqlSecrets leaves non-credential literals alone", () => {
     expect(scrubSqlSecrets("SELECT name FROM u WHERE id = 1")).toBe(
       "SELECT name FROM u WHERE id = 1",

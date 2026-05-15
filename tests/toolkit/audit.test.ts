@@ -34,6 +34,15 @@ describe("scrubSecrets", () => {
     expect(scrubbed).toMatch(/password='\[REDACTED\]'/);
   });
 
+  it("redacts strings containing escaped quotes", () => {
+    expect(scrubSecrets("SET password='hunter\\'s'")).toBe(
+      "SET password='[REDACTED]'",
+    );
+    expect(scrubSecrets('SET api_key="abc\\"def"')).toBe(
+      'SET api_key="[REDACTED]"',
+    );
+  });
+
   it("leaves unrelated strings untouched", () => {
     const raw = "SELECT * FROM users WHERE id = 42";
     expect(scrubSecrets(raw)).toBe(raw);
