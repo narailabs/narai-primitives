@@ -243,6 +243,7 @@ describe("wiki_db.drivers.sqlserver (unit)", () => {
         return {
           recordset: [
             {
+              table_name: "products",
               column_name: "id",
               data_type: "int",
               is_nullable: "NO",
@@ -250,6 +251,7 @@ describe("wiki_db.drivers.sqlserver (unit)", () => {
               is_pk: 1,
             },
             {
+              table_name: "products",
               column_name: "name",
               data_type: "nvarchar",
               is_nullable: "YES",
@@ -267,6 +269,199 @@ describe("wiki_db.drivers.sqlserver (unit)", () => {
     expect(tables).toHaveLength(1);
     expect(tables[0]!.name).toBe("products");
     expect(tables[0]!.columns[0]!.is_primary_key).toBe(true);
+  });
+
+  it("getSchemaAsync batches multiple tables into one IN-list query", async () => {
+    const drv = new SqlServerDriver();
+    const handle = await drv.connect({ database: "app" });
+    const pool = latest();
+    let columnsCallCount = 0;
+    let capturedColumnsSql = "";
+    pool.req.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("INFORMATION_SCHEMA.TABLES")) {
+        return {
+          recordset: [{ table_name: "products" }, { table_name: "orders" }],
+          recordsets: [[]],
+          rowsAffected: [2],
+        };
+      }
+      if (sql.includes("INFORMATION_SCHEMA.COLUMNS")) {
+        columnsCallCount++;
+        capturedColumnsSql = sql;
+        return {
+          recordset: [
+            {
+              table_name: "products",
+              column_name: "id",
+              data_type: "int",
+              is_nullable: "NO",
+              column_default: null,
+              is_pk: 1,
+            },
+            {
+              table_name: "products",
+              column_name: "name",
+              data_type: "nvarchar",
+              is_nullable: "YES",
+              column_default: null,
+              is_pk: 0,
+            },
+            {
+              table_name: "orders",
+              column_name: "id",
+              data_type: "int",
+              is_nullable: "NO",
+              column_default: null,
+              is_pk: 1,
+            },
+            {
+              table_name: "orders",
+              column_name: "total",
+              data_type: "decimal",
+              is_nullable: "YES",
+              column_default: null,
+              is_pk: 0,
+            },
+          ],
+          recordsets: [[]],
+          rowsAffected: [4],
+        };
+      }
+      return { recordset: [], recordsets: [[]], rowsAffected: [0] };
+    });
+
+    const tables = await drv.getSchemaAsync(handle, "dbo");
+
+    // G-SCHEMA-BATCH: a single IN-list query, not N per-table queries.
+    expect(columnsCallCount).toBe(1);
+    expect(capturedColumnsSql).toContain("IN (@table0, @table1)");
+    expect(pool.req.input).toHaveBeenCalledWith("table0", "products");
+    expect(pool.req.input).toHaveBeenCalledWith("table1", "orders");
+    expect(pool.req.input).toHaveBeenCalledWith("schema", "dbo");
+
+    // Columns are bucketed under their owning table; emit order matches
+    // INFORMATION_SCHEMA.TABLES result (not column-result order).
+    expect(tables).toHaveLength(2);
+    expect(tables[0]!.name).toBe("products");
+    expect(tables[0]!.columns.map((c) => c.name)).toEqual(["id", "name"]);
+    expect(tables[0]!.columns[0]!.is_primary_key).toBe(true);
+    expect(tables[0]!.columns[1]!.is_primary_key).toBe(false);
+    expect(tables[1]!.name).toBe("orders");
+    expect(tables[1]!.columns.map((c) => c.name)).toEqual(["id", "total"]);
+  });
+
+  it("getSchemaAsync short-circuits when no tables match the schema filter", async () => {
+    const drv = new SqlServerDriver();
+    const handle = await drv.connect({ database: "app" });
+    const pool = latest();
+    let columnsCallCount = 0;
+    pool.req.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("INFORMATION_SCHEMA.TABLES")) {
+        return { recordset: [], recordsets: [[]], rowsAffected: [0] };
+      }
+      if (sql.includes("INFORMATION_SCHEMA.COLUMNS")) {
+        columnsCallCount++;
+      }
+      return { recordset: [], recordsets: [[]], rowsAffected: [0] };
+    });
+
+    const tables = await drv.getSchemaAsync(handle, "empty_schema");
+
+    expect(tables).toEqual([]);
+    // Critical: with zero tables we must NOT issue a degenerate
+    // "IN ()" query — SQL Server would reject the empty list as a
+    // syntax error, and even if it didn't, the round-trip is wasted.
+    expect(columnsCallCount).toBe(0);
+  });
+
+  it("getSchemaAsync returns a Table with empty columns when a table has no columns", async () => {
+    const drv = new SqlServerDriver();
+    const handle = await drv.connect({ database: "app" });
+    const pool = latest();
+    pool.req.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("INFORMATION_SCHEMA.TABLES")) {
+        return {
+          recordset: [{ table_name: "ghost_table" }, { table_name: "real_table" }],
+          recordsets: [[]],
+          rowsAffected: [2],
+        };
+      }
+      if (sql.includes("INFORMATION_SCHEMA.COLUMNS")) {
+        // Only real_table has any columns; ghost_table is absent from the
+        // columns recordset (e.g. a view that INFORMATION_SCHEMA.TABLES
+        // reports but whose columns the user has no permission to read).
+        return {
+          recordset: [
+            {
+              table_name: "real_table",
+              column_name: "id",
+              data_type: "int",
+              is_nullable: "NO",
+              column_default: null,
+              is_pk: 1,
+            },
+          ],
+          recordsets: [[]],
+          rowsAffected: [1],
+        };
+      }
+      return { recordset: [], recordsets: [[]], rowsAffected: [0] };
+    });
+
+    const tables = await drv.getSchemaAsync(handle, "dbo");
+    expect(tables).toHaveLength(2);
+    expect(tables[0]!.name).toBe("ghost_table");
+    expect(tables[0]!.columns).toEqual([]);
+    expect(tables[1]!.name).toBe("real_table");
+    expect(tables[1]!.columns).toHaveLength(1);
+  });
+
+  it("getSchemaAsync chunks at 1000 tables to stay under SQL Server's parameter limit", async () => {
+    const drv = new SqlServerDriver();
+    const handle = await drv.connect({ database: "app" });
+    const pool = latest();
+    // 1001 tables → expect two COLUMNS queries (1000 + 1).
+    const tableCount = 1001;
+    const tableRecords = Array.from({ length: tableCount }, (_, i) => ({
+      table_name: `t${i}`,
+    }));
+
+    const columnsSqlSeen: string[] = [];
+    pool.req.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("INFORMATION_SCHEMA.TABLES")) {
+        return {
+          recordset: tableRecords,
+          recordsets: [[]],
+          rowsAffected: [tableCount],
+        };
+      }
+      if (sql.includes("INFORMATION_SCHEMA.COLUMNS")) {
+        columnsSqlSeen.push(sql);
+        // Return one trivial column per table in this chunk so each
+        // resulting Table has a populated columns array. The chunk's
+        // table names live in the IN-list placeholders; we don't need
+        // to mirror them exactly for the assertion below.
+        return {
+          recordset: [],
+          recordsets: [[]],
+          rowsAffected: [0],
+        };
+      }
+      return { recordset: [], recordsets: [[]], rowsAffected: [0] };
+    });
+
+    const tables = await drv.getSchemaAsync(handle, "dbo");
+
+    expect(tables).toHaveLength(tableCount);
+    // Two chunks: 1000 + 1.
+    expect(columnsSqlSeen).toHaveLength(2);
+    // First chunk's SQL has @table0..@table999 (1000 placeholders).
+    expect(columnsSqlSeen[0]).toContain("@table0,");
+    expect(columnsSqlSeen[0]).toContain("@table999");
+    expect(columnsSqlSeen[0]).not.toContain("@table1000");
+    // Second chunk has just @table0 (re-numbered per chunk).
+    expect(columnsSqlSeen[1]).toContain("@table0");
+    expect(columnsSqlSeen[1]).not.toContain("@table1,");
   });
 
   it("close() is a no-op; pool stays open for other handles", async () => {

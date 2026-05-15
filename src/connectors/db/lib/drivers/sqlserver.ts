@@ -287,17 +287,33 @@ export class SqlServerDriver extends DatabaseDriver {
       const tableRes = await req.query(tableSql);
       const tables = tableRes.recordset ?? [];
 
-      const out: Table[] = [];
-      for (const row of tables) {
-        const tableName = String(
+      const tableNames: string[] = tables.map((row) =>
+        String(
           (row as Record<string, unknown>)["table_name"] ??
             (row as Record<string, unknown>)["TABLE_NAME"],
-        );
+        ),
+      );
+
+      if (tableNames.length === 0) return [];
+
+      // G-SCHEMA-BATCH: Avoid N+1 query problem by fetching column
+      // metadata for all tables in chunks of up to 1000 tables.
+      // The chunks are needed because SQL Server limits the number of
+      // parameters per query to 2100.
+      const colsByTable = new Map<string, Column[]>();
+      const chunkSize = 1000;
+
+      for (let chunkStart = 0; chunkStart < tableNames.length; chunkStart += chunkSize) {
+        const chunk = tableNames.slice(chunkStart, chunkStart + chunkSize);
+
         const colReq = handle.pool.request();
         colReq.input("schema", ns);
-        colReq.input("table", tableName);
+
+        const placeholders = chunk.map((_, i) => `@table${i}`).join(", ");
+        chunk.forEach((name, i) => colReq.input(`table${i}`, name));
+
         const colRes = await colReq.query(
-          "SELECT c.COLUMN_NAME AS column_name, c.DATA_TYPE AS data_type, " +
+          "SELECT c.TABLE_NAME AS table_name, c.COLUMN_NAME AS column_name, c.DATA_TYPE AS data_type, " +
             "c.IS_NULLABLE AS is_nullable, c.COLUMN_DEFAULT AS column_default, " +
             "CASE WHEN tc.CONSTRAINT_TYPE = 'PRIMARY KEY' THEN 1 ELSE 0 END AS is_pk " +
             "FROM INFORMATION_SCHEMA.COLUMNS c " +
@@ -307,23 +323,42 @@ export class SqlServerDriver extends DatabaseDriver {
             "LEFT JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc " +
             "  ON kcu.CONSTRAINT_NAME = tc.CONSTRAINT_NAME " +
             "  AND tc.TABLE_SCHEMA = c.TABLE_SCHEMA " +
-            "WHERE c.TABLE_SCHEMA = @schema AND c.TABLE_NAME = @table " +
-            "ORDER BY c.ORDINAL_POSITION",
+            `WHERE c.TABLE_SCHEMA = @schema AND c.TABLE_NAME IN (${placeholders}) ` +
+            "ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION",
         );
-        const columns: Column[] = (colRes.recordset ?? []).map((r) => {
+
+        for (const r of colRes.recordset ?? []) {
           const rec = r as Record<string, unknown>;
-          return new Column({
-            name: String(rec["column_name"]),
-            data_type: String(rec["data_type"]),
-            nullable: String(rec["is_nullable"]).toUpperCase() === "YES",
-            is_primary_key: Number(rec["is_pk"] ?? 0) === 1,
-            default:
-              rec["column_default"] === null || rec["column_default"] === undefined
-                ? null
-                : String(rec["column_default"]),
-          });
-        });
-        out.push(new Table({ name: tableName, schema: ns, columns }));
+          const tName = String(rec["table_name"]);
+          let list = colsByTable.get(tName);
+          if (list === undefined) {
+            list = [];
+            colsByTable.set(tName, list);
+          }
+          list.push(
+            new Column({
+              name: String(rec["column_name"]),
+              data_type: String(rec["data_type"]),
+              nullable: String(rec["is_nullable"]).toUpperCase() === "YES",
+              is_primary_key: Number(rec["is_pk"] ?? 0) === 1,
+              default:
+                rec["column_default"] === null || rec["column_default"] === undefined
+                  ? null
+                  : String(rec["column_default"]),
+            })
+          );
+        }
+      }
+
+      const out: Table[] = [];
+      for (const tableName of tableNames) {
+        out.push(
+          new Table({
+            name: tableName,
+            schema: ns,
+            columns: colsByTable.get(tableName) ?? [],
+          })
+        );
       }
       return out;
     } catch {
