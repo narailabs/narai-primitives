@@ -43,6 +43,15 @@ describe("scrubSecrets", () => {
     );
   });
 
+  it("redacts strings using SQL-standard doubled-quote escaping", () => {
+    expect(scrubSecrets("SET password='hunter''s'")).toBe(
+      "SET password='[REDACTED]'",
+    );
+    expect(scrubSecrets('SET api_key="ab""cd"')).toBe(
+      'SET api_key="[REDACTED]"',
+    );
+  });
+
   it("leaves unrelated strings untouched", () => {
     const raw = "SELECT * FROM users WHERE id = 42";
     expect(scrubSecrets(raw)).toBe(raw);
