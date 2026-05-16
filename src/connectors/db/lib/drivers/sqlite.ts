@@ -64,8 +64,9 @@ export class SQLiteDriver extends DatabaseDriver {
           truncated: false,
         };
       }
-      const iter = stmt.iterate(...((params ?? []) as unknown[])) as
-        IterableIterator<Record<string, unknown>>;
+      const iter = stmt.iterate(
+        ...((params ?? []) as unknown[]),
+      ) as IterableIterator<Record<string, unknown>>;
       const rowsRaw: Record<string, unknown>[] = [];
       // Fetch one extra row to detect truncation.
       let truncated = false;
@@ -116,49 +117,85 @@ export class SQLiteDriver extends DatabaseDriver {
   ): Table[] {
     const db = conn as Database.Database;
     try {
-      let cursor;
+      // G-SCHEMA-BATCH: Avoid N+1 query problem by fetching all table columns
+      // in a single query using the pragma_table_info table-valued function.
       let baseQuery =
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'";
-      if (tableFilter !== null && tableFilter !== undefined) {
-        baseQuery += " AND name LIKE ?";
-        cursor = db.prepare(baseQuery).all(tableFilter) as Array<{
-          name: string;
-        }>;
-      } else {
-        cursor = db.prepare(baseQuery).all() as Array<{ name: string }>;
-      }
+        "SELECT m.name as table_name, p.name as column_name, p.type as data_type, " +
+        "p.[notnull] as is_notnull, p.dflt_value as dflt_value, p.pk as pk " +
+        "FROM sqlite_master m " +
+        "JOIN pragma_table_info(m.name) p " +
+        "WHERE m.type='table' AND m.name NOT LIKE 'sqlite_%'";
 
-      const tables: Table[] = [];
-      for (const row of cursor) {
-        const tableName = row.name;
-        // PRAGMA table_info returns rows shaped like:
-        //   {cid, name, type, notnull, dflt_value, pk}
-        const colCursor = db
-          .prepare(`PRAGMA table_info(${tableName})`)
-          .all() as Array<{
-          cid: number;
-          name: string;
-          type: string;
-          notnull: number;
+      let cursor;
+      if (tableFilter !== null && tableFilter !== undefined) {
+        baseQuery += " AND m.name LIKE ?";
+        cursor = db.prepare(baseQuery).all(tableFilter) as Array<{
+          table_name: string;
+          column_name: string;
+          data_type: string;
+          is_notnull: number;
           dflt_value: string | null;
           pk: number;
         }>;
-        const columns: Column[] = [];
-        for (const colRow of colCursor) {
-          columns.push(
-            new Column({
-              name: colRow.name,
-              data_type: colRow.type,
-              nullable: !colRow.notnull,
-              is_primary_key: Boolean(colRow.pk),
-              default: colRow.dflt_value,
-            }),
-          );
+      } else {
+        cursor = db.prepare(baseQuery).all() as Array<{
+          table_name: string;
+          column_name: string;
+          data_type: string;
+          is_notnull: number;
+          dflt_value: string | null;
+          pk: number;
+        }>;
+      }
+
+      const colsByTable = new Map<string, Column[]>();
+
+      for (const row of cursor) {
+        const tName = row.table_name;
+        let list = colsByTable.get(tName);
+        if (list === undefined) {
+          list = [];
+          colsByTable.set(tName, list);
         }
-        tables.push(
-          new Table({ name: tableName, schema: schemaName, columns }),
+        list.push(
+          new Column({
+            name: row.column_name,
+            data_type: row.data_type,
+            nullable: !row.is_notnull,
+            is_primary_key: Boolean(row.pk),
+            default: row.dflt_value,
+          }),
         );
       }
+
+      // Ensure empty tables without columns are captured by fetching
+      // just the table names separately. This guarantees we match prior behavior
+      // exactly, returning empty tables even if `pragma_table_info` returns no rows
+      // or omits them in the inner join.
+      let tablesQuery =
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'";
+      let tablesCursor;
+      if (tableFilter !== null && tableFilter !== undefined) {
+        tablesQuery += " AND name LIKE ?";
+        tablesCursor = db.prepare(tablesQuery).all(tableFilter) as Array<{
+          name: string;
+        }>;
+      } else {
+        tablesCursor = db.prepare(tablesQuery).all() as Array<{ name: string }>;
+      }
+
+      const tables: Table[] = [];
+      for (const row of tablesCursor) {
+        const tableName = row.name;
+        tables.push(
+          new Table({
+            name: tableName,
+            schema: schemaName,
+            columns: colsByTable.get(tableName) ?? [],
+          }),
+        );
+      }
+
       return tables;
     } catch {
       return [];
