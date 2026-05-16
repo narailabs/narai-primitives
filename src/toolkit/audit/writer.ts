@@ -23,9 +23,9 @@ export interface AuditWriterOptions {
 
 /** Redact common credential-bearing `key='value'` literals in a string. */
 const SENSITIVE_SQUOTE_RE =
-  /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*'[^']*'/gi;
+  /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth|bearer)\s*=\s*'[^']*'/gi;
 const SENSITIVE_DQUOTE_RE =
-  /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*"[^"]*"/gi;
+  /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth|bearer)\s*=\s*"[^"]*"/gi;
 
 export function scrubSecrets(text: string): string {
   return text
