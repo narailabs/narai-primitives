@@ -26,11 +26,16 @@ const SENSITIVE_SQUOTE_RE =
   /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*'[^']*'/gi;
 const SENSITIVE_DQUOTE_RE =
   /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*"[^"]*"/gi;
+const SENSITIVE_BEARER_RE = /\b(Bearer|Basic)\s+[^\s"']+/gi;
 
 export function scrubSecrets(text: string): string {
   return text
     .replace(SENSITIVE_SQUOTE_RE, (_m, key: string) => `${key}='[REDACTED]'`)
-    .replace(SENSITIVE_DQUOTE_RE, (_m, key: string) => `${key}="[REDACTED]"`);
+    .replace(SENSITIVE_DQUOTE_RE, (_m, key: string) => `${key}="[REDACTED]"`)
+    .replace(
+      SENSITIVE_BEARER_RE,
+      (_m, authType: string) => `${authType} [REDACTED]`,
+    );
 }
 
 function isoTimestamp(): string {
@@ -42,7 +47,8 @@ export interface AuditWriter {
   readonly enabled: boolean;
   readonly sessionId: string;
   logEvent(
-    event: Omit<AuditEvent, "timestamp" | "session_id"> & Record<string, unknown>,
+    event: Omit<AuditEvent, "timestamp" | "session_id"> &
+      Record<string, unknown>,
   ): void;
 }
 
@@ -58,7 +64,8 @@ class DiskAuditWriter implements AuditWriter {
   }
 
   logEvent(
-    event: Omit<AuditEvent, "timestamp" | "session_id"> & Record<string, unknown>,
+    event: Omit<AuditEvent, "timestamp" | "session_id"> &
+      Record<string, unknown>,
   ): void {
     if (!this.enabled || this._path === null) return;
     const record: Record<string, unknown> = {
@@ -94,9 +101,7 @@ class NullAuditWriter implements AuditWriter {
 export function createAuditWriter(opts: AuditWriterOptions): AuditWriter {
   if (!opts.enabled) return new NullAuditWriter(opts.sessionId);
   if (opts.path === undefined || opts.path.length === 0) {
-    throw new Error(
-      "audit: 'path' is required when 'enabled' is true",
-    );
+    throw new Error("audit: 'path' is required when 'enabled' is true");
   }
   return new DiskAuditWriter(opts);
 }
