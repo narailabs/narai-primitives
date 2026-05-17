@@ -34,6 +34,15 @@ describe("scrubSecrets", () => {
     expect(scrubbed).toMatch(/password='\[REDACTED\]'/);
   });
 
+  it("redacts bearer literals", () => {
+    expect(scrubSecrets("bearer='abc.def.ghi'")).toBe(
+      "bearer='[REDACTED]'",
+    );
+    expect(scrubSecrets(`bearer="abc.def.ghi"`)).toBe(
+      `bearer="[REDACTED]"`,
+    );
+  });
+
   it("leaves unrelated strings untouched", () => {
     const raw = "SELECT * FROM users WHERE id = 42";
     expect(scrubSecrets(raw)).toBe(raw);

@@ -222,6 +222,15 @@ describe("wiki_db.audit", () => {
     );
   });
 
+  it("scrubSqlSecrets masks bearer literals", () => {
+    expect(scrubSqlSecrets("WHERE bearer = 'tok-abc123'")).toBe(
+      "WHERE bearer='[REDACTED]'",
+    );
+    expect(scrubSqlSecrets('WHERE bearer = "tok-abc123"')).toBe(
+      'WHERE bearer="[REDACTED]"',
+    );
+  });
+
   it("scrubSqlSecrets leaves non-credential literals alone", () => {
     expect(scrubSqlSecrets("SELECT name FROM u WHERE id = 1")).toBe(
       "SELECT name FROM u WHERE id = 1",
