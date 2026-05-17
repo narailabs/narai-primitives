@@ -26,18 +26,11 @@ const SENSITIVE_SQUOTE_RE =
   /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth|bearer)\s*=\s*'[^']*'/gi;
 const SENSITIVE_DQUOTE_RE =
   /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth|bearer)\s*=\s*"[^"]*"/gi;
-// Authorization-header form: `Bearer <token>` / `Basic <base64>`. This is the
-// exact shape produced by `HttpClientOptions.authHeader`; the key='value'
-// regexes above cannot match it (no `=`, no quotes). Length floor avoids
-// redacting prose like "Bearer bonds". scrubSecrets runs only on connector
-// error message strings, so over-redaction risk is negligible.
-const AUTH_SCHEME_RE = /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/g;
 
 export function scrubSecrets(text: string): string {
   return text
     .replace(SENSITIVE_SQUOTE_RE, (_m, key: string) => `${key}='[REDACTED]'`)
-    .replace(SENSITIVE_DQUOTE_RE, (_m, key: string) => `${key}="[REDACTED]"`)
-    .replace(AUTH_SCHEME_RE, (_m, scheme: string) => `${scheme} [REDACTED]`);
+    .replace(SENSITIVE_DQUOTE_RE, (_m, key: string) => `${key}="[REDACTED]"`);
 }
 
 function isoTimestamp(): string {

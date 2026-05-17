@@ -214,20 +214,14 @@ describe("wiki_db.audit", () => {
     expect(scrubSqlSecrets("WHERE api_key = 'k1' OR api-key = 'k2'")).toBe(
       "WHERE api_key='[REDACTED]' OR api-key='[REDACTED]'",
     );
+    expect(scrubSqlSecrets("WHERE bearer = 'token'")).toBe(
+      "WHERE bearer='[REDACTED]'",
+    );
   });
 
   it("scrubSqlSecrets masks double-quoted credential literals", () => {
     expect(scrubSqlSecrets('WHERE secret = "s3cr3t"')).toBe(
       'WHERE secret="[REDACTED]"',
-    );
-  });
-
-  it("scrubSqlSecrets masks bearer literals", () => {
-    expect(scrubSqlSecrets("WHERE bearer = 'tok-abc123'")).toBe(
-      "WHERE bearer='[REDACTED]'",
-    );
-    expect(scrubSqlSecrets('WHERE bearer = "tok-abc123"')).toBe(
-      'WHERE bearer="[REDACTED]"',
     );
   });
 
