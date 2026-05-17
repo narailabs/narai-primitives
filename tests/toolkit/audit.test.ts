@@ -43,6 +43,19 @@ describe("scrubSecrets", () => {
     );
   });
 
+  it("redacts Authorization scheme header values", () => {
+    expect(
+      scrubSecrets("request failed: Authorization: Bearer abc123.def456"),
+    ).toBe("request failed: Authorization: Bearer [REDACTED]");
+    expect(scrubSecrets("Basic dXNlcjpwYXNzd29yZA==")).toBe(
+      "Basic [REDACTED]",
+    );
+  });
+
+  it("does not redact short prose after Bearer/Basic", () => {
+    expect(scrubSecrets("Bearer bonds")).toBe("Bearer bonds");
+  });
+
   it("leaves unrelated strings untouched", () => {
     const raw = "SELECT * FROM users WHERE id = 42";
     expect(scrubSecrets(raw)).toBe(raw);
