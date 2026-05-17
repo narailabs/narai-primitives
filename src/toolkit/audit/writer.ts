@@ -26,11 +26,22 @@ const SENSITIVE_SQUOTE_RE =
   /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*'(?:[^'\\]|\\.|'')*'/gi;
 const SENSITIVE_DQUOTE_RE =
   /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*"(?:[^"\\]|\\.|"")*"/gi;
+// Fail-safe fallback: the escape-aware patterns can fail to match a
+// standard-SQL value ending in a backslash (`password='abc\'`), leaking
+// the secret. The simple `'[^']*'` form still redacts it; running it
+// second is idempotent on already-redacted output, so it only ever
+// redacts more, never less.
+const SENSITIVE_SQUOTE_FALLBACK_RE =
+  /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*'[^']*'/gi;
+const SENSITIVE_DQUOTE_FALLBACK_RE =
+  /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*"[^"]*"/gi;
 
 export function scrubSecrets(text: string): string {
   return text
     .replace(SENSITIVE_SQUOTE_RE, (_m, key: string) => `${key}='[REDACTED]'`)
-    .replace(SENSITIVE_DQUOTE_RE, (_m, key: string) => `${key}="[REDACTED]"`);
+    .replace(SENSITIVE_DQUOTE_RE, (_m, key: string) => `${key}="[REDACTED]"`)
+    .replace(SENSITIVE_SQUOTE_FALLBACK_RE, (_m, key: string) => `${key}='[REDACTED]'`)
+    .replace(SENSITIVE_DQUOTE_FALLBACK_RE, (_m, key: string) => `${key}="[REDACTED]"`);
 }
 
 function isoTimestamp(): string {

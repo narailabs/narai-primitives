@@ -97,11 +97,24 @@ const _SENSITIVE_LITERAL_SQUOTE_RE =
   /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*'(?:[^'\\]|\\.|'')*'/gi;
 const _SENSITIVE_LITERAL_DQUOTE_RE =
   /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*"(?:[^"\\]|\\.|"")*"/gi;
+// Fail-safe fallback: the escape-aware patterns above can fail to match a
+// standard-SQL value ending in a backslash (`password='abc\'`), where `\`
+// is a literal char and the closing quote is real — the `\\.` branch eats
+// the closing quote and the literal then never terminates, leaking the
+// secret. The simple `'[^']*'` form (the pre-escape-fix behaviour) still
+// redacts that case. Running it second is idempotent on already-redacted
+// `key='[REDACTED]'` output, so it only ever redacts more, never less.
+const _SENSITIVE_LITERAL_SQUOTE_FALLBACK_RE =
+  /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*'[^']*'/gi;
+const _SENSITIVE_LITERAL_DQUOTE_FALLBACK_RE =
+  /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*"[^"]*"/gi;
 
 export function scrubSqlSecrets(sql: string): string {
   return sql
     .replace(_SENSITIVE_LITERAL_SQUOTE_RE, (_m, key: string) => `${key}='[REDACTED]'`)
-    .replace(_SENSITIVE_LITERAL_DQUOTE_RE, (_m, key: string) => `${key}="[REDACTED]"`);
+    .replace(_SENSITIVE_LITERAL_DQUOTE_RE, (_m, key: string) => `${key}="[REDACTED]"`)
+    .replace(_SENSITIVE_LITERAL_SQUOTE_FALLBACK_RE, (_m, key: string) => `${key}='[REDACTED]'`)
+    .replace(_SENSITIVE_LITERAL_DQUOTE_FALLBACK_RE, (_m, key: string) => `${key}="[REDACTED]"`);
 }
 
 /** Log a query execution event. */

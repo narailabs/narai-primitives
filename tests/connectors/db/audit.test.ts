@@ -240,6 +240,17 @@ describe("wiki_db.audit", () => {
     ).toBe('SELECT * FROM u WHERE password="[REDACTED]" AND id = 1');
   });
 
+  it("scrubSqlSecrets redacts standard-SQL values ending in a backslash", () => {
+    // `\` is a literal char here; the closing quote is real. The
+    // escape-aware regex alone would leak this; the fallback catches it.
+    expect(scrubSqlSecrets("WHERE password='abc\\' AND id = 1")).toBe(
+      "WHERE password='[REDACTED]' AND id = 1",
+    );
+    expect(scrubSqlSecrets('WHERE secret="abc\\"')).toBe(
+      'WHERE secret="[REDACTED]"',
+    );
+  });
+
   it("scrubSqlSecrets leaves non-credential literals alone", () => {
     expect(scrubSqlSecrets("SELECT name FROM u WHERE id = 1")).toBe(
       "SELECT name FROM u WHERE id = 1",

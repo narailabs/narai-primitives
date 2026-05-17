@@ -52,6 +52,15 @@ describe("scrubSecrets", () => {
     );
   });
 
+  it("redacts standard-SQL values ending in a backslash", () => {
+    expect(scrubSecrets("SET password='abc\\' AND id=1")).toBe(
+      "SET password='[REDACTED]' AND id=1",
+    );
+    expect(scrubSecrets('SET secret="abc\\"')).toBe(
+      'SET secret="[REDACTED]"',
+    );
+  });
+
   it("leaves unrelated strings untouched", () => {
     const raw = "SELECT * FROM users WHERE id = 42";
     expect(scrubSecrets(raw)).toBe(raw);
