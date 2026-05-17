@@ -64,8 +64,9 @@ export class SQLiteDriver extends DatabaseDriver {
           truncated: false,
         };
       }
-      const iter = stmt.iterate(...((params ?? []) as unknown[])) as
-        IterableIterator<Record<string, unknown>>;
+      const iter = stmt.iterate(
+        ...((params ?? []) as unknown[]),
+      ) as IterableIterator<Record<string, unknown>>;
       const rowsRaw: Record<string, unknown>[] = [];
       // Fetch one extra row to detect truncation.
       let truncated = false;
@@ -118,45 +119,66 @@ export class SQLiteDriver extends DatabaseDriver {
     try {
       let cursor;
       let baseQuery =
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'";
-      if (tableFilter !== null && tableFilter !== undefined) {
-        baseQuery += " AND name LIKE ?";
-        cursor = db.prepare(baseQuery).all(tableFilter) as Array<{
-          name: string;
-        }>;
-      } else {
-        cursor = db.prepare(baseQuery).all() as Array<{ name: string }>;
-      }
+        "SELECT m.name AS table_name, p.name AS col_name, p.type, p.[notnull], p.dflt_value, p.pk " +
+        "FROM sqlite_master m " +
+        "JOIN pragma_table_info(m.name) p " +
+        "WHERE m.type='table' AND m.name NOT LIKE 'sqlite_%'";
 
-      const tables: Table[] = [];
-      for (const row of cursor) {
-        const tableName = row.name;
-        // PRAGMA table_info returns rows shaped like:
-        //   {cid, name, type, notnull, dflt_value, pk}
-        const colCursor = db
-          .prepare(`PRAGMA table_info(${tableName})`)
-          .all() as Array<{
-          cid: number;
-          name: string;
+      if (tableFilter !== null && tableFilter !== undefined) {
+        baseQuery += " AND m.name LIKE ?";
+        cursor = db.prepare(baseQuery).all(tableFilter) as Array<{
+          table_name: string;
+          col_name: string;
           type: string;
           notnull: number;
           dflt_value: string | null;
           pk: number;
         }>;
-        const columns: Column[] = [];
-        for (const colRow of colCursor) {
-          columns.push(
-            new Column({
-              name: colRow.name,
-              data_type: colRow.type,
-              nullable: !colRow.notnull,
-              is_primary_key: Boolean(colRow.pk),
-              default: colRow.dflt_value,
-            }),
-          );
+      } else {
+        cursor = db.prepare(baseQuery).all() as Array<{
+          table_name: string;
+          col_name: string;
+          type: string;
+          notnull: number;
+          dflt_value: string | null;
+          pk: number;
+        }>;
+      }
+
+      // G-SCHEMA-BATCH: Avoid N+1 query problem by using the pragma_table_info
+      // table-valued function to fetch column metadata for all tables in a single query.
+      const colsByTable = new Map<string, Column[]>();
+      const tableNames = new Set<string>();
+
+      for (const row of cursor) {
+        const tableName = row.table_name;
+        tableNames.add(tableName);
+
+        let list = colsByTable.get(tableName);
+        if (list === undefined) {
+          list = [];
+          colsByTable.set(tableName, list);
         }
+
+        list.push(
+          new Column({
+            name: row.col_name,
+            data_type: row.type,
+            nullable: !row.notnull,
+            is_primary_key: Boolean(row.pk),
+            default: row.dflt_value,
+          }),
+        );
+      }
+
+      const tables: Table[] = [];
+      for (const tableName of tableNames) {
         tables.push(
-          new Table({ name: tableName, schema: schemaName, columns }),
+          new Table({
+            name: tableName,
+            schema: schemaName,
+            columns: colsByTable.get(tableName) ?? [],
+          }),
         );
       }
       return tables;
