@@ -120,17 +120,24 @@ export class SQLiteDriver extends DatabaseDriver {
       // G-SCHEMA-BATCH: Avoid N+1 query problem by fetching all table columns
       // in a single query using the pragma_table_info table-valued function.
       let baseQuery =
-        "SELECT m.name as table_name, p.name as column_name, p.type as data_type, " +
-        "p.[notnull] as is_notnull, p.dflt_value as dflt_value, p.pk as pk " +
+        "SELECT m.name as table_name, p.cid as cid, p.name as column_name, " +
+        "p.type as data_type, p.[notnull] as is_notnull, " +
+        "p.dflt_value as dflt_value, p.pk as pk " +
         "FROM sqlite_master m " +
         "JOIN pragma_table_info(m.name) p " +
         "WHERE m.type='table' AND m.name NOT LIKE 'sqlite_%'";
 
+      // Preserve declaration order: PRAGMA table_info yields rows in `cid`
+      // order, so without an explicit ORDER BY the join could reorder
+      // columns relative to the previous per-table loop.
+      const orderBy = " ORDER BY m.name, p.cid";
+
       let cursor;
       if (tableFilter !== null && tableFilter !== undefined) {
         baseQuery += " AND m.name LIKE ?";
-        cursor = db.prepare(baseQuery).all(tableFilter) as Array<{
+        cursor = db.prepare(baseQuery + orderBy).all(tableFilter) as Array<{
           table_name: string;
+          cid: number;
           column_name: string;
           data_type: string;
           is_notnull: number;
@@ -138,8 +145,9 @@ export class SQLiteDriver extends DatabaseDriver {
           pk: number;
         }>;
       } else {
-        cursor = db.prepare(baseQuery).all() as Array<{
+        cursor = db.prepare(baseQuery + orderBy).all() as Array<{
           table_name: string;
+          cid: number;
           column_name: string;
           data_type: string;
           is_notnull: number;

@@ -97,6 +97,21 @@ describe("wiki_db.drivers.sqlite", () => {
       expect(colNames).toContain("email");
     });
 
+    it("test_preserves_column_declaration_order", () => {
+      const tables = driver.getSchema(conn);
+      const users = tables.filter((t) => t.name === "users")[0];
+      expect(users).toBeDefined();
+      expect(users!.columns.map((c) => c.name)).toEqual([
+        "id",
+        "name",
+        "email",
+      ]);
+      const id = users!.columns[0]!;
+      const email = users!.columns[2]!;
+      expect(id.is_primary_key).toBe(true);
+      expect(email.nullable).toBe(false);
+    });
+
     it("test_with_filter", () => {
       conn!.exec("CREATE TABLE orders (id INTEGER PRIMARY KEY)");
       const tables = driver.getSchema(conn, "", "user%");
