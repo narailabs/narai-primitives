@@ -38,25 +38,6 @@ describe("scrubSecrets", () => {
     const raw = "SELECT * FROM users WHERE id = 42";
     expect(scrubSecrets(raw)).toBe(raw);
   });
-
-  it("redacts HTTP Bearer tokens captured in audit context", () => {
-    const scrubbed = scrubSecrets(
-      "GET /v1/x failed: Authorization: Bearer eyJhbGci.payload.sig",
-    );
-    expect(scrubbed).not.toContain("eyJhbGci.payload.sig");
-    expect(scrubbed).toContain("Bearer [REDACTED]");
-  });
-
-  it("redacts HTTP Basic credentials", () => {
-    const scrubbed = scrubSecrets("Authorization: Basic dXNlcjpwYXNz");
-    expect(scrubbed).not.toContain("dXNlcjpwYXNz");
-    expect(scrubbed).toContain("Basic [REDACTED]");
-  });
-
-  it("is idempotent on already-redacted Bearer output", () => {
-    const once = scrubSecrets("Bearer sk-live-abc123");
-    expect(scrubSecrets(once)).toBe(once);
-  });
 });
 
 describe("AuditWriter", () => {

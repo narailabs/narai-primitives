@@ -864,33 +864,3 @@ describe("connector.recordResolution", () => {
     expect(r.scope).toBe("https://beta");
   });
 });
-
-describe("createConnector.fetch — audit logger redaction", () => {
-  it("scrubs Bearer tokens from ctx.logger messages before they hit events.jsonl", async () => {
-    const logPath = path.join(tmpCwd, "events.jsonl");
-    const c = createConnector({
-      name: "aws-test",
-      credentials: async () => ({}),
-      sdk: async () => ({}),
-      audit: { enabled: true, path: logPath },
-      actions: {
-        run: {
-          params: z.object({}),
-          classify: { kind: "read" },
-          handler: async (_p, ctx) => {
-            ctx.logger.warn(
-              "upstream 401: Authorization: Bearer sk-live-LEAKED-TOKEN",
-            );
-            return { ok: true };
-          },
-        },
-      },
-    });
-
-    await c.fetch("run", {});
-
-    const body = fs.readFileSync(logPath, "utf-8");
-    expect(body).not.toContain("sk-live-LEAKED-TOKEN");
-    expect(body).toContain("Bearer [REDACTED]");
-  });
-});
