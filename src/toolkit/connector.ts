@@ -512,8 +512,10 @@ export function createConnector<TSdk = unknown>(
       policy: decision,
       recordHardship: recorder,
       logger: {
-        debug: (msg: string) => audit.logEvent({ event_type: "debug", details: { msg } } as never),
-        warn: (msg: string) => audit.logEvent({ event_type: "warn", details: { msg } } as never),
+        debug: (msg: string) =>
+          audit.logEvent({ event_type: "debug", details: { msg: scrubSecrets(msg) } } as never),
+        warn: (msg: string) =>
+          audit.logEvent({ event_type: "warn", details: { msg: scrubSecrets(msg) } } as never),
       },
     };
 
