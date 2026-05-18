@@ -27,10 +27,14 @@ const SENSITIVE_SQUOTE_RE =
 const SENSITIVE_DQUOTE_RE =
   /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*"[^"]*"/gi;
 
+const AUTH_HEADER_RE =
+  /(Authorization(?:["']?\s*:\s*["']?|\s*:\s*)(?:Bearer\s+|Basic\s+)?)([^"'\r\n\s]+)/gi;
+
 export function scrubSecrets(text: string): string {
   return text
     .replace(SENSITIVE_SQUOTE_RE, (_m, key: string) => `${key}='[REDACTED]'`)
-    .replace(SENSITIVE_DQUOTE_RE, (_m, key: string) => `${key}="[REDACTED]"`);
+    .replace(SENSITIVE_DQUOTE_RE, (_m, key: string) => `${key}="[REDACTED]"`)
+    .replace(AUTH_HEADER_RE, "$1[REDACTED]");
 }
 
 function isoTimestamp(): string {

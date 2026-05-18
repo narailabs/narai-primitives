@@ -98,10 +98,14 @@ const _SENSITIVE_LITERAL_SQUOTE_RE =
 const _SENSITIVE_LITERAL_DQUOTE_RE =
   /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*"[^"]*"/gi;
 
+const _AUTH_HEADER_RE =
+  /(Authorization(?:["']?\s*:\s*["']?|\s*:\s*)(?:Bearer\s+|Basic\s+)?)([^"'\r\n\s]+)/gi;
+
 export function scrubSqlSecrets(sql: string): string {
   return sql
     .replace(_SENSITIVE_LITERAL_SQUOTE_RE, (_m, key: string) => `${key}='[REDACTED]'`)
-    .replace(_SENSITIVE_LITERAL_DQUOTE_RE, (_m, key: string) => `${key}="[REDACTED]"`);
+    .replace(_SENSITIVE_LITERAL_DQUOTE_RE, (_m, key: string) => `${key}="[REDACTED]"`)
+    .replace(_AUTH_HEADER_RE, "$1[REDACTED]");
 }
 
 /** Log a query execution event. */
