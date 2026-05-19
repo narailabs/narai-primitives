@@ -5,7 +5,11 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { createConnector } from "../../src/toolkit/connector.js";
-import type { Decision, ExtendedEnvelope, ResolutionHint } from "../../src/toolkit/policy/types.js";
+import type {
+  Decision,
+  ExtendedEnvelope,
+  ResolutionHint,
+} from "../../src/toolkit/policy/types.js";
 
 let tmpHome: string;
 let tmpCwd: string;
@@ -21,10 +25,12 @@ afterEach(() => {
 });
 
 // Minimal useful connector for happy-path tests.
-function makeAws(options: {
-  listFunctionsHandler?: (p: unknown) => Promise<unknown>;
-  configPath?: string;
-} = {}) {
+function makeAws(
+  options: {
+    listFunctionsHandler?: (p: unknown) => Promise<unknown>;
+    configPath?: string;
+  } = {},
+) {
   return createConnector({
     name: "aws-test",
     credentials: async () => ({ region: "us-east-1" }),
@@ -36,13 +42,17 @@ function makeAws(options: {
           prefix: z.string().optional(),
         }),
         classify: { kind: "read" },
-        handler: options.listFunctionsHandler ?? (async () => ({
-          functions: [{ name: "fn1" }],
-          count: 1,
-        })),
+        handler:
+          options.listFunctionsHandler ??
+          (async () => ({
+            functions: [{ name: "fn1" }],
+            count: 1,
+          })),
       },
     },
-    ...(options.configPath !== undefined ? { policyConfigPath: options.configPath } : {}),
+    ...(options.configPath !== undefined
+      ? { policyConfigPath: options.configPath }
+      : {}),
   });
 }
 
@@ -268,7 +278,11 @@ describe("createConnector.fetch — runtime errors", () => {
           },
         },
       },
-      mapError: () => ({ error_code: "CONFIG_ERROR", message: "override", retriable: false }),
+      mapError: () => ({
+        error_code: "CONFIG_ERROR",
+        message: "override",
+        retriable: false,
+      }),
     });
     const env = await c.fetch("list_functions", {});
     if (env.status === "error") {
@@ -290,7 +304,10 @@ describe("createConnector.fetch — extendDecision hook", () => {
           handler: async () => ({ rows: [] }),
         },
       },
-      extendDecision: (decision: Decision, ctx): Decision | ExtendedEnvelope => {
+      extendDecision: (
+        decision: Decision,
+        ctx,
+      ): Decision | ExtendedEnvelope => {
         if (decision.status === "escalate") {
           return {
             status: "present_only",
@@ -320,8 +337,10 @@ describe("createConnector.main — CLI behavior", () => {
     }) as typeof process.stdout.write;
     try {
       const code = await c.main([
-        "--action", "list_functions",
-        "--params", JSON.stringify({ region: "us-east-1" }),
+        "--action",
+        "list_functions",
+        "--params",
+        JSON.stringify({ region: "us-east-1" }),
       ]);
       expect(code).toBe(0);
       const parsed = JSON.parse(writes.join("").trim());
@@ -336,7 +355,12 @@ describe("createConnector.main — CLI behavior", () => {
     const origErr = process.stderr.write;
     process.stderr.write = (() => true) as typeof process.stderr.write;
     try {
-      const code = await c.main(["--action", "list_functions", "--params", "not json"]);
+      const code = await c.main([
+        "--action",
+        "list_functions",
+        "--params",
+        "not json",
+      ]);
       expect(code).toBe(2);
     } finally {
       process.stderr.write = origErr;
@@ -363,8 +387,10 @@ describe("createConnector.main — CLI behavior", () => {
     process.stdout.write = (() => true) as typeof process.stdout.write;
     try {
       const code = await c.main([
-        "--action", "list_functions",
-        "--params", JSON.stringify({ region: "us-east-1" }),
+        "--action",
+        "list_functions",
+        "--params",
+        JSON.stringify({ region: "us-east-1" }),
       ]);
       expect(code).toBe(1);
     } finally {
@@ -644,7 +670,9 @@ describe("ExtendedEnvelope + ResolutionHint shape (3.0)", () => {
 describe("ConnectorConfig.scope (3.0)", () => {
   it("passes the scope-fn return value to the hardship recorder", async () => {
     const recorded: unknown[] = [];
-    const hardshipStub = (e: unknown) => { recorded.push(e); };
+    const hardshipStub = (e: unknown) => {
+      recorded.push(e);
+    };
 
     const c = createConnector<{ siteUrl: string }>({
       name: "testconn",
@@ -707,10 +735,9 @@ describe("envelope resolution_hint", () => {
   it("attaches a matching pattern's hint to the error envelope", async () => {
     const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "conn-hint-"));
     const cwd = path.join(tmp, "proj");
-    await fsp.mkdir(
-      path.join(cwd, ".claude/connectors/testconn/global"),
-      { recursive: true },
-    );
+    await fsp.mkdir(path.join(cwd, ".claude/connectors/testconn/global"), {
+      recursive: true,
+    });
     await fsp.writeFile(
       path.join(cwd, ".claude/connectors/testconn/global/patterns.yaml"),
       `version: 1
@@ -771,7 +798,9 @@ patterns:
           description: "fail",
           params: z.object({}),
           classify: { kind: "read" },
-          handler: async () => { throw new Error("timeout"); },
+          handler: async () => {
+            throw new Error("timeout");
+          },
         },
       },
       mapError: () => ({
@@ -862,5 +891,56 @@ describe("connector.recordResolution", () => {
       (e) => (e as { kind: string }).kind === "resolution",
     ) as { scope: string | null };
     expect(r.scope).toBe("https://beta");
+  });
+});
+
+describe("createConnector — logger redact", () => {
+  it("scrubs secrets when calling ctx.logger.debug or ctx.logger.warn", async () => {
+    const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "connector-logger-"));
+    const eventsPath = path.join(tmp, "events.jsonl");
+
+    const c = createConnector<unknown>({
+      name: "logger_redact_test",
+      version: "1.0",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      audit: { enabled: true, path: eventsPath },
+      actions: {
+        test_log: {
+          params: z.object({}),
+          classify: { kind: "read" },
+          handler: async (_, ctx) => {
+            ctx.logger.debug("Authorization: Bearer secret-token");
+            ctx.logger.warn("password='super-secret'");
+            return { ok: true };
+          },
+        },
+      },
+    });
+
+    await c.fetch("test_log", {});
+
+    const lines = (await fsp.readFile(eventsPath, "utf-8"))
+      .split("\n")
+      .filter((l) => l.trim().length > 0)
+      .map(
+        (l) =>
+          JSON.parse(l) as { event_type: string; details?: { msg?: string } },
+      );
+
+    const debugEvent = lines.find((l) => l.event_type === "debug");
+    const warnEvent = lines.find((l) => l.event_type === "warn");
+
+    expect(debugEvent).toBeDefined();
+    expect(debugEvent?.details?.msg).toContain(
+      "Authorization: Bearer [REDACTED]",
+    );
+    expect(debugEvent?.details?.msg).not.toContain("secret-token");
+
+    expect(warnEvent).toBeDefined();
+    expect(warnEvent?.details?.msg).toContain("password='[REDACTED]'");
+    expect(warnEvent?.details?.msg).not.toContain("super-secret");
+
+    await fsp.rm(tmp, { recursive: true });
   });
 });
