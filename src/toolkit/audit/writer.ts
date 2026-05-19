@@ -23,14 +23,27 @@ export interface AuditWriterOptions {
 
 /** Redact common credential-bearing `key='value'` literals in a string. */
 const SENSITIVE_SQUOTE_RE =
-  /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*'[^']*'/gi;
+  /("?(?:password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)"?\s*[:=]\s*)'[^']*'/gi;
 const SENSITIVE_DQUOTE_RE =
-  /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*"[^"]*"/gi;
+  /("?(?:password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)"?\s*[:=]\s*)"[^"]*"/gi;
+const SENSITIVE_AUTH_RE =
+  /("?authorization"?\s*[:=]\s*['"]?)((?:bearer|basic)\s+)?([^"'\s\\]+)/gi;
 
 export function scrubSecrets(text: string): string {
   return text
-    .replace(SENSITIVE_SQUOTE_RE, (_m, key: string) => `${key}='[REDACTED]'`)
-    .replace(SENSITIVE_DQUOTE_RE, (_m, key: string) => `${key}="[REDACTED]"`);
+    .replace(SENSITIVE_SQUOTE_RE, (match, key: string) => {
+      const k = key.replace(/\s*[:=]\s*$/, "");
+      const sepMatch = match.substring(k.length).match(/\s*[:=]\s*/);
+      const sep = sepMatch ? sepMatch[0] : "=";
+      return `${k}${sep}'[REDACTED]'`;
+    })
+    .replace(SENSITIVE_DQUOTE_RE, (match, key: string) => {
+      const k = key.replace(/\s*[:=]\s*$/, "");
+      const sepMatch = match.substring(k.length).match(/\s*[:=]\s*/);
+      const sep = sepMatch ? sepMatch[0] : "=";
+      return `${k}${sep}"[REDACTED]"`;
+    })
+    .replace(SENSITIVE_AUTH_RE, (_m, prefix: string, type: string | undefined, _val: string) => `${prefix}${type || ""}[REDACTED]`);
 }
 
 function isoTimestamp(): string {

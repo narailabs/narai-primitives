@@ -94,14 +94,23 @@ export interface LogQueryParams {
  * out of scope.
  */
 const _SENSITIVE_LITERAL_SQUOTE_RE =
-  /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*'[^']*'/gi;
+  /("?(?:password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)"?\s*[:=]\s*)'[^']*'/gi;
 const _SENSITIVE_LITERAL_DQUOTE_RE =
-  /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*"[^"]*"/gi;
+  /("?(?:password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)"?\s*[:=]\s*)"[^"]*"/gi;
+const _SENSITIVE_AUTH_RE =
+  /("?authorization"?\s*[:=]\s*['"]?)((?:bearer|basic)\s+)?([^"'\s\\]+)/gi;
 
 export function scrubSqlSecrets(sql: string): string {
   return sql
-    .replace(_SENSITIVE_LITERAL_SQUOTE_RE, (_m, key: string) => `${key}='[REDACTED]'`)
-    .replace(_SENSITIVE_LITERAL_DQUOTE_RE, (_m, key: string) => `${key}="[REDACTED]"`);
+    .replace(_SENSITIVE_LITERAL_SQUOTE_RE, (_m, key: string) => {
+      const k = key.replace(/\s*[:=]\s*$/, "");
+      return `${k}='[REDACTED]'`;
+    })
+    .replace(_SENSITIVE_LITERAL_DQUOTE_RE, (_m, key: string) => {
+      const k = key.replace(/\s*[:=]\s*$/, "");
+      return `${k}="[REDACTED]"`;
+    })
+    .replace(_SENSITIVE_AUTH_RE, (_m, prefix: string, type: string | undefined, _val: string) => `${prefix}${type || ""}[REDACTED]`);
 }
 
 /** Log a query execution event. */
