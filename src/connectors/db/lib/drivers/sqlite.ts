@@ -128,14 +128,19 @@ export class SQLiteDriver extends DatabaseDriver {
         cursor = db.prepare(baseQuery).all() as Array<{ name: string }>;
       }
 
+      // G-SCHEMA-BATCH: For SQLite schema extraction using better-sqlite3,
+      // fully batched JOINs with sqlite_master are surprisingly slow compared
+      // to the JS loop overhead. Instead, to avoid N+1 compilation overhead,
+      // use pragma_table_info(?) as a parameterized table-valued function
+      // within a single prepared statement.
+      const pragmaStmt = db.prepare("SELECT * FROM pragma_table_info(?)");
+
       const tables: Table[] = [];
       for (const row of cursor) {
         const tableName = row.name;
         // PRAGMA table_info returns rows shaped like:
         //   {cid, name, type, notnull, dflt_value, pk}
-        const colCursor = db
-          .prepare(`PRAGMA table_info(${tableName})`)
-          .all() as Array<{
+        const colCursor = pragmaStmt.all(tableName) as Array<{
           cid: number;
           name: string;
           type: string;
