@@ -231,6 +231,19 @@ describe("wiki_db.audit", () => {
     );
   });
 
+  it("scrubSqlSecrets redacts Authorization headers regardless of scheme", () => {
+    expect(scrubSqlSecrets("ctx: Authorization: Bearer eyJ.a.b")).toBe(
+      "ctx: Authorization: [REDACTED]",
+    );
+    // non-Bearer/Basic scheme must not leak the credential
+    expect(scrubSqlSecrets("Authorization: token ghp_abcd1234")).toBe(
+      "Authorization: [REDACTED]",
+    );
+    expect(
+      scrubSqlSecrets('{"Authorization":"Basic dXNlcjpwYXNz"}'),
+    ).toBe('{"Authorization":"[REDACTED]"}');
+  });
+
   it("logQuery scrubs credentials before persisting to the audit file", () => {
     const logPath = path.join(tmpPath, "audit.jsonl");
     enableAudit(logPath, "abc123");

@@ -38,6 +38,35 @@ describe("scrubSecrets", () => {
     const raw = "SELECT * FROM users WHERE id = 42";
     expect(scrubSecrets(raw)).toBe(raw);
   });
+
+  it("redacts a Bearer Authorization header", () => {
+    const scrubbed = scrubSecrets(
+      "request failed: Authorization: Bearer eyJhbGci.payload.sig",
+    );
+    expect(scrubbed).not.toContain("eyJhbGci.payload.sig");
+    expect(scrubbed).toBe("request failed: Authorization: [REDACTED]");
+  });
+
+  it("redacts opaque-token Authorization schemes other than Bearer/Basic", () => {
+    // The codex P1 case: a `token`-scheme header must not leak the credential.
+    expect(scrubSecrets("Authorization: token ghp_abcd1234")).toBe(
+      "Authorization: [REDACTED]",
+    );
+    expect(scrubSecrets("Authorization: ApiKey ak_live_9f8e7d")).toBe(
+      "Authorization: [REDACTED]",
+    );
+  });
+
+  it("redacts a JSON-serialized Authorization header, preserving quotes", () => {
+    expect(
+      scrubSecrets('{"headers":{"Authorization":"Bearer s3cr3t"}}'),
+    ).toBe('{"headers":{"Authorization":"[REDACTED]"}}');
+  });
+
+  it("is idempotent on already-redacted Authorization output", () => {
+    const once = scrubSecrets("Authorization: token ghp_abcd1234");
+    expect(scrubSecrets(once)).toBe(once);
+  });
 });
 
 describe("AuditWriter", () => {

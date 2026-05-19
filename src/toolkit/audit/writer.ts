@@ -27,8 +27,14 @@ const SENSITIVE_SQUOTE_RE =
 const SENSITIVE_DQUOTE_RE =
   /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*"[^"]*"/gi;
 
+// Scheme-agnostic: redact the entire Authorization credential value, not just
+// Bearer/Basic. Capturing one whitespace-delimited word after an optional
+// scheme leaks credentials for schemes like `token`, `Digest`, `Negotiate`
+// (e.g. `Authorization: token ghp_x` would otherwise only redact `token`).
+// Quoted-param schemes (Digest) are only best-effort: the value class stops
+// at the first embedded quote, so opaque-token schemes are the hard guarantee.
 const AUTH_HEADER_RE =
-  /(Authorization(?:["']?\s*:\s*["']?|\s*:\s*)(?:Bearer\s+|Basic\s+)?)([^"'\r\n\s]+)/gi;
+  /(\bAuthorization["']?\s*[:=]\s*["']?)([^"'\r\n]+)/gi;
 
 export function scrubSecrets(text: string): string {
   return text
