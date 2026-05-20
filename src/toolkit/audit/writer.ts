@@ -23,14 +23,24 @@ export interface AuditWriterOptions {
 
 /** Redact common credential-bearing `key='value'` literals in a string. */
 const SENSITIVE_SQUOTE_RE =
-  /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*'[^']*'/gi;
+  /(["']?)(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\1(\s*[=:]\s*)'[^']*'/gi;
 const SENSITIVE_DQUOTE_RE =
-  /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*"[^"]*"/gi;
+  /(["']?)(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\1(\s*[=:]\s*)"[^"]*"/gi;
+const AUTH_HEADER_RE = /\b(Bearer|Basic)\s+[A-Za-z0-9\-._~+/]+=*/gi;
 
 export function scrubSecrets(text: string): string {
   return text
-    .replace(SENSITIVE_SQUOTE_RE, (_m, key: string) => `${key}='[REDACTED]'`)
-    .replace(SENSITIVE_DQUOTE_RE, (_m, key: string) => `${key}="[REDACTED]"`);
+    .replace(
+      SENSITIVE_SQUOTE_RE,
+      (_m, q: string, key: string, sep: string) =>
+        `${q}${key}${q}${sep}'[REDACTED]'`,
+    )
+    .replace(
+      SENSITIVE_DQUOTE_RE,
+      (_m, q: string, key: string, sep: string) =>
+        `${q}${key}${q}${sep}"[REDACTED]"`,
+    )
+    .replace(AUTH_HEADER_RE, (_m, type: string) => `${type} [REDACTED]`);
 }
 
 function isoTimestamp(): string {

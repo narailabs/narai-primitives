@@ -34,6 +34,25 @@ describe("scrubSecrets", () => {
     expect(scrubbed).toMatch(/password='\[REDACTED\]'/);
   });
 
+  it("preserves separators in JSON formats", () => {
+    expect(scrubSecrets(`{"password": "secret"}`)).toBe(
+      `{"password": "[REDACTED]"}`,
+    );
+    expect(scrubSecrets(`{'token':'abc'}`)).toBe(`{'token':'[REDACTED]'}`);
+    expect(scrubSecrets(`{"api_key": "abc"}`)).toBe(
+      `{"api_key": "[REDACTED]"}`,
+    );
+  });
+
+  it("masks Authorization headers", () => {
+    expect(scrubSecrets(`Authorization: Bearer my_secret_token`)).toBe(
+      `Authorization: Bearer [REDACTED]`,
+    );
+    expect(scrubSecrets(`Authorization: Basic dXNlcm5hbWU6cGFzc3dvcmQ=`)).toBe(
+      `Authorization: Basic [REDACTED]`,
+    );
+  });
+
   it("leaves unrelated strings untouched", () => {
     const raw = "SELECT * FROM users WHERE id = 42";
     expect(scrubSecrets(raw)).toBe(raw);

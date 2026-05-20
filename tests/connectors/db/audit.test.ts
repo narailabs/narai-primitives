@@ -78,8 +78,9 @@ describe("wiki_db.audit", () => {
       error: null,
       context: "unit-test",
     });
-    const record = JSON.parse(fs.readFileSync(logPath, "utf-8").trim()) as
-      Record<string, unknown>;
+    const record = JSON.parse(
+      fs.readFileSync(logPath, "utf-8").trim(),
+    ) as Record<string, unknown>;
     expect(record["event_type"]).toBe("query");
     expect(record["env"]).toBe("dev");
     expect(record["query"]).toBe("SELECT * FROM t");
@@ -103,8 +104,9 @@ describe("wiki_db.audit", () => {
       row_count: 0,
       execution_time_ms: 1,
     });
-    const record = JSON.parse(fs.readFileSync(logPath, "utf-8").trim()) as
-      Record<string, unknown>;
+    const record = JSON.parse(
+      fs.readFileSync(logPath, "utf-8").trim(),
+    ) as Record<string, unknown>;
     expect((record["query"] as string).length).toBe(2000);
   });
 
@@ -119,8 +121,9 @@ describe("wiki_db.audit", () => {
       row_count: 0,
       execution_time_ms: 1,
     });
-    const record = JSON.parse(fs.readFileSync(logPath, "utf-8").trim()) as
-      Record<string, unknown>;
+    const record = JSON.parse(
+      fs.readFileSync(logPath, "utf-8").trim(),
+    ) as Record<string, unknown>;
     const sid = record["session_id"];
     expect(typeof sid).toBe("string");
     expect((sid as string).length).toBe(12);
@@ -139,8 +142,9 @@ describe("wiki_db.audit", () => {
       row_count: 0,
       execution_time_ms: 1,
     });
-    const record = JSON.parse(fs.readFileSync(logPath, "utf-8").trim()) as
-      Record<string, unknown>;
+    const record = JSON.parse(
+      fs.readFileSync(logPath, "utf-8").trim(),
+    ) as Record<string, unknown>;
     expect(record["session_id"]).toBe("my-custom-id");
   });
 
@@ -169,8 +173,9 @@ describe("wiki_db.audit", () => {
       event_type: "schema_inspect",
       details: { table: "users" },
     });
-    const record = JSON.parse(fs.readFileSync(logPath, "utf-8").trim()) as
-      Record<string, unknown>;
+    const record = JSON.parse(
+      fs.readFileSync(logPath, "utf-8").trim(),
+    ) as Record<string, unknown>;
     expect(record["event_type"]).toBe("schema_inspect");
     expect(record["details"]).toEqual({ table: "users" });
     expect(record["session_id"]).toBe("evt01");
@@ -207,19 +212,38 @@ describe("wiki_db.audit", () => {
   it("scrubSqlSecrets masks single-quoted credential literals", () => {
     expect(
       scrubSqlSecrets("SELECT * FROM u WHERE password = 'p4ss' AND id = 1"),
-    ).toBe("SELECT * FROM u WHERE password='[REDACTED]' AND id = 1");
+    ).toBe("SELECT * FROM u WHERE password = '[REDACTED]' AND id = 1");
     expect(scrubSqlSecrets("WHERE token='sk-abc123'")).toBe(
       "WHERE token='[REDACTED]'",
     );
     expect(scrubSqlSecrets("WHERE api_key = 'k1' OR api-key = 'k2'")).toBe(
-      "WHERE api_key='[REDACTED]' OR api-key='[REDACTED]'",
+      "WHERE api_key = '[REDACTED]' OR api-key = '[REDACTED]'",
     );
   });
 
   it("scrubSqlSecrets masks double-quoted credential literals", () => {
     expect(scrubSqlSecrets('WHERE secret = "s3cr3t"')).toBe(
-      'WHERE secret="[REDACTED]"',
+      'WHERE secret = "[REDACTED]"',
     );
+  });
+
+  it("scrubSqlSecrets preserves separators in JSON formats", () => {
+    expect(scrubSqlSecrets(`{"password": "secret"}`)).toBe(
+      `{"password": "[REDACTED]"}`,
+    );
+    expect(scrubSqlSecrets(`{'token':'abc'}`)).toBe(`{'token':'[REDACTED]'}`);
+    expect(scrubSqlSecrets(`{"api_key": "abc"}`)).toBe(
+      `{"api_key": "[REDACTED]"}`,
+    );
+  });
+
+  it("scrubSqlSecrets masks Authorization headers", () => {
+    expect(scrubSqlSecrets(`Authorization: Bearer my_secret_token`)).toBe(
+      `Authorization: Bearer [REDACTED]`,
+    );
+    expect(
+      scrubSqlSecrets(`Authorization: Basic dXNlcm5hbWU6cGFzc3dvcmQ=`),
+    ).toBe(`Authorization: Basic [REDACTED]`);
   });
 
   it("scrubSqlSecrets leaves non-credential literals alone", () => {
@@ -244,7 +268,7 @@ describe("wiki_db.audit", () => {
     const line = fs.readFileSync(logPath, "utf-8").trim();
     const record = JSON.parse(line) as { query: string };
     expect(record.query).toBe(
-      "SELECT * FROM users WHERE password='[REDACTED]' LIMIT 1",
+      "SELECT * FROM users WHERE password = '[REDACTED]' LIMIT 1",
     );
     expect(record.query).not.toContain("leaked");
   });
