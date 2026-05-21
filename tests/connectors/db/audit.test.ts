@@ -252,6 +252,30 @@ describe("wiki_db.audit", () => {
     );
   });
 
+  it("scrubSqlSecrets redacts Digest headers with quoted parameters", () => {
+    // Regression (Codex P1 on 0733e81): the unquoted-form branch must
+    // consume to end-of-line so Digest's embedded `username="u"` and
+    // `response="…"` don't terminate the value class early.
+    const out = scrubSqlSecrets(
+      'Authorization: Digest username="u", realm="r", response="abc123"',
+    );
+    expect(out).toBe("Authorization: [REDACTED]");
+    expect(out).not.toContain("abc123");
+    expect(out).not.toContain('response="');
+  });
+
+  it("scrubSqlSecrets does not redact non-sensitive keys that merely end in a sensitive token", () => {
+    // Regression (Codex P2 on 0733e81): `\b` keeps `mytoken='x'` and
+    // `notpassword='x'` from being clobbered by the `token`/`password`
+    // suffix match.
+    expect(scrubSqlSecrets("WHERE mytoken='x'")).toBe("WHERE mytoken='x'");
+    expect(scrubSqlSecrets("WHERE notpassword = 'x'")).toBe(
+      "WHERE notpassword = 'x'",
+    );
+    // The bare sensitive keyword still matches.
+    expect(scrubSqlSecrets("WHERE token='x'")).toBe("WHERE token='[REDACTED]'");
+  });
+
   it("scrubSqlSecrets leaves non-credential literals alone", () => {
     expect(scrubSqlSecrets("SELECT name FROM u WHERE id = 1")).toBe(
       "SELECT name FROM u WHERE id = 1",

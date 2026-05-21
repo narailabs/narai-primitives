@@ -85,16 +85,41 @@ describe("scrubSecrets", () => {
   });
 
   it("over-redacts multi-credential lines (safe failure mode)", () => {
-    // `[^"'\r\n]+` is greedy across commas — the first Authorization match
-    // consumes everything to end-of-line, redacting both credentials. We
-    // accept the structure loss because the alternative (under-redacting)
-    // leaks the second credential.
+    // The unquoted branch consumes to end-of-line — the first Authorization
+    // match swallows the second one. We accept the structure loss because
+    // the alternative (excluding commas) would leak Digest's comma-separated
+    // quoted parameters past the first one.
     const out = scrubSecrets(
       "Authorization: Bearer aaa,Authorization: Basic bbb",
     );
     expect(out).not.toContain("aaa");
     expect(out).not.toContain("bbb");
     expect(out).toContain("[REDACTED]");
+  });
+
+  it("redacts Digest headers with quoted parameters", () => {
+    // Regression (Codex P1 on 0733e81): an internal `"` in
+    // `Digest username="u", response="…"` used to terminate the value
+    // class, leaving the response= tail in the log.
+    const out = scrubSecrets(
+      'Authorization: Digest username="u", realm="r", response="abc123"',
+    );
+    expect(out).toBe("Authorization: [REDACTED]");
+    expect(out).not.toContain("abc123");
+    expect(out).not.toContain('response="');
+  });
+
+  it("does not redact non-sensitive keys that merely end in a sensitive token", () => {
+    // Regression (Codex P2 on 0733e81): removing `\b` caused
+    // `mytoken='x'` / `notpassword='x'` to match the `token`/`password`
+    // suffix and erase unrelated debug context.
+    expect(scrubSecrets("mytoken='x'")).toBe("mytoken='x'");
+    expect(scrubSecrets("notpassword='x'")).toBe("notpassword='x'");
+    expect(scrubSecrets('xsecret="y"')).toBe('xsecret="y"');
+    // The bare sensitive keyword still matches.
+    expect(scrubSecrets("token='x'")).toBe("token='[REDACTED]'");
+    // Hyphenated variants still match.
+    expect(scrubSecrets("api-key='x'")).toBe("api-key='[REDACTED]'");
   });
 });
 

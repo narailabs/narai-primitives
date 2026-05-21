@@ -24,26 +24,32 @@ export interface AuditWriterOptions {
 /**
  * Redact common credential-bearing `key='value'` literals in a string.
  *
- * The key/separator are captured as distinct groups so the original separator
- * (e.g. `:` for JSON payloads, `=` for SQL or env-style) and its whitespace
- * are preserved verbatim in the output. Hard-coding `=` would mangle JSON
- * like `{"password":"x"}` into `{"password"='[REDACTED]'}`.
+ * Key/separator are captured as distinct groups so the original separator
+ * (e.g. `:` for JSON payloads, `=` for SQL or env-style) is preserved
+ * verbatim — hard-coding `=` would mangle `{"password":"x"}` into
+ * `{"password"='[REDACTED]'}` and break downstream JSON-per-line parsers.
  *
- * AUTH value class is `[^"'\r\n]+` so non-Bearer/Basic schemes (Token,
- * APIKey, Negotiate, Digest, …) get their whole credential redacted —
- * stopping at whitespace would leave the credential tail in the log.
+ * The leading/trailing `\b` ensures we only match the sensitive keyword as
+ * a complete word (or wrapped in JSON quotes), so `mytoken='x'` and
+ * `notpassword='x'` don't get spuriously redacted.
+ *
+ * AUTH_RE uses an alternation: quoted form stops at the matching closing
+ * quote (so JSON like `{"authorization":"Bearer x"}` round-trips), while
+ * unquoted form consumes to end-of-line so schemes like Digest that
+ * embed quoted parameters (`Digest username="u", response="…"`) don't
+ * leak the parameter tail past the first internal quote.
  */
 const SENSITIVE_KEYS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth";
 const SENSITIVE_SQUOTE_RE = new RegExp(
-  `("?(?:${SENSITIVE_KEYS})"?)(\\s*[:=]\\s*)'[^']*'`,
+  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)'[^']*'`,
   "gi",
 );
 const SENSITIVE_DQUOTE_RE = new RegExp(
-  `("?(?:${SENSITIVE_KEYS})"?)(\\s*[:=]\\s*)"[^"]*"`,
+  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)"[^"]*"`,
   "gi",
 );
 const SENSITIVE_AUTH_RE =
-  /("?authorization"?)(\s*[:=]\s*)(['"]?)((?:bearer|basic)\s+)?([^"'\r\n]+)/gi;
+  /("?\bauthorization\b"?)(\s*[:=]\s*)(?:(["'])((?:bearer|basic)\s+)?([^\r\n]*?)\3|((?:bearer|basic)\s+)?([^\r\n]+))/gi;
 
 export function scrubSecrets(text: string): string {
   return text
@@ -61,9 +67,16 @@ export function scrubSecrets(text: string): string {
         _m,
         key: string,
         sep: string,
-        quote: string,
-        scheme: string | undefined,
-      ) => `${key}${sep}${quote}${scheme || ""}[REDACTED]`,
+        openQuote: string | undefined,
+        schemeQ: string | undefined,
+        _valQ: string | undefined,
+        schemeU: string | undefined,
+      ) => {
+        if (openQuote !== undefined) {
+          return `${key}${sep}${openQuote}${schemeQ || ""}[REDACTED]${openQuote}`;
+        }
+        return `${key}${sep}${schemeU || ""}[REDACTED]`;
+      },
     );
 }
 

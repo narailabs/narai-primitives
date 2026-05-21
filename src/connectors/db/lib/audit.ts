@@ -93,23 +93,30 @@ export interface LogQueryParams {
  * single/double-quoted literals — partial or concatenated literals are
  * out of scope.
  */
-// Key + separator are captured as distinct groups so the original separator
-// (e.g. `:` for JSON, `=` for SQL/env) is preserved verbatim. Hard-coding `=`
-// would mangle `{"password":"x"}` into `{"password"='[REDACTED]'}`, breaking
-// downstream consumers that parse events.jsonl as JSON-per-line.
-// AUTH value class is `[^"'\r\n]+` so non-Bearer/Basic schemes (Token,
-// APIKey, Negotiate, Digest, …) get their full credential redacted.
+// Key/separator are captured as distinct groups so the original separator
+// (e.g. `:` for JSON, `=` for SQL/env) is preserved verbatim — hard-coding
+// `=` would mangle `{"password":"x"}` into `{"password"='[REDACTED]'}` and
+// break downstream consumers parsing events.jsonl as JSON-per-line.
+//
+// Leading/trailing `\b` keeps `mytoken='x'` and `notpassword='x'` from being
+// spuriously redacted just because they end in a sensitive keyword.
+//
+// AUTH_RE alternates between quoted (closes at matching quote, e.g. JSON
+// `"authorization":"Bearer x"`) and unquoted (consumes to end-of-line, e.g.
+// `Authorization: Digest username="u", response="…"`). The unquoted branch
+// must run to end-of-line so Digest's embedded quoted parameters don't
+// leak past the first internal quote.
 const _SENSITIVE_KEYS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth";
 const _SENSITIVE_LITERAL_SQUOTE_RE = new RegExp(
-  `("?(?:${_SENSITIVE_KEYS})"?)(\\s*[:=]\\s*)'[^']*'`,
+  `("?\\b(?:${_SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)'[^']*'`,
   "gi",
 );
 const _SENSITIVE_LITERAL_DQUOTE_RE = new RegExp(
-  `("?(?:${_SENSITIVE_KEYS})"?)(\\s*[:=]\\s*)"[^"]*"`,
+  `("?\\b(?:${_SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)"[^"]*"`,
   "gi",
 );
 const _SENSITIVE_AUTH_RE =
-  /("?authorization"?)(\s*[:=]\s*)(['"]?)((?:bearer|basic)\s+)?([^"'\r\n]+)/gi;
+  /("?\bauthorization\b"?)(\s*[:=]\s*)(?:(["'])((?:bearer|basic)\s+)?([^\r\n]*?)\3|((?:bearer|basic)\s+)?([^\r\n]+))/gi;
 
 export function scrubSqlSecrets(sql: string): string {
   return sql
@@ -127,9 +134,16 @@ export function scrubSqlSecrets(sql: string): string {
         _m,
         key: string,
         sep: string,
-        quote: string,
-        scheme: string | undefined,
-      ) => `${key}${sep}${quote}${scheme || ""}[REDACTED]`,
+        openQuote: string | undefined,
+        schemeQ: string | undefined,
+        _valQ: string | undefined,
+        schemeU: string | undefined,
+      ) => {
+        if (openQuote !== undefined) {
+          return `${key}${sep}${openQuote}${schemeQ || ""}[REDACTED]${openQuote}`;
+        }
+        return `${key}${sep}${schemeU || ""}[REDACTED]`;
+      },
     );
 }
 
