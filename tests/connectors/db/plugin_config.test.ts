@@ -213,6 +213,46 @@ describe("validatePluginConfig", () => {
     });
     expect(cfg.audit).toEqual({ enabled: true, path: "/tmp/a.jsonl" });
   });
+
+  it("accepts an optional `default` pointing at a known server", () => {
+    const cfg = validatePluginConfig({
+      policy: {},
+      servers: {
+        orders: { driver: "sqlite", database: ":memory:" },
+        billing: { driver: "sqlite", database: ":memory:" },
+      },
+      default: "orders",
+    });
+    expect(cfg.default).toBe("orders");
+  });
+
+  it("config without `default` parses fine (field optional)", () => {
+    const cfg = validatePluginConfig({
+      policy: {},
+      servers: { orders: { driver: "sqlite", database: ":memory:" } },
+    });
+    expect(cfg.default).toBeUndefined();
+  });
+
+  it("rejects `default` pointing at an unknown server", () => {
+    expect(() =>
+      validatePluginConfig({
+        policy: {},
+        servers: { orders: { driver: "sqlite", database: ":memory:" } },
+        default: "ghost",
+      }),
+    ).toThrow(/default.*'ghost'.*not found.*orders/i);
+  });
+
+  it("rejects non-string `default`", () => {
+    expect(() =>
+      validatePluginConfig({
+        policy: {},
+        servers: { orders: { driver: "sqlite", database: ":memory:" } },
+        default: 42,
+      }),
+    ).toThrow(/default.*string/i);
+  });
 });
 
 describe("pluginConfigFromSlice — V2.0 connector-config integration", () => {
@@ -260,6 +300,31 @@ describe("pluginConfigFromSlice — V2.0 connector-config integration", () => {
       },
     });
     expect(cfg.audit).toEqual({ enabled: true, path: "/tmp/audit.jsonl" });
+  });
+});
+
+describe("pluginConfigFromSlice — default field", () => {
+  it("threads `default` from slice.options", () => {
+    const cfg = pluginConfigFromSlice({
+      policy: {},
+      options: {
+        servers: { orders: { driver: "sqlite", database: ":memory:" } },
+        default: "orders",
+      },
+    });
+    expect(cfg.default).toBe("orders");
+  });
+
+  it("rejects slice `default` that doesn't match a server", () => {
+    expect(() =>
+      pluginConfigFromSlice({
+        policy: {},
+        options: {
+          servers: { orders: { driver: "sqlite", database: ":memory:" } },
+          default: "ghost",
+        },
+      }),
+    ).toThrow(/default.*'ghost'.*not found/i);
   });
 });
 
