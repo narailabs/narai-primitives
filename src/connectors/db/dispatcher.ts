@@ -532,16 +532,16 @@ async function runOnEnv(
         if (pluginCfg.default !== undefined) {
           resolvedServerName = pluginCfg.default;
         } else {
-          const aliases = Object.keys(pluginCfg.servers);
-          if (aliases.length === 1) {
-            resolvedServerName = aliases[0];
+          const serverNames = Object.keys(pluginCfg.servers);
+          if (serverNames.length === 1) {
+            resolvedServerName = serverNames[0];
           } else {
             return {
               status: "error",
               error_code: "VALIDATION_ERROR",
               error:
                 `params must include 'server' (no default configured; ` +
-                `available: [${aliases.join(", ")}])`,
+                `available: [${serverNames.join(", ")}])`,
               execution_time_ms: 0,
             };
           }
@@ -594,8 +594,7 @@ async function runOnEnv(
         return {
           status: "error",
           error_code: "VALIDATION_ERROR",
-          error:
-            "params must include 'server' (or 'sqlite_path'); no plugin config found, and the legacy wiki.config.yaml path requires an explicit name",
+          error: "params must include 'server' (or 'sqlite_path')",
           execution_time_ms: 0,
         };
       }

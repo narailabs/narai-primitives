@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import Database from "better-sqlite3";
 
 import { fetch as dispatcherFetch } from "../../../src/connectors/db/dispatcher.js";
 import { clearEnvironments } from "../../../src/connectors/db/lib/environments.js";
@@ -113,14 +114,29 @@ describe("default-server resolution", () => {
   });
 
   it("env overlay overrides `default:`", async () => {
+    // Use distinct sqlite files and seed a table only in billing.db so the
+    // query succeeds iff the env-overlay actually swapped the default from
+    // orders → billing. With both servers pointing at the same file, a
+    // silent overlay failure would still hit `orders` and pass.
+    const ordersPath = path.join(tmp, "orders.db");
+    const billingPath = path.join(tmp, "billing.db");
+    fs.writeFileSync(ordersPath, "");
+    fs.writeFileSync(billingPath, "");
+    const seed = new Database(billingPath);
+    seed.exec(
+      "CREATE TABLE billing_only (id INTEGER PRIMARY KEY); " +
+        "INSERT INTO billing_only VALUES (1);",
+    );
+    seed.close();
+
     writeConfig([
       "connectors:",
       "  db:",
       "    skill: db-agent-connector",
       "    default: orders",
       "    servers:",
-      `      orders:  { driver: sqlite, database: ${JSON.stringify(dbPath)} }`,
-      `      billing: { driver: sqlite, database: ${JSON.stringify(dbPath)} }`,
+      `      orders:  { driver: sqlite, database: ${JSON.stringify(ordersPath)} }`,
+      `      billing: { driver: sqlite, database: ${JSON.stringify(billingPath)} }`,
       "environments:",
       "  staging:",
       "    db:",
@@ -128,8 +144,11 @@ describe("default-server resolution", () => {
       "",
     ].join("\n"));
     process.env["NARAI_ENV"] = "staging";
-    const result = await dispatcherFetch("query", { sql: "SELECT 1" });
+    const result = await dispatcherFetch("query", {
+      sql: "SELECT id FROM billing_only LIMIT 10",
+    });
     expect(result["status"]).toBe("ok");
+    expect(result["rows"]).toEqual([{ id: 1 }]);
   });
 
   it("config-load: rejects `default:` pointing at unknown server (CONFIG_ERROR at first call)", async () => {

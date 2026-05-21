@@ -217,7 +217,7 @@ describe("server param (replaces env)", () => {
   });
 
   it("rejects when both `server` and `env` are set with different values", async () => {
-    // The real dispatcher's requireConnTarget catches the conflict BEFORE
+    // The real dispatcher's extractConnTarget catches the conflict BEFORE
     // any config lookup, so this test needs no real server config.
     const result = await connector.fetch("query", {
       server: "dev",
