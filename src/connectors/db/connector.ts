@@ -36,7 +36,8 @@ import { DB_POLICY_EXTRAS } from "./lib/plugin_config.js";
 // returned as VALIDATION_ERROR rather than reaching the dispatcher.
 const queryParams = z.object({
   sqlite_path: z.string().optional(),
-  env: z.string().optional(),
+  server: z.string().optional(),
+  env: z.string().optional().describe("Deprecated alias for `server`. Removed in next major."),
   config_path: z.string().optional(),
   sql: z.string().min(1, "sql is required"),
   approval_mode: z.string().optional(),
@@ -46,7 +47,8 @@ const queryParams = z.object({
 
 const schemaParams = z.object({
   sqlite_path: z.string().optional(),
-  env: z.string().optional(),
+  server: z.string().optional(),
+  env: z.string().optional().describe("Deprecated alias for `server`. Removed in next major."),
   config_path: z.string().optional(),
   filter: z.string().optional(),
 });
