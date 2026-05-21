@@ -121,6 +121,30 @@ describe("scrubSecrets", () => {
     // Hyphenated variants still match.
     expect(scrubSecrets("api-key='x'")).toBe("api-key='[REDACTED]'");
   });
+
+  it("handles JSON-escaped quotes inside double-quoted secret values", () => {
+    // Regression (Codex P1 on 683b907): `"[^"]*"` terminated at the escaped
+    // quote inside `"abc\"def"`, leaving `def"}` in the log.
+    expect(scrubSecrets(`{"password":"abc\\"def"}`)).toBe(
+      `{"password":"[REDACTED]"}`,
+    );
+    expect(scrubSecrets(`{"token":"a\\"b\\"c"}`)).toBe(
+      `{"token":"[REDACTED]"}`,
+    );
+    // Single-quoted form mirrored.
+    expect(scrubSecrets(`{password:'a\\'b'}`)).toBe(`{password:'[REDACTED]'}`);
+  });
+
+  it("handles JSON-escaped quotes inside quoted Authorization values", () => {
+    // Regression (Codex P1 on 683b907): the quoted branch's value class
+    // used to terminate at the first `"` even when it was escaped, so
+    // JSON-encoded Digest headers leaked their `response=` tail.
+    const input = `{"authorization":"Digest username=\\"u\\", response=\\"abc123\\""}`;
+    const out = scrubSecrets(input);
+    expect(out).toBe(`{"authorization":"[REDACTED]"}`);
+    expect(out).not.toContain("abc123");
+    expect(out).not.toContain("response");
+  });
 });
 
 describe("AuditWriter", () => {

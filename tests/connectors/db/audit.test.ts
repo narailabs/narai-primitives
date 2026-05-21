@@ -276,6 +276,28 @@ describe("wiki_db.audit", () => {
     expect(scrubSqlSecrets("WHERE token='x'")).toBe("WHERE token='[REDACTED]'");
   });
 
+  it("scrubSqlSecrets handles JSON-escaped quotes inside secret values", () => {
+    // Regression (Codex P1 on 683b907): `"[^"]*"` used to terminate at
+    // an escaped `\"`, leaking the value tail.
+    expect(scrubSqlSecrets(`{"password":"abc\\"def"}`)).toBe(
+      `{"password":"[REDACTED]"}`,
+    );
+    expect(scrubSqlSecrets(`{"token":"a\\"b\\"c"}`)).toBe(
+      `{"token":"[REDACTED]"}`,
+    );
+  });
+
+  it("scrubSqlSecrets handles JSON-escaped quotes in Authorization values", () => {
+    // Regression (Codex P1 on 683b907): the quoted-branch value class
+    // used to stop at the first inner `"`, even when it was an escaped
+    // `\"`, leaking the Digest `response=` parameter.
+    const input = `{"authorization":"Digest username=\\"u\\", response=\\"abc123\\""}`;
+    const out = scrubSqlSecrets(input);
+    expect(out).toBe(`{"authorization":"[REDACTED]"}`);
+    expect(out).not.toContain("abc123");
+    expect(out).not.toContain("response");
+  });
+
   it("scrubSqlSecrets leaves non-credential literals alone", () => {
     expect(scrubSqlSecrets("SELECT name FROM u WHERE id = 1")).toBe(
       "SELECT name FROM u WHERE id = 1",

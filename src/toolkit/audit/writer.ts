@@ -33,23 +33,29 @@ export interface AuditWriterOptions {
  * a complete word (or wrapped in JSON quotes), so `mytoken='x'` and
  * `notpassword='x'` don't get spuriously redacted.
  *
- * AUTH_RE uses an alternation: quoted form stops at the matching closing
- * quote (so JSON like `{"authorization":"Bearer x"}` round-trips), while
- * unquoted form consumes to end-of-line so schemes like Digest that
- * embed quoted parameters (`Digest username="u", response="…"`) don't
- * leak the parameter tail past the first internal quote.
+ * Value classes use `(?:\\.|[^Q\\])*` (Q = the active quote) so escape
+ * sequences like `\"` inside JSON-encoded values are skipped rather than
+ * treated as the closing quote — without this, `{"password":"abc\"def"}`
+ * would leak `def"}` and `{"authorization":"Digest username=\"…\""}`
+ * would leak the parameter tail.
+ *
+ * AUTH_RE alternates between a quoted branch (closes at the matching outer
+ * quote, handling JSON-escaped inner quotes) and an unquoted branch that
+ * consumes to end-of-line — needed so unescaped Digest parameters
+ * (`Digest username="u", response="…"`) don't leak past the first internal
+ * quote on a plain log line.
  */
 const SENSITIVE_KEYS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth";
 const SENSITIVE_SQUOTE_RE = new RegExp(
-  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)'[^']*'`,
+  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)'(?:\\\\.|[^'\\\\])*'`,
   "gi",
 );
 const SENSITIVE_DQUOTE_RE = new RegExp(
-  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)"[^"]*"`,
+  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)"(?:\\\\.|[^"\\\\])*"`,
   "gi",
 );
 const SENSITIVE_AUTH_RE =
-  /("?\bauthorization\b"?)(\s*[:=]\s*)(?:(["'])((?:bearer|basic)\s+)?([^\r\n]*?)\3|((?:bearer|basic)\s+)?([^\r\n]+))/gi;
+  /("?\bauthorization\b"?)(\s*[:=]\s*)(?:(["'])((?:bearer|basic)\s+)?(?:\\.|[^\r\n\\])*?\3|((?:bearer|basic)\s+)?[^\r\n]+)/gi;
 
 export function scrubSecrets(text: string): string {
   return text
@@ -69,7 +75,6 @@ export function scrubSecrets(text: string): string {
         sep: string,
         openQuote: string | undefined,
         schemeQ: string | undefined,
-        _valQ: string | undefined,
         schemeU: string | undefined,
       ) => {
         if (openQuote !== undefined) {
