@@ -96,6 +96,13 @@ export async function loadResolvedConfig(opts: LoadOptions = {}): Promise<Resolv
   validateSecretsInTree(raw);
   const resolveOpts: { consumer?: string; environment?: string } = {};
   if (opts.consumer !== undefined) resolveOpts.consumer = opts.consumer;
-  if (opts.environment !== undefined) resolveOpts.environment = opts.environment;
+  if (opts.environment !== undefined) {
+    resolveOpts.environment = opts.environment;
+  } else {
+    const envFromVar = process.env["NARAI_ENV"];
+    if (envFromVar !== undefined && envFromVar !== "") {
+      resolveOpts.environment = envFromVar;
+    }
+  }
   return resolveConfig(raw, resolveOpts);
 }
