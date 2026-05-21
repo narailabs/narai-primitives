@@ -195,7 +195,7 @@ describe("server param (replaces env)", () => {
   // reach the dispatcher and fail with "params must include one of 'sqlite_path'
   // or 'env'". Task 5 will add normalization and re-enable these.
 
-  it.skip("accepts `server` in place of `env` for query", async () => {
+  it("accepts `server` in place of `env` for query", async () => {
     const dbPath = makeFixtureDb();
     const result = await connector.fetch("query", {
       sqlite_path: dbPath,
@@ -205,13 +205,13 @@ describe("server param (replaces env)", () => {
     expect(result.status).toBe("success");
   });
 
-  it.skip("accepts `server` for schema", async () => {
+  it("accepts `server` for schema", async () => {
     const dbPath = makeFixtureDb();
     const result = await connector.fetch("schema", { sqlite_path: dbPath, server: "dev" });
     expect(result.status).toBe("success");
   });
 
-  it.skip("rejects when both `server` and `env` are set with different values", async () => {
+  it("rejects when both `server` and `env` are set with different values", async () => {
     const dbPath = makeFixtureDb();
     const result = await connector.fetch("query", {
       sqlite_path: dbPath,

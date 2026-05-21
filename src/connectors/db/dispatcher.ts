@@ -62,7 +62,7 @@ type Params = Record<string, unknown>;
 
 interface QueryParamsValidated {
   sqlite_path?: string;
-  env?: string;
+  server?: string;
   config_path?: string;
   sql: string;
   approval_mode?: string;
@@ -72,7 +72,7 @@ interface QueryParamsValidated {
 
 interface SchemaParamsValidated {
   sqlite_path?: string;
-  env?: string;
+  server?: string;
   config_path?: string;
   filter?: string;
 }
@@ -90,23 +90,48 @@ function toInt(value: unknown, fallback: number): number {
 
 function requireConnTarget(p: Params): {
   sqlite_path?: string;
-  env?: string;
+  server?: string;
   config_path?: string;
 } {
   const sqlite =
     typeof p["sqlite_path"] === "string" ? (p["sqlite_path"] as string) : undefined;
-  const env = typeof p["env"] === "string" ? (p["env"] as string) : undefined;
-  if (!sqlite && !env) {
-    throw new Error("params must include one of 'sqlite_path' or 'env'");
+  const server = typeof p["server"] === "string" ? (p["server"] as string) : undefined;
+  const envAlias = typeof p["env"] === "string" ? (p["env"] as string) : undefined;
+
+  // Reject conflicting deprecated alias.
+  if (server !== undefined && envAlias !== undefined && server !== envAlias) {
+    throw new Error(
+      "params 'server' and 'env' (deprecated alias) are both set and differ; use only 'server'",
+    );
   }
-  if (sqlite && env) {
-    throw new Error("params 'sqlite_path' and 'env' are mutually exclusive");
+
+  // The deprecated `env` param is only valid as a sole connection target
+  // (not alongside sqlite_path). Emit a warning and promote it to server.
+  if (envAlias !== undefined && server === undefined) {
+    if (sqlite) {
+      throw new Error("params 'sqlite_path' and 'env' are mutually exclusive");
+    }
+    process.stderr.write(
+      "warning: db connector param `env` is deprecated; use `server` instead\n",
+    );
+    const config_path =
+      typeof p["config_path"] === "string" ? (p["config_path"] as string) : undefined;
+    const out: { sqlite_path?: string; server?: string; config_path?: string } = {};
+    out.server = envAlias;
+    if (config_path) out.config_path = config_path;
+    return out;
   }
+
+  if (!sqlite && !server) {
+    throw new Error("params must include one of 'sqlite_path' or 'server'");
+  }
+  // When sqlite_path is present, it is the connection target; server is ignored
+  // for connection purposes (it may provide policy context in future work).
   const config_path =
     typeof p["config_path"] === "string" ? (p["config_path"] as string) : undefined;
-  const out: { sqlite_path?: string; env?: string; config_path?: string } = {};
+  const out: { sqlite_path?: string; server?: string; config_path?: string } = {};
   if (sqlite) out.sqlite_path = sqlite;
-  if (env) out.env = env;
+  else if (server) out.server = server;
   if (config_path) out.config_path = config_path;
   return out;
 }
@@ -123,7 +148,7 @@ function validateQueryParams(p: Params): QueryParamsValidated {
     timeout_ms: toInt(p["timeout_ms"], 30000),
   };
   if (conn.sqlite_path) v.sqlite_path = conn.sqlite_path;
-  if (conn.env) v.env = conn.env;
+  if (conn.server) v.server = conn.server;
   if (conn.config_path) v.config_path = conn.config_path;
   const approval = p["approval_mode"];
   if (typeof approval === "string" && approval.length > 0) {
@@ -136,7 +161,7 @@ function validateSchemaParams(p: Params): SchemaParamsValidated {
   const conn = requireConnTarget(p);
   const v: SchemaParamsValidated = {};
   if (conn.sqlite_path) v.sqlite_path = conn.sqlite_path;
-  if (conn.env) v.env = conn.env;
+  if (conn.server) v.server = conn.server;
   if (conn.config_path) v.config_path = conn.config_path;
   const filter = p["filter"];
   if (typeof filter === "string" && filter.length > 0) v.filter = filter;
@@ -503,7 +528,7 @@ async function runOnEnv(
     };
   }
 
-  let envName: string;
+  let serverName: string;
   let approvalMode: string;
   let rules: PolicyRules;
   let grantDurationHours: number | undefined;
@@ -511,14 +536,14 @@ async function runOnEnv(
   try {
     if (pluginCfg !== null) {
       if (
-        !Object.prototype.hasOwnProperty.call(pluginCfg.servers, v.env!)
+        !Object.prototype.hasOwnProperty.call(pluginCfg.servers, v.server!)
       ) {
         const available = Object.keys(pluginCfg.servers).join(", ");
         return {
           status: "error",
           error_code: "CONFIG_ERROR",
           error:
-            `environment '${v.env}' not found in plugin config ` +
+            `server '${v.server}' not found in plugin config ` +
             `(servers: [${available || "none"}])`,
           execution_time_ms: 0,
         };
@@ -544,8 +569,8 @@ async function runOnEnv(
           ...(gdh !== undefined ? { grant_duration_hours: gdh } : {}),
         });
       }
-      envName = v.env!;
-      const env = getEnvironment(envName);
+      serverName = v.server!;
+      const env = getEnvironment(serverName);
       const qv = v as QueryParamsValidated;
       approvalMode =
         qv.approval_mode ?? env.approval_mode.replace(/-/g, "_");
@@ -553,8 +578,8 @@ async function runOnEnv(
       grantDurationHours = env.grant_duration_hours;
     } else {
       const configPath = v.config_path ?? "./wiki.config.yaml";
-      const resolved = resolveEnv(v.env!, configPath);
-      envName = resolved.name;
+      const resolved = resolveEnv(v.server!, configPath);
+      serverName = resolved.name;
       const qv = v as QueryParamsValidated;
       approvalMode = qv.approval_mode ?? resolved.approval_mode;
       rules = DEFAULT_POLICY;
@@ -584,7 +609,7 @@ async function runOnEnv(
 
   let conn;
   try {
-    conn = await getConnection(envName);
+    conn = await getConnection(serverName);
   } catch (e) {
     clearEnvironments();
     return {
@@ -602,7 +627,7 @@ async function runOnEnv(
         conn.driver,
         conn.native,
         sv.filter ?? null,
-        envName,
+        serverName,
       );
     }
     const qv = v as QueryParamsValidated;
@@ -617,7 +642,7 @@ async function runOnEnv(
       timeout_ms: qv.timeout_ms,
     });
   } finally {
-    releaseConnection(envName, conn);
+    releaseConnection(serverName, conn);
     clearEnvironments();
   }
 }
@@ -684,14 +709,16 @@ options:
                   JSON string of action parameters
 
 action 'query' params:
-  {"env": "dev", "sql": "SELECT 1"}  or
+  {"server": "dev", "sql": "SELECT 1"}  or
   {"sqlite_path": "./test.db", "sql": "SELECT 1"}
   optional: max_rows (default 1000), timeout_ms (default 30000),
            approval_mode, config_path
+  deprecated: \`env\` is accepted as an alias for \`server\`.
 
 action 'schema' params:
-  {"env": "dev"}  or  {"sqlite_path": "./test.db"}
+  {"server": "dev"}  or  {"sqlite_path": "./test.db"}
   optional: filter, config_path
+  deprecated: \`env\` is accepted as an alias for \`server\`.
 
 Writes/deletes (INSERT/UPDATE/DELETE/TRUNCATE/…) follow the configured
 policy. By default, WRITE escalates and DELETE/ADMIN return status="present_only"
