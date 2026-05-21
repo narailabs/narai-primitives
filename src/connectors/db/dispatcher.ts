@@ -98,40 +98,30 @@ function requireConnTarget(p: Params): {
   const server = typeof p["server"] === "string" ? (p["server"] as string) : undefined;
   const envAlias = typeof p["env"] === "string" ? (p["env"] as string) : undefined;
 
-  // Reject conflicting deprecated alias.
-  if (server !== undefined && envAlias !== undefined && server !== envAlias) {
+  // Normalize the deprecated `env` alias.
+  let effectiveServer = server;
+  if (server === undefined && envAlias !== undefined) {
+    process.stderr.write(
+      "warning: db connector param `env` is deprecated; use `server` instead\n",
+    );
+    effectiveServer = envAlias;
+  } else if (server !== undefined && envAlias !== undefined && server !== envAlias) {
     throw new Error(
       "params 'server' and 'env' (deprecated alias) are both set and differ; use only 'server'",
     );
   }
 
-  // The deprecated `env` param is only valid as a sole connection target
-  // (not alongside sqlite_path). Emit a warning and promote it to server.
-  if (envAlias !== undefined && server === undefined) {
-    if (sqlite) {
-      throw new Error("params 'sqlite_path' and 'env' are mutually exclusive");
-    }
-    process.stderr.write(
-      "warning: db connector param `env` is deprecated; use `server` instead\n",
-    );
-    const config_path =
-      typeof p["config_path"] === "string" ? (p["config_path"] as string) : undefined;
-    const out: { sqlite_path?: string; server?: string; config_path?: string } = {};
-    out.server = envAlias;
-    if (config_path) out.config_path = config_path;
-    return out;
-  }
-
-  if (!sqlite && !server) {
+  if (!sqlite && !effectiveServer) {
     throw new Error("params must include one of 'sqlite_path' or 'server'");
   }
-  // When sqlite_path is present, it is the connection target; server is ignored
-  // for connection purposes (it may provide policy context in future work).
+  if (sqlite && effectiveServer) {
+    throw new Error("params 'sqlite_path' and 'server' are mutually exclusive");
+  }
   const config_path =
     typeof p["config_path"] === "string" ? (p["config_path"] as string) : undefined;
   const out: { sqlite_path?: string; server?: string; config_path?: string } = {};
   if (sqlite) out.sqlite_path = sqlite;
-  else if (server) out.server = server;
+  if (effectiveServer) out.server = effectiveServer;
   if (config_path) out.config_path = config_path;
   return out;
 }

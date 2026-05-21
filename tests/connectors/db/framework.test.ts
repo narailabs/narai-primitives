@@ -189,32 +189,37 @@ describe("hardship logging integration", () => {
 });
 
 describe("server param (replaces env)", () => {
-  // Tests 1-3 are skipped pending Task 5 (dispatcher-level normalization of
-  // `server` → `env`). The zod schema now accepts `server`, but the dispatcher
-  // still only recognises `env`/`sqlite_path`, so calls with only `server` set
-  // reach the dispatcher and fail with "params must include one of 'sqlite_path'
-  // or 'env'". Task 5 will add normalization and re-enable these.
-
   it("accepts `server` in place of `env` for query", async () => {
-    const dbPath = makeFixtureDb();
-    const result = await connector.fetch("query", {
-      sqlite_path: dbPath,
-      server: "dev",
-      sql: "SELECT 1 AS x",
+    // Schema-level acceptance of `server`. Uses a mocked dispatch so no
+    // real server config is required.
+    const c = buildDbConnector({
+      dispatch: async () => ({
+        status: "ok" as const,
+        rows: [{ x: 1 }],
+        column_names: ["x"],
+        row_count: 1,
+      }),
     });
+    const result = await c.fetch("query", { server: "dev", sql: "SELECT 1 AS x" });
     expect(result.status).toBe("success");
   });
 
   it("accepts `server` for schema", async () => {
-    const dbPath = makeFixtureDb();
-    const result = await connector.fetch("schema", { sqlite_path: dbPath, server: "dev" });
+    const c = buildDbConnector({
+      dispatch: async () => ({
+        status: "ok" as const,
+        tables: [],
+        table_count: 0,
+      }),
+    });
+    const result = await c.fetch("schema", { server: "dev" });
     expect(result.status).toBe("success");
   });
 
   it("rejects when both `server` and `env` are set with different values", async () => {
-    const dbPath = makeFixtureDb();
+    // The real dispatcher's requireConnTarget catches the conflict BEFORE
+    // any config lookup, so this test needs no real server config.
     const result = await connector.fetch("query", {
-      sqlite_path: dbPath,
       server: "dev",
       env: "prod",
       sql: "SELECT 1",
