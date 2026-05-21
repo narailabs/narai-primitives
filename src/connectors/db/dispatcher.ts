@@ -90,7 +90,7 @@ function toInt(value: unknown, fallback: number): number {
   return fallback;
 }
 
-function requireConnTarget(p: Params): {
+function extractConnTarget(p: Params): {
   sqlite_path?: string;
   server?: string;
   config_path?: string;
@@ -100,11 +100,8 @@ function requireConnTarget(p: Params): {
   const server = typeof p["server"] === "string" ? (p["server"] as string) : undefined;
   const envAlias = typeof p["env"] === "string" ? (p["env"] as string) : undefined;
 
-  // Normalize the deprecated `env` alias.
   let effectiveServer = server;
   if (envAlias !== undefined) {
-    // Warn whenever the deprecated alias is used — even if `server` was
-    // also set with the same value (still a deprecated usage).
     process.stderr.write(
       "warning: db connector param `env` is deprecated; use `server` instead\n",
     );
@@ -115,12 +112,8 @@ function requireConnTarget(p: Params): {
         "params 'server' and 'env' (deprecated alias) are both set and differ; use only 'server'",
       );
     }
-    // server === envAlias: warning already emitted; effectiveServer stays as `server`.
   }
 
-  if (!sqlite && !effectiveServer) {
-    throw new Error("params must include one of 'sqlite_path' or 'server'");
-  }
   if (sqlite && effectiveServer) {
     throw new Error("params 'sqlite_path' and 'server' are mutually exclusive");
   }
@@ -134,7 +127,7 @@ function requireConnTarget(p: Params): {
 }
 
 function validateQueryParams(p: Params): QueryParamsValidated {
-  const conn = requireConnTarget(p);
+  const conn = extractConnTarget(p);
   const sqlRaw = p["sql"];
   if (typeof sqlRaw !== "string" || sqlRaw.length === 0) {
     throw new Error("action 'query' requires a non-empty 'sql' string");
@@ -155,7 +148,7 @@ function validateQueryParams(p: Params): QueryParamsValidated {
 }
 
 function validateSchemaParams(p: Params): SchemaParamsValidated {
-  const conn = requireConnTarget(p);
+  const conn = extractConnTarget(p);
   const v: SchemaParamsValidated = {};
   if (conn.sqlite_path) v.sqlite_path = conn.sqlite_path;
   if (conn.server) v.server = conn.server;
@@ -532,15 +525,38 @@ async function runOnEnv(
 
   try {
     if (pluginCfg !== null) {
+      // Resolve missing `server` against `default:` / single-entry / error.
+      let resolvedServerName = v.server;
+
+      if (resolvedServerName === undefined) {
+        if (pluginCfg.default !== undefined) {
+          resolvedServerName = pluginCfg.default;
+        } else {
+          const aliases = Object.keys(pluginCfg.servers);
+          if (aliases.length === 1) {
+            resolvedServerName = aliases[0];
+          } else {
+            return {
+              status: "error",
+              error_code: "VALIDATION_ERROR",
+              error:
+                `params must include 'server' (no default configured; ` +
+                `available: [${aliases.join(", ")}])`,
+              execution_time_ms: 0,
+            };
+          }
+        }
+      }
+
       if (
-        !Object.prototype.hasOwnProperty.call(pluginCfg.servers, v.server!)
+        !Object.prototype.hasOwnProperty.call(pluginCfg.servers, resolvedServerName)
       ) {
         const available = Object.keys(pluginCfg.servers).join(", ");
         return {
           status: "error",
           error_code: "CONFIG_ERROR",
           error:
-            `server '${v.server}' not found in plugin config ` +
+            `server '${resolvedServerName}' not found in plugin config ` +
             `(servers: [${available || "none"}])`,
           execution_time_ms: 0,
         };
@@ -566,7 +582,7 @@ async function runOnEnv(
           ...(gdh !== undefined ? { grant_duration_hours: gdh } : {}),
         });
       }
-      serverName = v.server!;
+      serverName = resolvedServerName;
       const env = getEnvironment(serverName);
       const qv = v as QueryParamsValidated;
       approvalMode =
@@ -574,8 +590,17 @@ async function runOnEnv(
       rules = env.policy ?? DEFAULT_POLICY;
       grantDurationHours = env.grant_duration_hours;
     } else {
+      if (v.server === undefined) {
+        return {
+          status: "error",
+          error_code: "VALIDATION_ERROR",
+          error:
+            "params must include 'server' (or 'sqlite_path'); no plugin config found, and the legacy wiki.config.yaml path requires an explicit name",
+          execution_time_ms: 0,
+        };
+      }
       const configPath = v.config_path ?? "./wiki.config.yaml";
-      const resolved = resolveEnv(v.server!, configPath);
+      const resolved = resolveEnv(v.server, configPath);
       serverName = resolved.name;
       const qv = v as QueryParamsValidated;
       approvalMode = qv.approval_mode ?? resolved.approval_mode;
