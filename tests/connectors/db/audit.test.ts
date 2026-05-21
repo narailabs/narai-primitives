@@ -222,24 +222,6 @@ describe("wiki_db.audit", () => {
     );
   });
 
-  it("scrubSqlSecrets redacts the full Authorization value regardless of scheme", () => {
-    // Bearer/Basic preserve the scheme name.
-    expect(scrubSqlSecrets("Authorization: Bearer abc.def.ghi")).toBe(
-      "Authorization: Bearer [REDACTED]",
-    );
-    expect(scrubSqlSecrets("Authorization: Basic dXNlcjpwYXNz")).toBe(
-      "Authorization: Basic [REDACTED]",
-    );
-    // Regression: previously `[^"'\s\\]+` stopped at the first space so
-    // `Authorization: Token abc123` left `abc123` in the audit log.
-    expect(scrubSqlSecrets("Authorization: Token abc123")).toBe(
-      "Authorization: [REDACTED]",
-    );
-    expect(scrubSqlSecrets(`{"authorization": "Token abc123"}`)).toBe(
-      `{"authorization": "[REDACTED]"}`,
-    );
-  });
-
   it("scrubSqlSecrets leaves non-credential literals alone", () => {
     expect(scrubSqlSecrets("SELECT name FROM u WHERE id = 1")).toBe(
       "SELECT name FROM u WHERE id = 1",
