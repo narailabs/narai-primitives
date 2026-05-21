@@ -236,10 +236,9 @@ describe("NARAI_ENV", () => {
       "      orders: { driver: sqlite, database: base.db }",
       "environments:",
       "  prod:",
-      "    connectors:",
-      "      db:",
-      "        servers:",
-      "          orders: { driver: sqlite, database: prod.db }",
+      "    db:",
+      "      servers:",
+      "        orders: { driver: sqlite, database: prod.db }",
       "",
     ].join("\n"));
     process.env["NARAI_ENV"] = "prod";
@@ -256,8 +255,8 @@ describe("NARAI_ENV", () => {
       "    servers:",
       "      orders: { driver: sqlite, database: base.db }",
       "environments:",
-      "  prod: { connectors: { db: { servers: { orders: { driver: sqlite, database: prod.db } } } } }",
-      "  staging: { connectors: { db: { servers: { orders: { driver: sqlite, database: staging.db } } } } }",
+      "  prod: { db: { servers: { orders: { driver: sqlite, database: prod.db } } } }",
+      "  staging: { db: { servers: { orders: { driver: sqlite, database: staging.db } } } }",
       "",
     ].join("\n"));
     process.env["NARAI_ENV"] = "prod";
@@ -271,7 +270,7 @@ describe("NARAI_ENV", () => {
       "  db: { skill: db-agent-connector, servers: { orders: { driver: sqlite, database: base.db } } }",
       "environments:",
       "  default: prod",
-      "  prod: { connectors: { db: { servers: { orders: { driver: sqlite, database: prod.db } } } } }",
+      "  prod: { db: { servers: { orders: { driver: sqlite, database: prod.db } } } }",
       "",
     ].join("\n"));
     process.env["NARAI_ENV"] = "";
@@ -285,7 +284,7 @@ describe("NARAI_ENV", () => {
       "connectors:",
       "  db: { skill: db-agent-connector, servers: { orders: { driver: sqlite, database: base.db } } }",
       "environments:",
-      "  prod: { connectors: { db: {} } }",
+      "  prod: { db: {} }",
       "",
     ].join("\n"));
     process.env["NARAI_ENV"] = "ghost";
