@@ -11,10 +11,12 @@
  *
  *   query  — execute SQL against a backend (or return formatted SQL for
  *            WRITE/DELETE via status=present_only). Params:
- *            `{env|sqlite_path, sql, max_rows?, timeout_ms?,
- *            approval_mode?, config_path?}`.
- *   schema — introspect table/column schema. Params: `{env|sqlite_path,
- *            filter?, config_path?}`.
+ *            `{server|sqlite_path, sql, max_rows?, timeout_ms?,
+ *            approval_mode?, config_path?}`. `env` is accepted as a
+ *            deprecated alias for `server` and emits a stderr warning.
+ *   schema — introspect table/column schema. Params: `{server|sqlite_path,
+ *            filter?, config_path?}`. `env` is accepted as a deprecated
+ *            alias for `server` and emits a stderr warning.
  */
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -100,15 +102,20 @@ function requireConnTarget(p: Params): {
 
   // Normalize the deprecated `env` alias.
   let effectiveServer = server;
-  if (server === undefined && envAlias !== undefined) {
+  if (envAlias !== undefined) {
+    // Warn whenever the deprecated alias is used — even if `server` was
+    // also set with the same value (still a deprecated usage).
     process.stderr.write(
       "warning: db connector param `env` is deprecated; use `server` instead\n",
     );
-    effectiveServer = envAlias;
-  } else if (server !== undefined && envAlias !== undefined && server !== envAlias) {
-    throw new Error(
-      "params 'server' and 'env' (deprecated alias) are both set and differ; use only 'server'",
-    );
+    if (server === undefined) {
+      effectiveServer = envAlias;
+    } else if (server !== envAlias) {
+      throw new Error(
+        "params 'server' and 'env' (deprecated alias) are both set and differ; use only 'server'",
+      );
+    }
+    // server === envAlias: warning already emitted; effectiveServer stays as `server`.
   }
 
   if (!sqlite && !effectiveServer) {

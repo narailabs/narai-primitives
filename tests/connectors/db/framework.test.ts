@@ -228,6 +228,44 @@ describe("server param (replaces env)", () => {
     expect(String((result as Record<string, unknown>)["error_code"])).toBe("VALIDATION_ERROR");
   });
 
+  it("normalizes `env` alias before mutual-exclusion check (proves env→server runs)", async () => {
+    // If `env` is correctly normalized to `server`, this hits the
+    // mutual-exclusion guard against `sqlite_path`. If normalization
+    // didn't run, it would fail with a different error (or, worse,
+    // silently succeed). Routing through the real dispatcher — no mock.
+    const result = await connector.fetch("query", {
+      sqlite_path: "/tmp/whatever.db",
+      env: "dev",
+      sql: "SELECT 1",
+    });
+    expect(result.status).toBe("error");
+    const r = result as Record<string, unknown>;
+    expect(String(r["error_code"])).toBe("VALIDATION_ERROR");
+    expect(String(r["message"])).toMatch(/mutually exclusive/i);
+  });
+
+  it("warns but does not error when `server` and `env` are set to the same value", async () => {
+    // Same value is still a deprecated usage of `env` — warn but accept.
+    const writes: string[] = [];
+    const origWrite = process.stderr.write;
+    process.stderr.write = ((s: string | Uint8Array): boolean => {
+      writes.push(typeof s === "string" ? s : s.toString());
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      await connector.fetch("query", {
+        server: "dev",
+        env: "dev",
+        sql: "SELECT 1",
+      });
+      // Don't assert on result here — there's no plugin config, so it will
+      // be a CONFIG_ERROR. The point is the deprecation warning fired.
+    } finally {
+      process.stderr.write = origWrite;
+    }
+    expect(writes.some((s) => s.includes("env` is deprecated"))).toBe(true);
+  });
+
   it("treats `env` as an alias when only `env` is set", async () => {
     // Confirms the schema still accepts `env` (backward compat).
     // Uses a mocked dispatch so no real server config is required.
