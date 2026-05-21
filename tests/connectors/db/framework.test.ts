@@ -280,6 +280,38 @@ describe("server param (replaces env)", () => {
     const result = await c.fetch("query", { env: "dev", sql: "SELECT 1 AS x" });
     expect(result.status).toBe("success");
   });
+
+  it("rejects empty-string `server` as VALIDATION_ERROR", async () => {
+    // Empty string is NOT the same as omitted — never let an explicit ""
+    // silently fall back to the default-server resolution.
+    const result = await connector.fetch("query", {
+      server: "",
+      sql: "SELECT 1",
+    });
+    expect(result.status).toBe("error");
+    expect(String((result as Record<string, unknown>)["error_code"])).toBe("VALIDATION_ERROR");
+    expect(String((result as Record<string, unknown>)["message"])).toMatch(/server.*non-empty/i);
+  });
+
+  it("rejects empty-string `env` as VALIDATION_ERROR", async () => {
+    const result = await connector.fetch("query", {
+      env: "",
+      sql: "SELECT 1",
+    });
+    expect(result.status).toBe("error");
+    expect(String((result as Record<string, unknown>)["error_code"])).toBe("VALIDATION_ERROR");
+    expect(String((result as Record<string, unknown>)["message"])).toMatch(/env.*non-empty/i);
+  });
+
+  it("rejects empty-string `sqlite_path` as VALIDATION_ERROR", async () => {
+    const result = await connector.fetch("query", {
+      sqlite_path: "",
+      sql: "SELECT 1",
+    });
+    expect(result.status).toBe("error");
+    expect(String((result as Record<string, unknown>)["error_code"])).toBe("VALIDATION_ERROR");
+    expect(String((result as Record<string, unknown>)["message"])).toMatch(/sqlite_path.*non-empty/i);
+  });
 });
 
 describe("--curate flag", () => {
