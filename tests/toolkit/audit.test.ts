@@ -38,6 +38,64 @@ describe("scrubSecrets", () => {
     const raw = "SELECT * FROM users WHERE id = 42";
     expect(scrubSecrets(raw)).toBe(raw);
   });
+
+  it("preserves the matched separator in JSON-shaped payloads", () => {
+    // `:` must round-trip (don't rewrite to `=`) so events.jsonl stays
+    // parseable as JSON-per-line.
+    expect(scrubSecrets(`{"password":"hunter2"}`)).toBe(
+      `{"password":"[REDACTED]"}`,
+    );
+    expect(scrubSecrets(`{"api_key": "abc"}`)).toBe(
+      `{"api_key": "[REDACTED]"}`,
+    );
+    expect(scrubSecrets(`{"token":"sk-abc"}`)).toBe(`{"token":"[REDACTED]"}`);
+  });
+
+  it("redacts the full Authorization value for Bearer/Basic schemes", () => {
+    expect(scrubSecrets("Authorization: Bearer abc.def.ghi")).toBe(
+      "Authorization: Bearer [REDACTED]",
+    );
+    expect(scrubSecrets("Authorization: Basic dXNlcjpwYXNz")).toBe(
+      "Authorization: Basic [REDACTED]",
+    );
+  });
+
+  it("redacts the full Authorization value for non-Bearer/Basic schemes", () => {
+    // Regression: previously `[^"'\s\\]+` stopped at the first space so
+    // `Authorization: Token abc123` left `abc123` in the log.
+    expect(scrubSecrets("Authorization: Token abc123")).toBe(
+      "Authorization: [REDACTED]",
+    );
+    expect(scrubSecrets("authorization=APIKey foo-bar-baz")).toBe(
+      "authorization=[REDACTED]",
+    );
+    expect(scrubSecrets("Authorization: Digest username=u, realm=r")).toBe(
+      "Authorization: [REDACTED]",
+    );
+  });
+
+  it("redacts quoted Authorization values inside JSON", () => {
+    // The closing quote sits outside the regex match, so it is preserved.
+    expect(scrubSecrets(`{"authorization": "Token abc123"}`)).toBe(
+      `{"authorization": "[REDACTED]"}`,
+    );
+    expect(scrubSecrets(`{"authorization": "Bearer abc.def"}`)).toBe(
+      `{"authorization": "Bearer [REDACTED]"}`,
+    );
+  });
+
+  it("over-redacts multi-credential lines (safe failure mode)", () => {
+    // `[^"'\r\n]+` is greedy across commas — the first Authorization match
+    // consumes everything to end-of-line, redacting both credentials. We
+    // accept the structure loss because the alternative (under-redacting)
+    // leaks the second credential.
+    const out = scrubSecrets(
+      "Authorization: Bearer aaa,Authorization: Basic bbb",
+    );
+    expect(out).not.toContain("aaa");
+    expect(out).not.toContain("bbb");
+    expect(out).toContain("[REDACTED]");
+  });
 });
 
 describe("AuditWriter", () => {

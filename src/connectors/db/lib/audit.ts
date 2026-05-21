@@ -93,24 +93,44 @@ export interface LogQueryParams {
  * single/double-quoted literals — partial or concatenated literals are
  * out of scope.
  */
-const _SENSITIVE_LITERAL_SQUOTE_RE =
-  /("?(?:password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)"?\s*[:=]\s*)'[^']*'/gi;
-const _SENSITIVE_LITERAL_DQUOTE_RE =
-  /("?(?:password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)"?\s*[:=]\s*)"[^"]*"/gi;
+// Key + separator are captured as distinct groups so the original separator
+// (e.g. `:` for JSON, `=` for SQL/env) is preserved verbatim. Hard-coding `=`
+// would mangle `{"password":"x"}` into `{"password"='[REDACTED]'}`, breaking
+// downstream consumers that parse events.jsonl as JSON-per-line.
+// AUTH value class is `[^"'\r\n]+` so non-Bearer/Basic schemes (Token,
+// APIKey, Negotiate, Digest, …) get their full credential redacted.
+const _SENSITIVE_KEYS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth";
+const _SENSITIVE_LITERAL_SQUOTE_RE = new RegExp(
+  `("?(?:${_SENSITIVE_KEYS})"?)(\\s*[:=]\\s*)'[^']*'`,
+  "gi",
+);
+const _SENSITIVE_LITERAL_DQUOTE_RE = new RegExp(
+  `("?(?:${_SENSITIVE_KEYS})"?)(\\s*[:=]\\s*)"[^"]*"`,
+  "gi",
+);
 const _SENSITIVE_AUTH_RE =
-  /("?authorization"?\s*[:=]\s*['"]?)((?:bearer|basic)\s+)?([^"'\s\\]+)/gi;
+  /("?authorization"?)(\s*[:=]\s*)(['"]?)((?:bearer|basic)\s+)?([^"'\r\n]+)/gi;
 
 export function scrubSqlSecrets(sql: string): string {
   return sql
-    .replace(_SENSITIVE_LITERAL_SQUOTE_RE, (_m, key: string) => {
-      const k = key.replace(/\s*[:=]\s*$/, "");
-      return `${k}='[REDACTED]'`;
-    })
-    .replace(_SENSITIVE_LITERAL_DQUOTE_RE, (_m, key: string) => {
-      const k = key.replace(/\s*[:=]\s*$/, "");
-      return `${k}="[REDACTED]"`;
-    })
-    .replace(_SENSITIVE_AUTH_RE, (_m, prefix: string, type: string | undefined, _val: string) => `${prefix}${type || ""}[REDACTED]`);
+    .replace(
+      _SENSITIVE_LITERAL_SQUOTE_RE,
+      (_m, key: string, sep: string) => `${key}${sep}'[REDACTED]'`,
+    )
+    .replace(
+      _SENSITIVE_LITERAL_DQUOTE_RE,
+      (_m, key: string, sep: string) => `${key}${sep}"[REDACTED]"`,
+    )
+    .replace(
+      _SENSITIVE_AUTH_RE,
+      (
+        _m,
+        key: string,
+        sep: string,
+        quote: string,
+        scheme: string | undefined,
+      ) => `${key}${sep}${quote}${scheme || ""}[REDACTED]`,
+    );
 }
 
 /** Log a query execution event. */

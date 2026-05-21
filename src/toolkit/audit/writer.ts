@@ -21,29 +21,50 @@ export interface AuditWriterOptions {
   sessionId?: string;
 }
 
-/** Redact common credential-bearing `key='value'` literals in a string. */
-const SENSITIVE_SQUOTE_RE =
-  /("?(?:password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)"?\s*[:=]\s*)'[^']*'/gi;
-const SENSITIVE_DQUOTE_RE =
-  /("?(?:password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)"?\s*[:=]\s*)"[^"]*"/gi;
+/**
+ * Redact common credential-bearing `key='value'` literals in a string.
+ *
+ * The key/separator are captured as distinct groups so the original separator
+ * (e.g. `:` for JSON payloads, `=` for SQL or env-style) and its whitespace
+ * are preserved verbatim in the output. Hard-coding `=` would mangle JSON
+ * like `{"password":"x"}` into `{"password"='[REDACTED]'}`.
+ *
+ * AUTH value class is `[^"'\r\n]+` so non-Bearer/Basic schemes (Token,
+ * APIKey, Negotiate, Digest, …) get their whole credential redacted —
+ * stopping at whitespace would leave the credential tail in the log.
+ */
+const SENSITIVE_KEYS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth";
+const SENSITIVE_SQUOTE_RE = new RegExp(
+  `("?(?:${SENSITIVE_KEYS})"?)(\\s*[:=]\\s*)'[^']*'`,
+  "gi",
+);
+const SENSITIVE_DQUOTE_RE = new RegExp(
+  `("?(?:${SENSITIVE_KEYS})"?)(\\s*[:=]\\s*)"[^"]*"`,
+  "gi",
+);
 const SENSITIVE_AUTH_RE =
-  /("?authorization"?\s*[:=]\s*['"]?)((?:bearer|basic)\s+)?([^"'\s\\]+)/gi;
+  /("?authorization"?)(\s*[:=]\s*)(['"]?)((?:bearer|basic)\s+)?([^"'\r\n]+)/gi;
 
 export function scrubSecrets(text: string): string {
   return text
-    .replace(SENSITIVE_SQUOTE_RE, (match, key: string) => {
-      const k = key.replace(/\s*[:=]\s*$/, "");
-      const sepMatch = match.substring(k.length).match(/\s*[:=]\s*/);
-      const sep = sepMatch ? sepMatch[0] : "=";
-      return `${k}${sep}'[REDACTED]'`;
-    })
-    .replace(SENSITIVE_DQUOTE_RE, (match, key: string) => {
-      const k = key.replace(/\s*[:=]\s*$/, "");
-      const sepMatch = match.substring(k.length).match(/\s*[:=]\s*/);
-      const sep = sepMatch ? sepMatch[0] : "=";
-      return `${k}${sep}"[REDACTED]"`;
-    })
-    .replace(SENSITIVE_AUTH_RE, (_m, prefix: string, type: string | undefined, _val: string) => `${prefix}${type || ""}[REDACTED]`);
+    .replace(
+      SENSITIVE_SQUOTE_RE,
+      (_m, key: string, sep: string) => `${key}${sep}'[REDACTED]'`,
+    )
+    .replace(
+      SENSITIVE_DQUOTE_RE,
+      (_m, key: string, sep: string) => `${key}${sep}"[REDACTED]"`,
+    )
+    .replace(
+      SENSITIVE_AUTH_RE,
+      (
+        _m,
+        key: string,
+        sep: string,
+        quote: string,
+        scheme: string | undefined,
+      ) => `${key}${sep}${quote}${scheme || ""}[REDACTED]`,
+    );
 }
 
 function isoTimestamp(): string {

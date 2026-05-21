@@ -207,18 +207,48 @@ describe("wiki_db.audit", () => {
   it("scrubSqlSecrets masks single-quoted credential literals", () => {
     expect(
       scrubSqlSecrets("SELECT * FROM u WHERE password = 'p4ss' AND id = 1"),
-    ).toBe("SELECT * FROM u WHERE password='[REDACTED]' AND id = 1");
+    ).toBe("SELECT * FROM u WHERE password = '[REDACTED]' AND id = 1");
     expect(scrubSqlSecrets("WHERE token='sk-abc123'")).toBe(
       "WHERE token='[REDACTED]'",
     );
     expect(scrubSqlSecrets("WHERE api_key = 'k1' OR api-key = 'k2'")).toBe(
-      "WHERE api_key='[REDACTED]' OR api-key='[REDACTED]'",
+      "WHERE api_key = '[REDACTED]' OR api-key = '[REDACTED]'",
     );
   });
 
   it("scrubSqlSecrets masks double-quoted credential literals", () => {
     expect(scrubSqlSecrets('WHERE secret = "s3cr3t"')).toBe(
-      'WHERE secret="[REDACTED]"',
+      'WHERE secret = "[REDACTED]"',
+    );
+  });
+
+  it("scrubSqlSecrets preserves the matched separator in JSON payloads", () => {
+    // Regression: replacement used to hard-code `=`, mangling JSON keys —
+    // `{"password":"x"}` became `{"password"='[REDACTED]'}` which breaks
+    // downstream consumers parsing events.jsonl as JSON-per-line.
+    expect(scrubSqlSecrets(`{"password":"hunter2"}`)).toBe(
+      `{"password":"[REDACTED]"}`,
+    );
+    expect(scrubSqlSecrets(`{"api_key": "abc"}`)).toBe(
+      `{"api_key": "[REDACTED]"}`,
+    );
+  });
+
+  it("scrubSqlSecrets redacts the full Authorization value regardless of scheme", () => {
+    // Bearer/Basic preserve the scheme name for log readability.
+    expect(scrubSqlSecrets("Authorization: Bearer abc.def.ghi")).toBe(
+      "Authorization: Bearer [REDACTED]",
+    );
+    expect(scrubSqlSecrets("Authorization: Basic dXNlcjpwYXNz")).toBe(
+      "Authorization: Basic [REDACTED]",
+    );
+    // Regression: previously `[^"'\s\\]+` stopped at the first space so
+    // `Authorization: Token abc123` left `abc123` in the audit log.
+    expect(scrubSqlSecrets("Authorization: Token abc123")).toBe(
+      "Authorization: [REDACTED]",
+    );
+    expect(scrubSqlSecrets(`{"authorization": "Token abc123"}`)).toBe(
+      `{"authorization": "[REDACTED]"}`,
     );
   });
 
@@ -244,7 +274,7 @@ describe("wiki_db.audit", () => {
     const line = fs.readFileSync(logPath, "utf-8").trim();
     const record = JSON.parse(line) as { query: string };
     expect(record.query).toBe(
-      "SELECT * FROM users WHERE password='[REDACTED]' LIMIT 1",
+      "SELECT * FROM users WHERE password = '[REDACTED]' LIMIT 1",
     );
     expect(record.query).not.toContain("leaked");
   });
