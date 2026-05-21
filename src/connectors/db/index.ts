@@ -5,10 +5,19 @@
  * `@narai/connector-toolkit`. Use `import connector from "narai-primitives/db"`
  * and call `connector.fetch(action, params)` / `connector.main(argv)`.
  *
+ * Multiple databases per environment: declare each one under
+ * `connectors.db.servers:` in `~/.connectors/config.yaml`; calls pass
+ * `server: "<alias>"`. An optional `connectors.db.default:` names the
+ * server used when the caller omits `server`. If `servers:` has exactly
+ * one entry, it's the implicit default.
+ *
  * Legacy surface: `fetch(action, params)` is re-exported from the internal
  * dispatcher for programmatic callers that want the pre-framework envelope
  * shape (`{status: "ok"|"denied"|..., rows, columns, ...}`). The framework
  * connector translates that into the canonical envelope at the boundary.
+ *
+ * Deprecated: the per-call `env` parameter is accepted as an alias for
+ * `server` for one minor cycle. Migrate.
  */
 import { buildDbConnector } from "./connector.js";
 

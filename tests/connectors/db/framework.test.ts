@@ -188,6 +188,132 @@ describe("hardship logging integration", () => {
   });
 });
 
+describe("server param (replaces env)", () => {
+  it("accepts `server` in place of `env` for query", async () => {
+    // Schema-level acceptance of `server`. Uses a mocked dispatch so no
+    // real server config is required.
+    const c = buildDbConnector({
+      dispatch: async () => ({
+        status: "ok" as const,
+        rows: [{ x: 1 }],
+        column_names: ["x"],
+        row_count: 1,
+      }),
+    });
+    const result = await c.fetch("query", { server: "dev", sql: "SELECT 1 AS x" });
+    expect(result.status).toBe("success");
+  });
+
+  it("accepts `server` for schema", async () => {
+    const c = buildDbConnector({
+      dispatch: async () => ({
+        status: "ok" as const,
+        tables: [],
+        table_count: 0,
+      }),
+    });
+    const result = await c.fetch("schema", { server: "dev" });
+    expect(result.status).toBe("success");
+  });
+
+  it("rejects when both `server` and `env` are set with different values", async () => {
+    // The real dispatcher's extractConnTarget catches the conflict BEFORE
+    // any config lookup, so this test needs no real server config.
+    const result = await connector.fetch("query", {
+      server: "dev",
+      env: "prod",
+      sql: "SELECT 1",
+    });
+    expect(result.status).toBe("error");
+    expect(String((result as Record<string, unknown>)["error_code"])).toBe("VALIDATION_ERROR");
+  });
+
+  it("normalizes `env` alias before mutual-exclusion check (proves env→server runs)", async () => {
+    // If `env` is correctly normalized to `server`, this hits the
+    // mutual-exclusion guard against `sqlite_path`. If normalization
+    // didn't run, it would fail with a different error (or, worse,
+    // silently succeed). Routing through the real dispatcher — no mock.
+    const result = await connector.fetch("query", {
+      sqlite_path: "/tmp/whatever.db",
+      env: "dev",
+      sql: "SELECT 1",
+    });
+    expect(result.status).toBe("error");
+    const r = result as Record<string, unknown>;
+    expect(String(r["error_code"])).toBe("VALIDATION_ERROR");
+    expect(String(r["message"])).toMatch(/mutually exclusive/i);
+  });
+
+  it("warns but does not error when `server` and `env` are set to the same value", async () => {
+    // Same value is still a deprecated usage of `env` — warn but accept.
+    const writes: string[] = [];
+    const origWrite = process.stderr.write;
+    process.stderr.write = ((s: string | Uint8Array): boolean => {
+      writes.push(typeof s === "string" ? s : s.toString());
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      await connector.fetch("query", {
+        server: "dev",
+        env: "dev",
+        sql: "SELECT 1",
+      });
+      // Don't assert on result here — there's no plugin config, so it will
+      // be a CONFIG_ERROR. The point is the deprecation warning fired.
+    } finally {
+      process.stderr.write = origWrite;
+    }
+    expect(writes.some((s) => s.includes("env` is deprecated"))).toBe(true);
+  });
+
+  it("treats `env` as an alias when only `env` is set", async () => {
+    // Confirms the schema still accepts `env` (backward compat).
+    // Uses a mocked dispatch so no real server config is required.
+    const c = buildDbConnector({
+      dispatch: async () => ({
+        status: "ok" as const,
+        rows: [{ x: 1 }],
+        column_names: ["x"],
+        row_count: 1,
+      }),
+    });
+    const result = await c.fetch("query", { env: "dev", sql: "SELECT 1 AS x" });
+    expect(result.status).toBe("success");
+  });
+
+  it("rejects empty-string `server` as VALIDATION_ERROR", async () => {
+    // Empty string is NOT the same as omitted — never let an explicit ""
+    // silently fall back to the default-server resolution.
+    const result = await connector.fetch("query", {
+      server: "",
+      sql: "SELECT 1",
+    });
+    expect(result.status).toBe("error");
+    expect(String((result as Record<string, unknown>)["error_code"])).toBe("VALIDATION_ERROR");
+    expect(String((result as Record<string, unknown>)["message"])).toMatch(/server.*non-empty/i);
+  });
+
+  it("rejects empty-string `env` as VALIDATION_ERROR", async () => {
+    const result = await connector.fetch("query", {
+      env: "",
+      sql: "SELECT 1",
+    });
+    expect(result.status).toBe("error");
+    expect(String((result as Record<string, unknown>)["error_code"])).toBe("VALIDATION_ERROR");
+    expect(String((result as Record<string, unknown>)["message"])).toMatch(/env.*non-empty/i);
+  });
+
+  it("rejects empty-string `sqlite_path` as VALIDATION_ERROR", async () => {
+    const result = await connector.fetch("query", {
+      sqlite_path: "",
+      sql: "SELECT 1",
+    });
+    expect(result.status).toBe("error");
+    expect(String((result as Record<string, unknown>)["error_code"])).toBe("VALIDATION_ERROR");
+    expect(String((result as Record<string, unknown>)["message"])).toMatch(/sqlite_path.*non-empty/i);
+  });
+});
+
 describe("--curate flag", () => {
   it("prints a JSON snapshot and exits 0", async () => {
     const writes: string[] = [];

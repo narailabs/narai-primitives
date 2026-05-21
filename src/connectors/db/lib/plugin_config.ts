@@ -99,6 +99,8 @@ export interface AuditConfig {
 export interface PluginConfig {
   policy: PolicyRules;
   servers: Record<string, ServerConfig>;
+  /** Optional alias from `servers:` to use when callers omit `server`. */
+  default?: string;
   audit?: AuditConfig;
 }
 
@@ -321,6 +323,26 @@ function validateAudit(raw: unknown): AuditConfig | undefined {
   return { enabled };
 }
 
+function validateDefault(
+  raw: unknown,
+  servers: Record<string, ServerConfig>,
+): string | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "string") {
+    throw new Error(`default: expected string, got: ${typeof raw}`);
+  }
+  if (raw.length === 0) {
+    throw new Error(`default: expected non-empty string`);
+  }
+  if (!Object.prototype.hasOwnProperty.call(servers, raw)) {
+    const available = Object.keys(servers).join(", ");
+    throw new Error(
+      `default: '${raw}' not found in servers (available: [${available || "none"}])`,
+    );
+  }
+  return raw;
+}
+
 /**
  * Validate a raw parsed YAML object against the plugin-config schema.
  * Throws a descriptive error on any shape or value violation.
@@ -355,14 +377,16 @@ export function validatePluginConfig(raw: unknown): PluginConfig {
   }
 
   const audit = validateAudit(raw["audit"]);
+  const defaultServer = validateDefault(raw["default"], servers);
 
   const out: PluginConfig = { policy, servers };
+  if (defaultServer !== undefined) out.default = defaultServer;
   if (audit !== undefined) out.audit = audit;
 
   for (const k of Object.keys(raw)) {
-    if (k !== "policy" && k !== "servers" && k !== "audit") {
+    if (k !== "policy" && k !== "servers" && k !== "audit" && k !== "default") {
       throw new Error(
-        `plugin config: unknown top-level key '${k}' (expected: policy, servers, audit)`,
+        `plugin config: unknown top-level key '${k}' (expected: policy, servers, audit, default)`,
       );
     }
   }
@@ -441,8 +465,10 @@ export function pluginConfigFromSlice(slice: {
   }
 
   const audit = validateAudit(options["audit"]);
+  const defaultServer = validateDefault(options["default"], servers);
 
   const out: PluginConfig = { policy, servers };
+  if (defaultServer !== undefined) out.default = defaultServer;
   if (audit !== undefined) out.audit = audit;
   return out;
 }

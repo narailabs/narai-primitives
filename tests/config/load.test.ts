@@ -196,3 +196,99 @@ connectors:
     await expect(loadResolvedConfig({ cwd: tmpCwd })).rejects.toThrow(/env:NAME/);
   });
 });
+
+describe("NARAI_ENV", () => {
+  let tmp: string;
+  let origHome: string | undefined;
+  let origCwd: string;
+  let origNaraiEnv: string | undefined;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "narai-env-"));
+    origHome = process.env["HOME"];
+    origCwd = process.cwd();
+    origNaraiEnv = process.env["NARAI_ENV"];
+    const home = path.join(tmp, "home");
+    fs.mkdirSync(path.join(home, ".connectors"), { recursive: true });
+    process.env["HOME"] = home;
+    process.chdir(tmp);
+  });
+
+  afterEach(() => {
+    process.chdir(origCwd);
+    if (origHome === undefined) delete process.env["HOME"];
+    else process.env["HOME"] = origHome;
+    if (origNaraiEnv === undefined) delete process.env["NARAI_ENV"];
+    else process.env["NARAI_ENV"] = origNaraiEnv;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function writeUserConfig(body: string): void {
+    fs.writeFileSync(path.join(process.env["HOME"]!, ".connectors", "config.yaml"), body);
+  }
+
+  it("applies NARAI_ENV when opts.environment is not set", async () => {
+    writeUserConfig([
+      "connectors:",
+      "  db:",
+      "    skill: db-agent-connector",
+      "    servers:",
+      "      orders: { driver: sqlite, database: base.db }",
+      "environments:",
+      "  prod:",
+      "    db:",
+      "      servers:",
+      "        orders: { driver: sqlite, database: prod.db }",
+      "",
+    ].join("\n"));
+    process.env["NARAI_ENV"] = "prod";
+    const resolved = await loadResolvedConfig();
+    expect(resolved.environment).toBe("prod");
+    expect((resolved.connectors["db"]!.options["servers"] as Record<string, { database: string }>).orders.database).toBe("prod.db");
+  });
+
+  it("opts.environment wins over NARAI_ENV", async () => {
+    writeUserConfig([
+      "connectors:",
+      "  db:",
+      "    skill: db-agent-connector",
+      "    servers:",
+      "      orders: { driver: sqlite, database: base.db }",
+      "environments:",
+      "  prod: { db: { servers: { orders: { driver: sqlite, database: prod.db } } } }",
+      "  staging: { db: { servers: { orders: { driver: sqlite, database: staging.db } } } }",
+      "",
+    ].join("\n"));
+    process.env["NARAI_ENV"] = "prod";
+    const resolved = await loadResolvedConfig({ environment: "staging" });
+    expect(resolved.environment).toBe("staging");
+    expect((resolved.connectors["db"]!.options["servers"] as Record<string, { database: string }>).orders.database).toBe("staging.db");
+  });
+
+  it("treats NARAI_ENV='' (empty string) as unset", async () => {
+    writeUserConfig([
+      "connectors:",
+      "  db: { skill: db-agent-connector, servers: { orders: { driver: sqlite, database: base.db } } }",
+      "environments:",
+      "  default: prod",
+      "  prod: { db: { servers: { orders: { driver: sqlite, database: prod.db } } } }",
+      "",
+    ].join("\n"));
+    process.env["NARAI_ENV"] = "";
+    const resolved = await loadResolvedConfig();
+    // Falls back to environments.default, which is "prod"
+    expect(resolved.environment).toBe("prod");
+  });
+
+  it("errors when NARAI_ENV names an unknown environment", async () => {
+    writeUserConfig([
+      "connectors:",
+      "  db: { skill: db-agent-connector, servers: { orders: { driver: sqlite, database: base.db } } }",
+      "environments:",
+      "  prod: { db: {} }",
+      "",
+    ].join("\n"));
+    process.env["NARAI_ENV"] = "ghost";
+    await expect(loadResolvedConfig()).rejects.toThrow(/Environment 'ghost' not found/);
+  });
+});

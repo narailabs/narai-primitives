@@ -96,6 +96,17 @@ export async function loadResolvedConfig(opts: LoadOptions = {}): Promise<Resolv
   validateSecretsInTree(raw);
   const resolveOpts: { consumer?: string; environment?: string } = {};
   if (opts.consumer !== undefined) resolveOpts.consumer = opts.consumer;
-  if (opts.environment !== undefined) resolveOpts.environment = opts.environment;
+  if (opts.environment !== undefined) {
+    resolveOpts.environment = opts.environment;
+  } else {
+    // Shell convention: NARAI_ENV="" is treated as unset (callers can
+    // `export NARAI_ENV=` to clear without unsetting). opts.environment is
+    // a typed API surface where empty string would be a caller bug, so it
+    // doesn't get the same treatment.
+    const envFromVar = process.env["NARAI_ENV"];
+    if (envFromVar !== undefined && envFromVar !== "") {
+      resolveOpts.environment = envFromVar;
+    }
+  }
   return resolveConfig(raw, resolveOpts);
 }

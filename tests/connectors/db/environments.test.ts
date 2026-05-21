@@ -9,6 +9,12 @@ import {
   listEnvironments,
   registerEnvironment,
 } from "../../../src/connectors/db/lib/environments.js";
+import {
+  clearServers,
+  getServer,
+  listServers,
+  registerServer,
+} from "../../../src/connectors/db/lib/environments.js";
 
 describe("wiki_db.environments", () => {
   // pytest: autouse=True _clean_registry
@@ -141,5 +147,32 @@ describe("wiki_db.environments", () => {
     });
     const env = getEnvironment("dev");
     expect(env.grant_duration_hours).toBeUndefined();
+  });
+
+  describe("new canonical names (registerServer/getServer/...)", () => {
+    beforeEach(() => clearServers());
+    afterEach(() => clearServers());
+
+    it("registerServer/getServer round-trip", () => {
+      registerServer("dev", { host: "h", port: 1, database: "d" });
+      const s = getServer("dev");
+      expect(s.host).toBe("h");
+      expect(s.port).toBe(1);
+      expect(s.database).toBe("d");
+    });
+
+    it("clearServers also clears entries registered via registerEnvironment", () => {
+      registerEnvironment("dev", { host: "h" });
+      clearServers();
+      expect(listServers()).toEqual([]);
+      expect(listEnvironments()).toEqual([]);
+    });
+
+    it("listServers and listEnvironments return identical results (shared state)", () => {
+      registerServer("a", { host: "h" });
+      registerEnvironment("b", { host: "h" });
+      expect(listServers().sort()).toEqual(["a", "b"]);
+      expect(listEnvironments().sort()).toEqual(["a", "b"]);
+    });
   });
 });

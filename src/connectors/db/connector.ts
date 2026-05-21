@@ -35,9 +35,10 @@ import { DB_POLICY_EXTRAS } from "./lib/plugin_config.js";
 // enforce `.min(1)` here so empty-SQL is caught at the toolkit boundary and
 // returned as VALIDATION_ERROR rather than reaching the dispatcher.
 const queryParams = z.object({
-  sqlite_path: z.string().optional(),
-  env: z.string().optional(),
-  config_path: z.string().optional(),
+  sqlite_path: z.string().min(1, "sqlite_path must be non-empty if provided").optional(),
+  server: z.string().min(1, "server must be non-empty if provided").optional(),
+  env: z.string().min(1, "env must be non-empty if provided").optional().describe("Deprecated alias for `server`. Removed in next major."),
+  config_path: z.string().min(1, "config_path must be non-empty if provided").optional(),
   sql: z.string().min(1, "sql is required"),
   approval_mode: z.string().optional(),
   max_rows: z.coerce.number().int().positive().default(1000),
@@ -45,9 +46,10 @@ const queryParams = z.object({
 });
 
 const schemaParams = z.object({
-  sqlite_path: z.string().optional(),
-  env: z.string().optional(),
-  config_path: z.string().optional(),
+  sqlite_path: z.string().min(1, "sqlite_path must be non-empty if provided").optional(),
+  server: z.string().min(1, "server must be non-empty if provided").optional(),
+  env: z.string().min(1, "env must be non-empty if provided").optional().describe("Deprecated alias for `server`. Removed in next major."),
+  config_path: z.string().min(1, "config_path must be non-empty if provided").optional(),
   filter: z.string().optional(),
 });
 

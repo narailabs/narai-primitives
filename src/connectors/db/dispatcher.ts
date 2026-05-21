@@ -11,10 +11,12 @@
  *
  *   query  — execute SQL against a backend (or return formatted SQL for
  *            WRITE/DELETE via status=present_only). Params:
- *            `{env|sqlite_path, sql, max_rows?, timeout_ms?,
- *            approval_mode?, config_path?}`.
- *   schema — introspect table/column schema. Params: `{env|sqlite_path,
- *            filter?, config_path?}`.
+ *            `{server|sqlite_path, sql, max_rows?, timeout_ms?,
+ *            approval_mode?, config_path?}`. `env` is accepted as a
+ *            deprecated alias for `server` and emits a stderr warning.
+ *   schema — introspect table/column schema. Params: `{server|sqlite_path,
+ *            filter?, config_path?}`. `env` is accepted as a deprecated
+ *            alias for `server` and emits a stderr warning.
  */
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -62,7 +64,7 @@ type Params = Record<string, unknown>;
 
 interface QueryParamsValidated {
   sqlite_path?: string;
-  env?: string;
+  server?: string;
   config_path?: string;
   sql: string;
   approval_mode?: string;
@@ -72,7 +74,7 @@ interface QueryParamsValidated {
 
 interface SchemaParamsValidated {
   sqlite_path?: string;
-  env?: string;
+  server?: string;
   config_path?: string;
   filter?: string;
 }
@@ -88,31 +90,64 @@ function toInt(value: unknown, fallback: number): number {
   return fallback;
 }
 
-function requireConnTarget(p: Params): {
+function extractConnTarget(p: Params): {
   sqlite_path?: string;
-  env?: string;
+  server?: string;
   config_path?: string;
 } {
-  const sqlite =
-    typeof p["sqlite_path"] === "string" ? (p["sqlite_path"] as string) : undefined;
-  const env = typeof p["env"] === "string" ? (p["env"] as string) : undefined;
-  if (!sqlite && !env) {
-    throw new Error("params must include one of 'sqlite_path' or 'env'");
+  // Defense-in-depth: zod catches these at the framework layer, but
+  // legacy `dispatcherFetch` and CLI `--params` callers reach here
+  // directly. Reject malformed types up front so they can't slip into
+  // default-server fallback.
+  const sqliteRaw = p["sqlite_path"];
+  if (sqliteRaw !== undefined && (typeof sqliteRaw !== "string" || sqliteRaw.length === 0)) {
+    throw new Error("params 'sqlite_path' must be a non-empty string");
   }
-  if (sqlite && env) {
-    throw new Error("params 'sqlite_path' and 'env' are mutually exclusive");
+  const sqlite = typeof sqliteRaw === "string" ? sqliteRaw : undefined;
+
+  const serverRaw = p["server"];
+  if (serverRaw !== undefined && (typeof serverRaw !== "string" || serverRaw.length === 0)) {
+    throw new Error("params 'server' must be a non-empty string");
   }
-  const config_path =
-    typeof p["config_path"] === "string" ? (p["config_path"] as string) : undefined;
-  const out: { sqlite_path?: string; env?: string; config_path?: string } = {};
+  const server = typeof serverRaw === "string" ? serverRaw : undefined;
+
+  const envRaw = p["env"];
+  if (envRaw !== undefined && (typeof envRaw !== "string" || envRaw.length === 0)) {
+    throw new Error("params 'env' must be a non-empty string");
+  }
+  const envAlias = typeof envRaw === "string" ? envRaw : undefined;
+
+  let effectiveServer = server;
+  if (envAlias !== undefined) {
+    process.stderr.write(
+      "warning: db connector param `env` is deprecated; use `server` instead\n",
+    );
+    if (server === undefined) {
+      effectiveServer = envAlias;
+    } else if (server !== envAlias) {
+      throw new Error(
+        "params 'server' and 'env' (deprecated alias) are both set and differ; use only 'server'",
+      );
+    }
+  }
+
+  if (sqlite && effectiveServer) {
+    throw new Error("params 'sqlite_path' and 'server' are mutually exclusive");
+  }
+  const configPathRaw = p["config_path"];
+  if (configPathRaw !== undefined && (typeof configPathRaw !== "string" || configPathRaw.length === 0)) {
+    throw new Error("params 'config_path' must be a non-empty string");
+  }
+  const config_path = typeof configPathRaw === "string" ? configPathRaw : undefined;
+  const out: { sqlite_path?: string; server?: string; config_path?: string } = {};
   if (sqlite) out.sqlite_path = sqlite;
-  if (env) out.env = env;
+  if (effectiveServer) out.server = effectiveServer;
   if (config_path) out.config_path = config_path;
   return out;
 }
 
 function validateQueryParams(p: Params): QueryParamsValidated {
-  const conn = requireConnTarget(p);
+  const conn = extractConnTarget(p);
   const sqlRaw = p["sql"];
   if (typeof sqlRaw !== "string" || sqlRaw.length === 0) {
     throw new Error("action 'query' requires a non-empty 'sql' string");
@@ -123,7 +158,7 @@ function validateQueryParams(p: Params): QueryParamsValidated {
     timeout_ms: toInt(p["timeout_ms"], 30000),
   };
   if (conn.sqlite_path) v.sqlite_path = conn.sqlite_path;
-  if (conn.env) v.env = conn.env;
+  if (conn.server) v.server = conn.server;
   if (conn.config_path) v.config_path = conn.config_path;
   const approval = p["approval_mode"];
   if (typeof approval === "string" && approval.length > 0) {
@@ -133,10 +168,10 @@ function validateQueryParams(p: Params): QueryParamsValidated {
 }
 
 function validateSchemaParams(p: Params): SchemaParamsValidated {
-  const conn = requireConnTarget(p);
+  const conn = extractConnTarget(p);
   const v: SchemaParamsValidated = {};
   if (conn.sqlite_path) v.sqlite_path = conn.sqlite_path;
-  if (conn.env) v.env = conn.env;
+  if (conn.server) v.server = conn.server;
   if (conn.config_path) v.config_path = conn.config_path;
   const filter = p["filter"];
   if (typeof filter === "string" && filter.length > 0) v.filter = filter;
@@ -503,22 +538,45 @@ async function runOnEnv(
     };
   }
 
-  let envName: string;
+  let serverName: string;
   let approvalMode: string;
   let rules: PolicyRules;
   let grantDurationHours: number | undefined;
 
   try {
     if (pluginCfg !== null) {
+      // Resolve missing `server` against `default:` / single-entry / error.
+      let resolvedServerName = v.server;
+
+      if (resolvedServerName === undefined) {
+        if (pluginCfg.default !== undefined) {
+          resolvedServerName = pluginCfg.default;
+        } else {
+          const serverNames = Object.keys(pluginCfg.servers);
+          if (serverNames.length === 1) {
+            resolvedServerName = serverNames[0];
+          } else {
+            return {
+              status: "error",
+              error_code: "VALIDATION_ERROR",
+              error:
+                `params must include 'server' (no default configured; ` +
+                `available: [${serverNames.join(", ")}])`,
+              execution_time_ms: 0,
+            };
+          }
+        }
+      }
+
       if (
-        !Object.prototype.hasOwnProperty.call(pluginCfg.servers, v.env!)
+        !Object.prototype.hasOwnProperty.call(pluginCfg.servers, resolvedServerName)
       ) {
         const available = Object.keys(pluginCfg.servers).join(", ");
         return {
           status: "error",
           error_code: "CONFIG_ERROR",
           error:
-            `environment '${v.env}' not found in plugin config ` +
+            `server '${resolvedServerName}' not found in plugin config ` +
             `(servers: [${available || "none"}])`,
           execution_time_ms: 0,
         };
@@ -544,17 +602,25 @@ async function runOnEnv(
           ...(gdh !== undefined ? { grant_duration_hours: gdh } : {}),
         });
       }
-      envName = v.env!;
-      const env = getEnvironment(envName);
+      serverName = resolvedServerName;
+      const env = getEnvironment(serverName);
       const qv = v as QueryParamsValidated;
       approvalMode =
         qv.approval_mode ?? env.approval_mode.replace(/-/g, "_");
       rules = env.policy ?? DEFAULT_POLICY;
       grantDurationHours = env.grant_duration_hours;
     } else {
+      if (v.server === undefined) {
+        return {
+          status: "error",
+          error_code: "VALIDATION_ERROR",
+          error: "params must include 'server' (or 'sqlite_path')",
+          execution_time_ms: 0,
+        };
+      }
       const configPath = v.config_path ?? "./wiki.config.yaml";
-      const resolved = resolveEnv(v.env!, configPath);
-      envName = resolved.name;
+      const resolved = resolveEnv(v.server, configPath);
+      serverName = resolved.name;
       const qv = v as QueryParamsValidated;
       approvalMode = qv.approval_mode ?? resolved.approval_mode;
       rules = DEFAULT_POLICY;
@@ -584,7 +650,7 @@ async function runOnEnv(
 
   let conn;
   try {
-    conn = await getConnection(envName);
+    conn = await getConnection(serverName);
   } catch (e) {
     clearEnvironments();
     return {
@@ -602,7 +668,7 @@ async function runOnEnv(
         conn.driver,
         conn.native,
         sv.filter ?? null,
-        envName,
+        serverName,
       );
     }
     const qv = v as QueryParamsValidated;
@@ -617,7 +683,7 @@ async function runOnEnv(
       timeout_ms: qv.timeout_ms,
     });
   } finally {
-    releaseConnection(envName, conn);
+    releaseConnection(serverName, conn);
     clearEnvironments();
   }
 }
@@ -684,14 +750,16 @@ options:
                   JSON string of action parameters
 
 action 'query' params:
-  {"env": "dev", "sql": "SELECT 1"}  or
+  {"server": "dev", "sql": "SELECT 1"}  or
   {"sqlite_path": "./test.db", "sql": "SELECT 1"}
   optional: max_rows (default 1000), timeout_ms (default 30000),
            approval_mode, config_path
+  deprecated: \`env\` is accepted as an alias for \`server\`.
 
 action 'schema' params:
-  {"env": "dev"}  or  {"sqlite_path": "./test.db"}
+  {"server": "dev"}  or  {"sqlite_path": "./test.db"}
   optional: filter, config_path
+  deprecated: \`env\` is accepted as an alias for \`server\`.
 
 Writes/deletes (INSERT/UPDATE/DELETE/TRUNCATE/…) follow the configured
 policy. By default, WRITE escalates and DELETE/ADMIN return status="present_only"
