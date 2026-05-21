@@ -262,6 +262,7 @@ describe("NARAI_ENV", () => {
     process.env["NARAI_ENV"] = "prod";
     const resolved = await loadResolvedConfig({ environment: "staging" });
     expect(resolved.environment).toBe("staging");
+    expect((resolved.connectors["db"]!.options["servers"] as Record<string, { database: string }>).orders.database).toBe("staging.db");
   });
 
   it("treats NARAI_ENV='' (empty string) as unset", async () => {
