@@ -105,10 +105,16 @@ export interface LogQueryParams {
 // inside JSON-encoded values are skipped — without this, `"abc\"def"`
 // terminates at the escaped quote and leaks the tail.
 //
-// AUTH_RE alternates between quoted (closes at the matching outer quote,
-// handling JSON-escaped inner quotes) and unquoted (consumes to end-of-line)
-// so unescaped Digest parameters on plain log lines (`Digest username="u",
-// response="…"`) don't leak past the first internal quote.
+// AUTH redaction is split into two anchored patterns:
+//   QUOTED_RE — preceded by `"` or `'` (JSON key or string-value context);
+//     the unquoted-value branch's value class `[^"'\r\n]+` stops at any
+//     quote so it can't consume past the outer JSON closing quote.
+//   LINE_RE — anchored to `^` or `\r\n` (HTTP header / env line); value
+//     class is `[^\r\n]+` so Digest's embedded quoted params are
+//     fully consumed.
+// Anchoring avoids the regression where a mid-string match on
+// `{"message":"authorization: …"}` swallowed the trailing `"}` and
+// produced unterminated JSON.
 const _SENSITIVE_KEYS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth";
 const _SENSITIVE_LITERAL_SQUOTE_RE = new RegExp(
   `("?\\b(?:${_SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)'(?:\\\\.|[^'\\\\])*'`,
@@ -118,8 +124,10 @@ const _SENSITIVE_LITERAL_DQUOTE_RE = new RegExp(
   `("?\\b(?:${_SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)"(?:\\\\.|[^"\\\\])*"`,
   "gi",
 );
-const _SENSITIVE_AUTH_RE =
-  /("?\bauthorization\b"?)(\s*[:=]\s*)(?:(["'])((?:bearer|basic)\s+)?(?:\\.|[^\r\n\\])*?\3|((?:bearer|basic)\s+)?[^\r\n]+)/gi;
+const _SENSITIVE_AUTH_QUOTED_RE =
+  /(?<=["'])(\bauthorization\b)("?)(\s*[:=]\s*)(?:(["'])((?:bearer|basic)\s+)?(?:\\.|[^\r\n\\])*?\4|((?:bearer|basic)\s+)?[^"'\r\n]+)/gi;
+const _SENSITIVE_AUTH_LINE_RE =
+  /(?:^|(?<=[\r\n]))(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?[^\r\n]+/gi;
 
 export function scrubSqlSecrets(sql: string): string {
   return sql
@@ -132,20 +140,26 @@ export function scrubSqlSecrets(sql: string): string {
       (_m, key: string, sep: string) => `${key}${sep}"[REDACTED]"`,
     )
     .replace(
-      _SENSITIVE_AUTH_RE,
+      _SENSITIVE_AUTH_QUOTED_RE,
       (
         _m,
-        key: string,
+        kw: string,
+        keyQuote: string,
         sep: string,
-        openQuote: string | undefined,
+        valQuote: string | undefined,
         schemeQ: string | undefined,
         schemeU: string | undefined,
       ) => {
-        if (openQuote !== undefined) {
-          return `${key}${sep}${openQuote}${schemeQ || ""}[REDACTED]${openQuote}`;
+        if (valQuote !== undefined) {
+          return `${kw}${keyQuote}${sep}${valQuote}${schemeQ || ""}[REDACTED]${valQuote}`;
         }
-        return `${key}${sep}${schemeU || ""}[REDACTED]`;
+        return `${kw}${keyQuote}${sep}${schemeU || ""}[REDACTED]`;
       },
+    )
+    .replace(
+      _SENSITIVE_AUTH_LINE_RE,
+      (_m, kw: string, sep: string, scheme: string | undefined) =>
+        `${kw}${sep}${scheme || ""}[REDACTED]`,
     );
 }
 

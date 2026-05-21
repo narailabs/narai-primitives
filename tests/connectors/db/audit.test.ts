@@ -298,6 +298,30 @@ describe("wiki_db.audit", () => {
     expect(out).not.toContain("response");
   });
 
+  it("scrubSqlSecrets does not mangle JSON when 'authorization' appears inside a string value", () => {
+    // Regression (Codex P2 on 6e3bf0f): the unquoted AUTH branch's
+    // `[^\r\n]+` value class used to consume the JSON closing `"}` and
+    // produce unterminated JSON for inputs like
+    // `{"message":"authorization: Bearer abc"}`.
+    const input = `{"message":"authorization: Bearer abc"}`;
+    const out = scrubSqlSecrets(input);
+    expect(out).toBe(`{"message":"authorization: Bearer [REDACTED]"}`);
+    expect(out).not.toContain("abc");
+    expect(() => JSON.parse(out)).not.toThrow();
+  });
+
+  it("scrubSqlSecrets still redacts HTTP-style Authorization headers at line start", () => {
+    expect(scrubSqlSecrets("Authorization: Bearer abc")).toBe(
+      "Authorization: Bearer [REDACTED]",
+    );
+    const multiline =
+      "GET /api\nAuthorization: Bearer xyz\nHost: example.com";
+    const out = scrubSqlSecrets(multiline);
+    expect(out).toContain("Authorization: Bearer [REDACTED]");
+    expect(out).not.toContain("xyz");
+    expect(out).toContain("Host: example.com");
+  });
+
   it("scrubSqlSecrets leaves non-credential literals alone", () => {
     expect(scrubSqlSecrets("SELECT name FROM u WHERE id = 1")).toBe(
       "SELECT name FROM u WHERE id = 1",

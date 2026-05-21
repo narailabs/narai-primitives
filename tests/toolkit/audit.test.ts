@@ -145,6 +145,35 @@ describe("scrubSecrets", () => {
     expect(out).not.toContain("abc123");
     expect(out).not.toContain("response");
   });
+
+  it("does not mangle JSON when 'authorization' appears inside a string value", () => {
+    // Regression (Codex P2 on 6e3bf0f): the unquoted AUTH branch's
+    // `[^\r\n]+` value class used to consume the JSON closing `"` and
+    // `}`, producing unterminated JSON for inputs like
+    // `{"message":"authorization: Bearer abc"}`.
+    const input = `{"message":"authorization: Bearer abc"}`;
+    const out = scrubSecrets(input);
+    // The credential must still be redacted, but the JSON structure
+    // must remain valid.
+    expect(out).toBe(`{"message":"authorization: Bearer [REDACTED]"}`);
+    expect(out).not.toContain("abc");
+    // Structural sanity: still parseable as JSON.
+    expect(() => JSON.parse(out)).not.toThrow();
+  });
+
+  it("still redacts HTTP-style Authorization headers at line start", () => {
+    // The line-anchored pattern handles `^Authorization:` and the
+    // post-`\n` form. We accept that mid-line non-JSON occurrences are
+    // not matched (trade-off for not mangling JSON).
+    expect(scrubSecrets("Authorization: Bearer abc")).toBe(
+      "Authorization: Bearer [REDACTED]",
+    );
+    const multiline = "GET /api\nAuthorization: Bearer xyz\nHost: example.com";
+    const out = scrubSecrets(multiline);
+    expect(out).toContain("Authorization: Bearer [REDACTED]");
+    expect(out).not.toContain("xyz");
+    expect(out).toContain("Host: example.com");
+  });
 });
 
 describe("AuditWriter", () => {
