@@ -64,8 +64,9 @@ export class SQLiteDriver extends DatabaseDriver {
           truncated: false,
         };
       }
-      const iter = stmt.iterate(...((params ?? []) as unknown[])) as
-        IterableIterator<Record<string, unknown>>;
+      const iter = stmt.iterate(
+        ...((params ?? []) as unknown[]),
+      ) as IterableIterator<Record<string, unknown>>;
       const rowsRaw: Record<string, unknown>[] = [];
       // Fetch one extra row to detect truncation.
       let truncated = false;
@@ -128,14 +129,16 @@ export class SQLiteDriver extends DatabaseDriver {
         cursor = db.prepare(baseQuery).all() as Array<{ name: string }>;
       }
 
+      // G-SCHEMA-BATCH: Avoid N+1 query compilation overhead.
+      // better-sqlite3 handles pragma_table_info as a table-valued function.
+      const pragmaStmt = db.prepare("SELECT * FROM pragma_table_info(?)");
+
       const tables: Table[] = [];
       for (const row of cursor) {
         const tableName = row.name;
         // PRAGMA table_info returns rows shaped like:
         //   {cid, name, type, notnull, dflt_value, pk}
-        const colCursor = db
-          .prepare(`PRAGMA table_info(${tableName})`)
-          .all() as Array<{
+        const colCursor = pragmaStmt.all(tableName) as Array<{
           cid: number;
           name: string;
           type: string;
