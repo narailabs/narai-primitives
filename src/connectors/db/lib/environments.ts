@@ -142,3 +142,23 @@ export function listEnvironments(): string[] {
 export function clearEnvironments(): void {
   _registry.clear();
 }
+
+/**
+ * Canonical name. `registerEnvironment` is kept as a deprecated alias.
+ */
+export const registerServer = registerEnvironment;
+
+/**
+ * Canonical name. `getEnvironment` is kept as a deprecated alias.
+ */
+export const getServer = getEnvironment;
+
+/**
+ * Canonical name. `listEnvironments` is kept as a deprecated alias.
+ */
+export const listServers = listEnvironments;
+
+/**
+ * Canonical name. `clearEnvironments` is kept as a deprecated alias.
+ */
+export const clearServers = clearEnvironments;
