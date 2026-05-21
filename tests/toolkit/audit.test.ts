@@ -38,6 +38,35 @@ describe("scrubSecrets", () => {
     const raw = "SELECT * FROM users WHERE id = 42";
     expect(scrubSecrets(raw)).toBe(raw);
   });
+
+  it("redacts the full Authorization value for Bearer/Basic schemes", () => {
+    expect(scrubSecrets("Authorization: Bearer abc.def.ghi")).toBe(
+      "Authorization: Bearer [REDACTED]",
+    );
+    expect(scrubSecrets("Authorization: Basic dXNlcjpwYXNz")).toBe(
+      "Authorization: Basic [REDACTED]",
+    );
+  });
+
+  it("redacts the full Authorization value for non-Bearer/Basic schemes", () => {
+    // Regression: previously `[^"'\s\\]+` stopped at the first space so
+    // `Authorization: Token abc123` left `abc123` in the log.
+    expect(scrubSecrets("Authorization: Token abc123")).toBe(
+      "Authorization: [REDACTED]",
+    );
+    expect(scrubSecrets("authorization=APIKey foo-bar-baz")).toBe(
+      "authorization=[REDACTED]",
+    );
+  });
+
+  it("redacts quoted Authorization values inside JSON", () => {
+    expect(scrubSecrets(`{"authorization": "Token abc123"}`)).toBe(
+      `{"authorization": "[REDACTED]"}`,
+    );
+    expect(scrubSecrets(`{"authorization": "Bearer abc.def"}`)).toBe(
+      `{"authorization": "Bearer [REDACTED]"}`,
+    );
+  });
 });
 
 describe("AuditWriter", () => {

@@ -97,8 +97,11 @@ const _SENSITIVE_LITERAL_SQUOTE_RE =
   /("?(?:password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)"?\s*[:=]\s*)'[^']*'/gi;
 const _SENSITIVE_LITERAL_DQUOTE_RE =
   /("?(?:password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)"?\s*[:=]\s*)"[^"]*"/gi;
+// Auth value match runs to the next quote or newline so schemes other than
+// Bearer/Basic (e.g. `Authorization: Token abc123`) get their whole credential
+// redacted instead of just the scheme word.
 const _SENSITIVE_AUTH_RE =
-  /("?authorization"?\s*[:=]\s*['"]?)((?:bearer|basic)\s+)?([^"'\s\\]+)/gi;
+  /("?authorization"?\s*[:=]\s*['"]?)((?:bearer|basic)\s+)?([^"'\n\\]+)/gi;
 
 export function scrubSqlSecrets(sql: string): string {
   return sql
