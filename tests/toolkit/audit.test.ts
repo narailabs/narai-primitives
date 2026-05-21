@@ -38,6 +38,142 @@ describe("scrubSecrets", () => {
     const raw = "SELECT * FROM users WHERE id = 42";
     expect(scrubSecrets(raw)).toBe(raw);
   });
+
+  it("preserves the matched separator in JSON-shaped payloads", () => {
+    // `:` must round-trip (don't rewrite to `=`) so events.jsonl stays
+    // parseable as JSON-per-line.
+    expect(scrubSecrets(`{"password":"hunter2"}`)).toBe(
+      `{"password":"[REDACTED]"}`,
+    );
+    expect(scrubSecrets(`{"api_key": "abc"}`)).toBe(
+      `{"api_key": "[REDACTED]"}`,
+    );
+    expect(scrubSecrets(`{"token":"sk-abc"}`)).toBe(`{"token":"[REDACTED]"}`);
+  });
+
+  it("redacts the full Authorization value for Bearer/Basic schemes", () => {
+    expect(scrubSecrets("Authorization: Bearer abc.def.ghi")).toBe(
+      "Authorization: Bearer [REDACTED]",
+    );
+    expect(scrubSecrets("Authorization: Basic dXNlcjpwYXNz")).toBe(
+      "Authorization: Basic [REDACTED]",
+    );
+  });
+
+  it("redacts the full Authorization value for non-Bearer/Basic schemes", () => {
+    // Regression: previously `[^"'\s\\]+` stopped at the first space so
+    // `Authorization: Token abc123` left `abc123` in the log.
+    expect(scrubSecrets("Authorization: Token abc123")).toBe(
+      "Authorization: [REDACTED]",
+    );
+    expect(scrubSecrets("authorization=APIKey foo-bar-baz")).toBe(
+      "authorization=[REDACTED]",
+    );
+    expect(scrubSecrets("Authorization: Digest username=u, realm=r")).toBe(
+      "Authorization: [REDACTED]",
+    );
+  });
+
+  it("redacts quoted Authorization values inside JSON", () => {
+    // The closing quote sits outside the regex match, so it is preserved.
+    expect(scrubSecrets(`{"authorization": "Token abc123"}`)).toBe(
+      `{"authorization": "[REDACTED]"}`,
+    );
+    expect(scrubSecrets(`{"authorization": "Bearer abc.def"}`)).toBe(
+      `{"authorization": "Bearer [REDACTED]"}`,
+    );
+  });
+
+  it("over-redacts multi-credential lines (safe failure mode)", () => {
+    // The unquoted branch consumes to end-of-line — the first Authorization
+    // match swallows the second one. We accept the structure loss because
+    // the alternative (excluding commas) would leak Digest's comma-separated
+    // quoted parameters past the first one.
+    const out = scrubSecrets(
+      "Authorization: Bearer aaa,Authorization: Basic bbb",
+    );
+    expect(out).not.toContain("aaa");
+    expect(out).not.toContain("bbb");
+    expect(out).toContain("[REDACTED]");
+  });
+
+  it("redacts Digest headers with quoted parameters", () => {
+    // Regression (Codex P1 on 0733e81): an internal `"` in
+    // `Digest username="u", response="…"` used to terminate the value
+    // class, leaving the response= tail in the log.
+    const out = scrubSecrets(
+      'Authorization: Digest username="u", realm="r", response="abc123"',
+    );
+    expect(out).toBe("Authorization: [REDACTED]");
+    expect(out).not.toContain("abc123");
+    expect(out).not.toContain('response="');
+  });
+
+  it("does not redact non-sensitive keys that merely end in a sensitive token", () => {
+    // Regression (Codex P2 on 0733e81): removing `\b` caused
+    // `mytoken='x'` / `notpassword='x'` to match the `token`/`password`
+    // suffix and erase unrelated debug context.
+    expect(scrubSecrets("mytoken='x'")).toBe("mytoken='x'");
+    expect(scrubSecrets("notpassword='x'")).toBe("notpassword='x'");
+    expect(scrubSecrets('xsecret="y"')).toBe('xsecret="y"');
+    // The bare sensitive keyword still matches.
+    expect(scrubSecrets("token='x'")).toBe("token='[REDACTED]'");
+    // Hyphenated variants still match.
+    expect(scrubSecrets("api-key='x'")).toBe("api-key='[REDACTED]'");
+  });
+
+  it("handles JSON-escaped quotes inside double-quoted secret values", () => {
+    // Regression (Codex P1 on 683b907): `"[^"]*"` terminated at the escaped
+    // quote inside `"abc\"def"`, leaving `def"}` in the log.
+    expect(scrubSecrets(`{"password":"abc\\"def"}`)).toBe(
+      `{"password":"[REDACTED]"}`,
+    );
+    expect(scrubSecrets(`{"token":"a\\"b\\"c"}`)).toBe(
+      `{"token":"[REDACTED]"}`,
+    );
+    // Single-quoted form mirrored.
+    expect(scrubSecrets(`{password:'a\\'b'}`)).toBe(`{password:'[REDACTED]'}`);
+  });
+
+  it("handles JSON-escaped quotes inside quoted Authorization values", () => {
+    // Regression (Codex P1 on 683b907): the quoted branch's value class
+    // used to terminate at the first `"` even when it was escaped, so
+    // JSON-encoded Digest headers leaked their `response=` tail.
+    const input = `{"authorization":"Digest username=\\"u\\", response=\\"abc123\\""}`;
+    const out = scrubSecrets(input);
+    expect(out).toBe(`{"authorization":"[REDACTED]"}`);
+    expect(out).not.toContain("abc123");
+    expect(out).not.toContain("response");
+  });
+
+  it("does not mangle JSON when 'authorization' appears inside a string value", () => {
+    // Regression (Codex P2 on 6e3bf0f): the unquoted AUTH branch's
+    // `[^\r\n]+` value class used to consume the JSON closing `"` and
+    // `}`, producing unterminated JSON for inputs like
+    // `{"message":"authorization: Bearer abc"}`.
+    const input = `{"message":"authorization: Bearer abc"}`;
+    const out = scrubSecrets(input);
+    // The credential must still be redacted, but the JSON structure
+    // must remain valid.
+    expect(out).toBe(`{"message":"authorization: Bearer [REDACTED]"}`);
+    expect(out).not.toContain("abc");
+    // Structural sanity: still parseable as JSON.
+    expect(() => JSON.parse(out)).not.toThrow();
+  });
+
+  it("still redacts HTTP-style Authorization headers at line start", () => {
+    // The line-anchored pattern handles `^Authorization:` and the
+    // post-`\n` form. We accept that mid-line non-JSON occurrences are
+    // not matched (trade-off for not mangling JSON).
+    expect(scrubSecrets("Authorization: Bearer abc")).toBe(
+      "Authorization: Bearer [REDACTED]",
+    );
+    const multiline = "GET /api\nAuthorization: Bearer xyz\nHost: example.com";
+    const out = scrubSecrets(multiline);
+    expect(out).toContain("Authorization: Bearer [REDACTED]");
+    expect(out).not.toContain("xyz");
+    expect(out).toContain("Host: example.com");
+  });
 });
 
 describe("AuditWriter", () => {

@@ -21,16 +21,83 @@ export interface AuditWriterOptions {
   sessionId?: string;
 }
 
-/** Redact common credential-bearing `key='value'` literals in a string. */
-const SENSITIVE_SQUOTE_RE =
-  /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*'[^']*'/gi;
-const SENSITIVE_DQUOTE_RE =
-  /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*"[^"]*"/gi;
+/**
+ * Redact common credential-bearing `key='value'` literals in a string.
+ *
+ * Key/separator are captured as distinct groups so the original separator
+ * (e.g. `:` for JSON payloads, `=` for SQL or env-style) is preserved
+ * verbatim — hard-coding `=` would mangle `{"password":"x"}` into
+ * `{"password"='[REDACTED]'}` and break downstream JSON-per-line parsers.
+ *
+ * The `\b` boundaries ensure we only match the sensitive keyword as a
+ * complete word (or wrapped in JSON quotes), so `mytoken='x'` and
+ * `notpassword='x'` don't get spuriously redacted.
+ *
+ * Value classes use `(?:\\.|[^Q\\])*` (Q = the active quote) so escape
+ * sequences like `\"` inside JSON-encoded values are skipped rather than
+ * treated as the closing quote.
+ *
+ * AUTH redaction uses two anchored patterns instead of one unanchored one:
+ *
+ *   QUOTED_RE — preceded by `"` or `'` (JSON key OR string-value context).
+ *     Value class is `[^"'\r\n]+` so the unquoted branch can't consume
+ *     past the JSON value's closing quote and mangle the outer payload.
+ *
+ *   LINE_RE — anchored to `^` or `\r\n` (HTTP-header / env form). Value
+ *     class is `[^\r\n]+` so Digest parameters with embedded quotes
+ *     (`Digest username="u", response="…"`) are fully consumed.
+ *
+ * Anchoring to a field boundary avoids the regression from a single
+ * unanchored pattern, where `{"message":"authorization: Bearer abc"}`
+ * matched mid-string and the greedy unquoted value class swallowed the
+ * trailing `"}`, producing unterminated JSON.
+ */
+const SENSITIVE_KEYS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth";
+const SENSITIVE_SQUOTE_RE = new RegExp(
+  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)'(?:\\\\.|[^'\\\\])*'`,
+  "gi",
+);
+const SENSITIVE_DQUOTE_RE = new RegExp(
+  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)"(?:\\\\.|[^"\\\\])*"`,
+  "gi",
+);
+const SENSITIVE_AUTH_QUOTED_RE =
+  /(?<=["'])(\bauthorization\b)("?)(\s*[:=]\s*)(?:(["'])((?:bearer|basic)\s+)?(?:\\.|[^\r\n\\])*?\4|((?:bearer|basic)\s+)?[^"'\r\n]+)/gi;
+const SENSITIVE_AUTH_LINE_RE =
+  /(?:^|(?<=[\r\n]))(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?[^\r\n]+/gi;
 
 export function scrubSecrets(text: string): string {
   return text
-    .replace(SENSITIVE_SQUOTE_RE, (_m, key: string) => `${key}='[REDACTED]'`)
-    .replace(SENSITIVE_DQUOTE_RE, (_m, key: string) => `${key}="[REDACTED]"`);
+    .replace(
+      SENSITIVE_SQUOTE_RE,
+      (_m, key: string, sep: string) => `${key}${sep}'[REDACTED]'`,
+    )
+    .replace(
+      SENSITIVE_DQUOTE_RE,
+      (_m, key: string, sep: string) => `${key}${sep}"[REDACTED]"`,
+    )
+    .replace(
+      SENSITIVE_AUTH_QUOTED_RE,
+      (
+        _m,
+        kw: string,
+        keyQuote: string,
+        sep: string,
+        valQuote: string | undefined,
+        schemeQ: string | undefined,
+        schemeU: string | undefined,
+      ) => {
+        if (valQuote !== undefined) {
+          return `${kw}${keyQuote}${sep}${valQuote}${schemeQ || ""}[REDACTED]${valQuote}`;
+        }
+        return `${kw}${keyQuote}${sep}${schemeU || ""}[REDACTED]`;
+      },
+    )
+    .replace(
+      SENSITIVE_AUTH_LINE_RE,
+      (_m, kw: string, sep: string, scheme: string | undefined) =>
+        `${kw}${sep}${scheme || ""}[REDACTED]`,
+    );
 }
 
 function isoTimestamp(): string {

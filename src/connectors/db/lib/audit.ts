@@ -93,15 +93,74 @@ export interface LogQueryParams {
  * single/double-quoted literals — partial or concatenated literals are
  * out of scope.
  */
-const _SENSITIVE_LITERAL_SQUOTE_RE =
-  /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*'[^']*'/gi;
-const _SENSITIVE_LITERAL_DQUOTE_RE =
-  /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth)\s*=\s*"[^"]*"/gi;
+// Key/separator are captured as distinct groups so the original separator
+// (e.g. `:` for JSON, `=` for SQL/env) is preserved verbatim — hard-coding
+// `=` would mangle `{"password":"x"}` into `{"password"='[REDACTED]'}` and
+// break downstream consumers parsing events.jsonl as JSON-per-line.
+//
+// Leading/trailing `\b` keeps `mytoken='x'` and `notpassword='x'` from being
+// spuriously redacted just because they end in a sensitive keyword.
+//
+// Value classes use `(?:\\.|[^Q\\])*` so `\"` and other escape sequences
+// inside JSON-encoded values are skipped — without this, `"abc\"def"`
+// terminates at the escaped quote and leaks the tail.
+//
+// AUTH redaction is split into two anchored patterns:
+//   QUOTED_RE — preceded by `"` or `'` (JSON key or string-value context);
+//     the unquoted-value branch's value class `[^"'\r\n]+` stops at any
+//     quote so it can't consume past the outer JSON closing quote.
+//   LINE_RE — anchored to `^` or `\r\n` (HTTP header / env line); value
+//     class is `[^\r\n]+` so Digest's embedded quoted params are
+//     fully consumed.
+// Anchoring avoids the regression where a mid-string match on
+// `{"message":"authorization: …"}` swallowed the trailing `"}` and
+// produced unterminated JSON.
+const _SENSITIVE_KEYS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth";
+const _SENSITIVE_LITERAL_SQUOTE_RE = new RegExp(
+  `("?\\b(?:${_SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)'(?:\\\\.|[^'\\\\])*'`,
+  "gi",
+);
+const _SENSITIVE_LITERAL_DQUOTE_RE = new RegExp(
+  `("?\\b(?:${_SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)"(?:\\\\.|[^"\\\\])*"`,
+  "gi",
+);
+const _SENSITIVE_AUTH_QUOTED_RE =
+  /(?<=["'])(\bauthorization\b)("?)(\s*[:=]\s*)(?:(["'])((?:bearer|basic)\s+)?(?:\\.|[^\r\n\\])*?\4|((?:bearer|basic)\s+)?[^"'\r\n]+)/gi;
+const _SENSITIVE_AUTH_LINE_RE =
+  /(?:^|(?<=[\r\n]))(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?[^\r\n]+/gi;
 
 export function scrubSqlSecrets(sql: string): string {
   return sql
-    .replace(_SENSITIVE_LITERAL_SQUOTE_RE, (_m, key: string) => `${key}='[REDACTED]'`)
-    .replace(_SENSITIVE_LITERAL_DQUOTE_RE, (_m, key: string) => `${key}="[REDACTED]"`);
+    .replace(
+      _SENSITIVE_LITERAL_SQUOTE_RE,
+      (_m, key: string, sep: string) => `${key}${sep}'[REDACTED]'`,
+    )
+    .replace(
+      _SENSITIVE_LITERAL_DQUOTE_RE,
+      (_m, key: string, sep: string) => `${key}${sep}"[REDACTED]"`,
+    )
+    .replace(
+      _SENSITIVE_AUTH_QUOTED_RE,
+      (
+        _m,
+        kw: string,
+        keyQuote: string,
+        sep: string,
+        valQuote: string | undefined,
+        schemeQ: string | undefined,
+        schemeU: string | undefined,
+      ) => {
+        if (valQuote !== undefined) {
+          return `${kw}${keyQuote}${sep}${valQuote}${schemeQ || ""}[REDACTED]${valQuote}`;
+        }
+        return `${kw}${keyQuote}${sep}${schemeU || ""}[REDACTED]`;
+      },
+    )
+    .replace(
+      _SENSITIVE_AUTH_LINE_RE,
+      (_m, kw: string, sep: string, scheme: string | undefined) =>
+        `${kw}${sep}${scheme || ""}[REDACTED]`,
+    );
 }
 
 /** Log a query execution event. */

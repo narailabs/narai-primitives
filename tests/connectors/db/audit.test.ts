@@ -207,19 +207,119 @@ describe("wiki_db.audit", () => {
   it("scrubSqlSecrets masks single-quoted credential literals", () => {
     expect(
       scrubSqlSecrets("SELECT * FROM u WHERE password = 'p4ss' AND id = 1"),
-    ).toBe("SELECT * FROM u WHERE password='[REDACTED]' AND id = 1");
+    ).toBe("SELECT * FROM u WHERE password = '[REDACTED]' AND id = 1");
     expect(scrubSqlSecrets("WHERE token='sk-abc123'")).toBe(
       "WHERE token='[REDACTED]'",
     );
     expect(scrubSqlSecrets("WHERE api_key = 'k1' OR api-key = 'k2'")).toBe(
-      "WHERE api_key='[REDACTED]' OR api-key='[REDACTED]'",
+      "WHERE api_key = '[REDACTED]' OR api-key = '[REDACTED]'",
     );
   });
 
   it("scrubSqlSecrets masks double-quoted credential literals", () => {
     expect(scrubSqlSecrets('WHERE secret = "s3cr3t"')).toBe(
-      'WHERE secret="[REDACTED]"',
+      'WHERE secret = "[REDACTED]"',
     );
+  });
+
+  it("scrubSqlSecrets preserves the matched separator in JSON payloads", () => {
+    // Regression: replacement used to hard-code `=`, mangling JSON keys —
+    // `{"password":"x"}` became `{"password"='[REDACTED]'}` which breaks
+    // downstream consumers parsing events.jsonl as JSON-per-line.
+    expect(scrubSqlSecrets(`{"password":"hunter2"}`)).toBe(
+      `{"password":"[REDACTED]"}`,
+    );
+    expect(scrubSqlSecrets(`{"api_key": "abc"}`)).toBe(
+      `{"api_key": "[REDACTED]"}`,
+    );
+  });
+
+  it("scrubSqlSecrets redacts the full Authorization value regardless of scheme", () => {
+    // Bearer/Basic preserve the scheme name for log readability.
+    expect(scrubSqlSecrets("Authorization: Bearer abc.def.ghi")).toBe(
+      "Authorization: Bearer [REDACTED]",
+    );
+    expect(scrubSqlSecrets("Authorization: Basic dXNlcjpwYXNz")).toBe(
+      "Authorization: Basic [REDACTED]",
+    );
+    // Regression: previously `[^"'\s\\]+` stopped at the first space so
+    // `Authorization: Token abc123` left `abc123` in the audit log.
+    expect(scrubSqlSecrets("Authorization: Token abc123")).toBe(
+      "Authorization: [REDACTED]",
+    );
+    expect(scrubSqlSecrets(`{"authorization": "Token abc123"}`)).toBe(
+      `{"authorization": "[REDACTED]"}`,
+    );
+  });
+
+  it("scrubSqlSecrets redacts Digest headers with quoted parameters", () => {
+    // Regression (Codex P1 on 0733e81): the unquoted-form branch must
+    // consume to end-of-line so Digest's embedded `username="u"` and
+    // `response="…"` don't terminate the value class early.
+    const out = scrubSqlSecrets(
+      'Authorization: Digest username="u", realm="r", response="abc123"',
+    );
+    expect(out).toBe("Authorization: [REDACTED]");
+    expect(out).not.toContain("abc123");
+    expect(out).not.toContain('response="');
+  });
+
+  it("scrubSqlSecrets does not redact non-sensitive keys that merely end in a sensitive token", () => {
+    // Regression (Codex P2 on 0733e81): `\b` keeps `mytoken='x'` and
+    // `notpassword='x'` from being clobbered by the `token`/`password`
+    // suffix match.
+    expect(scrubSqlSecrets("WHERE mytoken='x'")).toBe("WHERE mytoken='x'");
+    expect(scrubSqlSecrets("WHERE notpassword = 'x'")).toBe(
+      "WHERE notpassword = 'x'",
+    );
+    // The bare sensitive keyword still matches.
+    expect(scrubSqlSecrets("WHERE token='x'")).toBe("WHERE token='[REDACTED]'");
+  });
+
+  it("scrubSqlSecrets handles JSON-escaped quotes inside secret values", () => {
+    // Regression (Codex P1 on 683b907): `"[^"]*"` used to terminate at
+    // an escaped `\"`, leaking the value tail.
+    expect(scrubSqlSecrets(`{"password":"abc\\"def"}`)).toBe(
+      `{"password":"[REDACTED]"}`,
+    );
+    expect(scrubSqlSecrets(`{"token":"a\\"b\\"c"}`)).toBe(
+      `{"token":"[REDACTED]"}`,
+    );
+  });
+
+  it("scrubSqlSecrets handles JSON-escaped quotes in Authorization values", () => {
+    // Regression (Codex P1 on 683b907): the quoted-branch value class
+    // used to stop at the first inner `"`, even when it was an escaped
+    // `\"`, leaking the Digest `response=` parameter.
+    const input = `{"authorization":"Digest username=\\"u\\", response=\\"abc123\\""}`;
+    const out = scrubSqlSecrets(input);
+    expect(out).toBe(`{"authorization":"[REDACTED]"}`);
+    expect(out).not.toContain("abc123");
+    expect(out).not.toContain("response");
+  });
+
+  it("scrubSqlSecrets does not mangle JSON when 'authorization' appears inside a string value", () => {
+    // Regression (Codex P2 on 6e3bf0f): the unquoted AUTH branch's
+    // `[^\r\n]+` value class used to consume the JSON closing `"}` and
+    // produce unterminated JSON for inputs like
+    // `{"message":"authorization: Bearer abc"}`.
+    const input = `{"message":"authorization: Bearer abc"}`;
+    const out = scrubSqlSecrets(input);
+    expect(out).toBe(`{"message":"authorization: Bearer [REDACTED]"}`);
+    expect(out).not.toContain("abc");
+    expect(() => JSON.parse(out)).not.toThrow();
+  });
+
+  it("scrubSqlSecrets still redacts HTTP-style Authorization headers at line start", () => {
+    expect(scrubSqlSecrets("Authorization: Bearer abc")).toBe(
+      "Authorization: Bearer [REDACTED]",
+    );
+    const multiline =
+      "GET /api\nAuthorization: Bearer xyz\nHost: example.com";
+    const out = scrubSqlSecrets(multiline);
+    expect(out).toContain("Authorization: Bearer [REDACTED]");
+    expect(out).not.toContain("xyz");
+    expect(out).toContain("Host: example.com");
   });
 
   it("scrubSqlSecrets leaves non-credential literals alone", () => {
@@ -244,7 +344,7 @@ describe("wiki_db.audit", () => {
     const line = fs.readFileSync(logPath, "utf-8").trim();
     const record = JSON.parse(line) as { query: string };
     expect(record.query).toBe(
-      "SELECT * FROM users WHERE password='[REDACTED]' LIMIT 1",
+      "SELECT * FROM users WHERE password = '[REDACTED]' LIMIT 1",
     );
     expect(record.query).not.toContain("leaked");
   });
