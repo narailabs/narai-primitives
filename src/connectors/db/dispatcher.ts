@@ -95,10 +95,27 @@ function extractConnTarget(p: Params): {
   server?: string;
   config_path?: string;
 } {
-  const sqlite =
-    typeof p["sqlite_path"] === "string" ? (p["sqlite_path"] as string) : undefined;
-  const server = typeof p["server"] === "string" ? (p["server"] as string) : undefined;
-  const envAlias = typeof p["env"] === "string" ? (p["env"] as string) : undefined;
+  // Defense-in-depth: zod catches these at the framework layer, but
+  // legacy `dispatcherFetch` and CLI `--params` callers reach here
+  // directly. Reject malformed types up front so they can't slip into
+  // default-server fallback.
+  const sqliteRaw = p["sqlite_path"];
+  if (sqliteRaw !== undefined && (typeof sqliteRaw !== "string" || sqliteRaw.length === 0)) {
+    throw new Error("params 'sqlite_path' must be a non-empty string");
+  }
+  const sqlite = typeof sqliteRaw === "string" ? sqliteRaw : undefined;
+
+  const serverRaw = p["server"];
+  if (serverRaw !== undefined && (typeof serverRaw !== "string" || serverRaw.length === 0)) {
+    throw new Error("params 'server' must be a non-empty string");
+  }
+  const server = typeof serverRaw === "string" ? serverRaw : undefined;
+
+  const envRaw = p["env"];
+  if (envRaw !== undefined && (typeof envRaw !== "string" || envRaw.length === 0)) {
+    throw new Error("params 'env' must be a non-empty string");
+  }
+  const envAlias = typeof envRaw === "string" ? envRaw : undefined;
 
   let effectiveServer = server;
   if (envAlias !== undefined) {
@@ -117,8 +134,11 @@ function extractConnTarget(p: Params): {
   if (sqlite && effectiveServer) {
     throw new Error("params 'sqlite_path' and 'server' are mutually exclusive");
   }
-  const config_path =
-    typeof p["config_path"] === "string" ? (p["config_path"] as string) : undefined;
+  const configPathRaw = p["config_path"];
+  if (configPathRaw !== undefined && (typeof configPathRaw !== "string" || configPathRaw.length === 0)) {
+    throw new Error("params 'config_path' must be a non-empty string");
+  }
+  const config_path = typeof configPathRaw === "string" ? configPathRaw : undefined;
   const out: { sqlite_path?: string; server?: string; config_path?: string } = {};
   if (sqlite) out.sqlite_path = sqlite;
   if (effectiveServer) out.server = effectiveServer;

@@ -151,6 +151,46 @@ describe("default-server resolution", () => {
     expect(result["rows"]).toEqual([{ id: 1 }]);
   });
 
+  it("rejects non-string `server` at the dispatcher layer (defense for zod-bypass callers)", async () => {
+    const result = await dispatcherFetch("query", {
+      server: 123 as unknown as string,
+      sql: "SELECT 1",
+    });
+    expect(result["status"]).toBe("error");
+    expect(String(result["error_code"])).toBe("VALIDATION_ERROR");
+    expect(String(result["error"])).toMatch(/server.*non-empty string/i);
+  });
+
+  it("rejects empty-string `server` at the dispatcher layer", async () => {
+    const result = await dispatcherFetch("query", {
+      server: "",
+      sql: "SELECT 1",
+    });
+    expect(result["status"]).toBe("error");
+    expect(String(result["error_code"])).toBe("VALIDATION_ERROR");
+    expect(String(result["error"])).toMatch(/server.*non-empty string/i);
+  });
+
+  it("rejects non-string `env` at the dispatcher layer", async () => {
+    const result = await dispatcherFetch("query", {
+      env: 42 as unknown as string,
+      sql: "SELECT 1",
+    });
+    expect(result["status"]).toBe("error");
+    expect(String(result["error_code"])).toBe("VALIDATION_ERROR");
+    expect(String(result["error"])).toMatch(/env.*non-empty string/i);
+  });
+
+  it("rejects non-string `sqlite_path` at the dispatcher layer", async () => {
+    const result = await dispatcherFetch("query", {
+      sqlite_path: { foo: "bar" } as unknown as string,
+      sql: "SELECT 1",
+    });
+    expect(result["status"]).toBe("error");
+    expect(String(result["error_code"])).toBe("VALIDATION_ERROR");
+    expect(String(result["error"])).toMatch(/sqlite_path.*non-empty string/i);
+  });
+
   it("config-load: rejects `default:` pointing at unknown server (CONFIG_ERROR at first call)", async () => {
     writeConfig([
       "connectors:",
