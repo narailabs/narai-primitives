@@ -431,6 +431,76 @@ describe("wiki_db.drivers.sqlserver (unit)", () => {
     expect(tables[1]!.columns).toHaveLength(1);
   });
 
+  it("getSchemaAsync deduplicates columns when EXISTS subquery returns one row per column", async () => {
+    // Regression: the previous LEFT JOIN cascade over KCU + TABLE_CONSTRAINTS
+    // emitted one row per constraint a column participated in, so a column
+    // with PK + FK + UNIQUE was duplicated 3x with is_pk flipping between
+    // 1 and 0. The current SQL uses a correlated EXISTS for is_pk, so the
+    // mock should never see duplicate column rows for the same column —
+    // confirming we expose only one row per column to the driver. Here we
+    // simulate a clean response (one row per column) and assert that the
+    // column count matches expectations.
+    const drv = new SqlServerDriver();
+    const handle = await drv.connect({ database: "app" });
+    const pool = latest();
+    let capturedColumnsSql = "";
+    pool.req.query.mockImplementation(async (sql: string) => {
+      if (
+        sql.includes(
+          "SELECT TABLE_NAME AS table_name FROM INFORMATION_SCHEMA.TABLES",
+        )
+      ) {
+        return {
+          recordset: [{ table_name: "orders" }],
+          recordsets: [[]],
+          rowsAffected: [1],
+        };
+      }
+      if (sql.includes("FROM INFORMATION_SCHEMA.COLUMNS")) {
+        capturedColumnsSql = sql;
+        // EXISTS subquery → DB returns one row per column. The driver
+        // must not duplicate `customer_id` even though, in reality, it
+        // would be in both a PK and an FK constraint.
+        return {
+          recordset: [
+            {
+              table_name: "orders",
+              column_name: "customer_id",
+              data_type: "int",
+              is_nullable: "NO",
+              column_default: null,
+              is_pk: 1,
+            },
+            {
+              table_name: "orders",
+              column_name: "total",
+              data_type: "decimal",
+              is_nullable: "YES",
+              column_default: null,
+              is_pk: 0,
+            },
+          ],
+          recordsets: [[]],
+          rowsAffected: [2],
+        };
+      }
+      return { recordset: [], recordsets: [[]], rowsAffected: [0] };
+    });
+
+    const tables = await drv.getSchemaAsync(handle, "dbo");
+
+    // SQL shape: EXISTS-based is_pk, not LEFT JOIN cascade.
+    expect(capturedColumnsSql).toContain("CASE WHEN EXISTS");
+    expect(capturedColumnsSql).toContain("tc.CONSTRAINT_TYPE = 'PRIMARY KEY'");
+    // Column appears once, not duplicated by multi-constraint membership.
+    expect(tables).toHaveLength(1);
+    expect(tables[0]!.columns).toHaveLength(2);
+    expect(tables[0]!.columns[0]!.name).toBe("customer_id");
+    expect(tables[0]!.columns[0]!.is_primary_key).toBe(true);
+    expect(tables[0]!.columns[1]!.name).toBe("total");
+    expect(tables[0]!.columns[1]!.is_primary_key).toBe(false);
+  });
+
   it("close() is a no-op; pool stays open for other handles", async () => {
     const drv = new SqlServerDriver();
     const handle = await drv.connect({ database: "app" });

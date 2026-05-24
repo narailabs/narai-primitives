@@ -304,10 +304,16 @@ export class SqlServerDriver extends DatabaseDriver {
 
       if (tableNames.length === 0) return [];
 
-      // ⚡ Bolt Optimization: G-SCHEMA-BATCH without chunking
-      // Avoid the 2100 parameter limit and the N+1 chunking overhead entirely
-      // by directly joining INFORMATION_SCHEMA.TABLES to filter BASE TABLEs.
-      // This fetches all required column metadata in a single, fast query.
+      // G-SCHEMA-BATCH (no chunking): fetch all column metadata in one
+      // query, joining INFORMATION_SCHEMA.TABLES to restrict to BASE TABLE.
+      // The filter is re-applied here (not passed as a snapshot from the
+      // tables query above); rows for tables added between the two queries
+      // are simply discarded since `out` is built from `tableNames`.
+      // `is_pk` uses a correlated EXISTS instead of a LEFT JOIN cascade so
+      // a column that participates in both a PRIMARY KEY and a separate
+      // FK/UNIQUE constraint is emitted exactly once. A LEFT-JOIN-against-
+      // KCU+TC would otherwise produce one duplicate row per extra
+      // constraint, with is_pk=0 on the non-PK rows.
       const colReq = handle.pool.request();
       colReq.input("schema", ns);
       if (tableFilter !== null && tableFilter !== undefined) {
@@ -317,15 +323,18 @@ export class SqlServerDriver extends DatabaseDriver {
       const colSql =
         "SELECT c.TABLE_NAME AS table_name, c.COLUMN_NAME AS column_name, c.DATA_TYPE AS data_type, " +
         "c.IS_NULLABLE AS is_nullable, c.COLUMN_DEFAULT AS column_default, " +
-        "CASE WHEN tc.CONSTRAINT_TYPE = 'PRIMARY KEY' THEN 1 ELSE 0 END AS is_pk " +
+        "CASE WHEN EXISTS (" +
+        "  SELECT 1 FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu " +
+        "  JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc " +
+        "    ON kcu.CONSTRAINT_NAME = tc.CONSTRAINT_NAME " +
+        "    AND kcu.TABLE_SCHEMA = tc.TABLE_SCHEMA " +
+        "  WHERE kcu.TABLE_SCHEMA = c.TABLE_SCHEMA " +
+        "    AND kcu.TABLE_NAME = c.TABLE_NAME " +
+        "    AND kcu.COLUMN_NAME = c.COLUMN_NAME " +
+        "    AND tc.CONSTRAINT_TYPE = 'PRIMARY KEY'" +
+        ") THEN 1 ELSE 0 END AS is_pk " +
         "FROM INFORMATION_SCHEMA.COLUMNS c " +
         "JOIN INFORMATION_SCHEMA.TABLES t ON c.TABLE_SCHEMA = t.TABLE_SCHEMA AND c.TABLE_NAME = t.TABLE_NAME " +
-        "LEFT JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu " +
-        "  ON c.TABLE_SCHEMA = kcu.TABLE_SCHEMA AND c.TABLE_NAME = kcu.TABLE_NAME " +
-        "  AND c.COLUMN_NAME = kcu.COLUMN_NAME " +
-        "LEFT JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc " +
-        "  ON kcu.CONSTRAINT_NAME = tc.CONSTRAINT_NAME " +
-        "  AND tc.TABLE_SCHEMA = c.TABLE_SCHEMA " +
         "WHERE c.TABLE_SCHEMA = @schema AND t.TABLE_TYPE = 'BASE TABLE'" +
         (tableFilter !== null ? " AND c.TABLE_NAME LIKE @filter" : "") +
         " ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION";
