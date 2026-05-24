@@ -32,7 +32,9 @@ import { classifySqlKeywords, type OperationType } from "../policy.js";
 // ---------------------------------------------------------------------------
 
 interface MssqlRequest {
-  query<T = Record<string, unknown>>(sql: string): Promise<{
+  query<T = Record<string, unknown>>(
+    sql: string,
+  ): Promise<{
     recordset: T[];
     recordsets: T[][];
     rowsAffected: number[];
@@ -118,7 +120,9 @@ export class SqlServerDriver extends DatabaseDriver {
           ? envConfig["instance"]
           : undefined;
       const domain =
-        typeof envConfig["domain"] === "string" ? envConfig["domain"] : undefined;
+        typeof envConfig["domain"] === "string"
+          ? envConfig["domain"]
+          : undefined;
       const trustedConnection = envConfig["trusted_connection"] === true;
       const encrypt = envConfig["ssl"] === true;
 
@@ -193,7 +197,9 @@ export class SqlServerDriver extends DatabaseDriver {
     maxRows: number = 1000,
     timeoutMs: number = 30_000,
   ): Promise<ExecuteReadResult> {
-    const handle = (await (conn as Promise<MssqlHandle> | MssqlHandle)) as MssqlHandle;
+    const handle = (await (conn as
+      | Promise<MssqlHandle>
+      | MssqlHandle)) as MssqlHandle;
     const start = performance.now();
     const tx = handle.pool.transaction();
     let inTx = false;
@@ -269,7 +275,9 @@ export class SqlServerDriver extends DatabaseDriver {
     schemaName: string = "",
     tableFilter: string | null = null,
   ): Promise<Table[]> {
-    const handle = (await (conn as Promise<MssqlHandle> | MssqlHandle)) as MssqlHandle;
+    const handle = (await (conn as
+      | Promise<MssqlHandle>
+      | MssqlHandle)) as MssqlHandle;
     const ns = schemaName.length > 0 ? schemaName : "dbo";
     try {
       const req = handle.pool.request();
@@ -296,58 +304,65 @@ export class SqlServerDriver extends DatabaseDriver {
 
       if (tableNames.length === 0) return [];
 
-      // G-SCHEMA-BATCH: Avoid N+1 query problem by fetching column
-      // metadata for all tables in chunks of up to 1000 tables.
-      // The chunks are needed because SQL Server limits the number of
-      // parameters per query to 2100.
+      // G-SCHEMA-BATCH (no chunking): fetch all column metadata in one
+      // query, joining INFORMATION_SCHEMA.TABLES to restrict to BASE TABLE.
+      // The filter is re-applied here (not passed as a snapshot from the
+      // tables query above); rows for tables added between the two queries
+      // are simply discarded since `out` is built from `tableNames`.
+      // `is_pk` uses a correlated EXISTS instead of a LEFT JOIN cascade so
+      // a column that participates in both a PRIMARY KEY and a separate
+      // FK/UNIQUE constraint is emitted exactly once. A LEFT-JOIN-against-
+      // KCU+TC would otherwise produce one duplicate row per extra
+      // constraint, with is_pk=0 on the non-PK rows.
+      const colReq = handle.pool.request();
+      colReq.input("schema", ns);
+      if (tableFilter !== null && tableFilter !== undefined) {
+        colReq.input("filter", tableFilter);
+      }
+
+      const colSql =
+        "SELECT c.TABLE_NAME AS table_name, c.COLUMN_NAME AS column_name, c.DATA_TYPE AS data_type, " +
+        "c.IS_NULLABLE AS is_nullable, c.COLUMN_DEFAULT AS column_default, " +
+        "CASE WHEN EXISTS (" +
+        "  SELECT 1 FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu " +
+        "  JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc " +
+        "    ON kcu.CONSTRAINT_NAME = tc.CONSTRAINT_NAME " +
+        "    AND kcu.TABLE_SCHEMA = tc.TABLE_SCHEMA " +
+        "  WHERE kcu.TABLE_SCHEMA = c.TABLE_SCHEMA " +
+        "    AND kcu.TABLE_NAME = c.TABLE_NAME " +
+        "    AND kcu.COLUMN_NAME = c.COLUMN_NAME " +
+        "    AND tc.CONSTRAINT_TYPE = 'PRIMARY KEY'" +
+        ") THEN 1 ELSE 0 END AS is_pk " +
+        "FROM INFORMATION_SCHEMA.COLUMNS c " +
+        "JOIN INFORMATION_SCHEMA.TABLES t ON c.TABLE_SCHEMA = t.TABLE_SCHEMA AND c.TABLE_NAME = t.TABLE_NAME " +
+        "WHERE c.TABLE_SCHEMA = @schema AND t.TABLE_TYPE = 'BASE TABLE'" +
+        (tableFilter !== null ? " AND c.TABLE_NAME LIKE @filter" : "") +
+        " ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION";
+
+      const colRes = await colReq.query(colSql);
       const colsByTable = new Map<string, Column[]>();
-      const chunkSize = 1000;
 
-      for (let chunkStart = 0; chunkStart < tableNames.length; chunkStart += chunkSize) {
-        const chunk = tableNames.slice(chunkStart, chunkStart + chunkSize);
-
-        const colReq = handle.pool.request();
-        colReq.input("schema", ns);
-
-        const placeholders = chunk.map((_, i) => `@table${i}`).join(", ");
-        chunk.forEach((name, i) => colReq.input(`table${i}`, name));
-
-        const colRes = await colReq.query(
-          "SELECT c.TABLE_NAME AS table_name, c.COLUMN_NAME AS column_name, c.DATA_TYPE AS data_type, " +
-            "c.IS_NULLABLE AS is_nullable, c.COLUMN_DEFAULT AS column_default, " +
-            "CASE WHEN tc.CONSTRAINT_TYPE = 'PRIMARY KEY' THEN 1 ELSE 0 END AS is_pk " +
-            "FROM INFORMATION_SCHEMA.COLUMNS c " +
-            "LEFT JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu " +
-            "  ON c.TABLE_SCHEMA = kcu.TABLE_SCHEMA AND c.TABLE_NAME = kcu.TABLE_NAME " +
-            "  AND c.COLUMN_NAME = kcu.COLUMN_NAME " +
-            "LEFT JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc " +
-            "  ON kcu.CONSTRAINT_NAME = tc.CONSTRAINT_NAME " +
-            "  AND tc.TABLE_SCHEMA = c.TABLE_SCHEMA " +
-            `WHERE c.TABLE_SCHEMA = @schema AND c.TABLE_NAME IN (${placeholders}) ` +
-            "ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION",
-        );
-
-        for (const r of colRes.recordset ?? []) {
-          const rec = r as Record<string, unknown>;
-          const tName = String(rec["table_name"]);
-          let list = colsByTable.get(tName);
-          if (list === undefined) {
-            list = [];
-            colsByTable.set(tName, list);
-          }
-          list.push(
-            new Column({
-              name: String(rec["column_name"]),
-              data_type: String(rec["data_type"]),
-              nullable: String(rec["is_nullable"]).toUpperCase() === "YES",
-              is_primary_key: Number(rec["is_pk"] ?? 0) === 1,
-              default:
-                rec["column_default"] === null || rec["column_default"] === undefined
-                  ? null
-                  : String(rec["column_default"]),
-            })
-          );
+      for (const r of colRes.recordset ?? []) {
+        const rec = r as Record<string, unknown>;
+        const tName = String(rec["table_name"]);
+        let list = colsByTable.get(tName);
+        if (list === undefined) {
+          list = [];
+          colsByTable.set(tName, list);
         }
+        list.push(
+          new Column({
+            name: String(rec["column_name"]),
+            data_type: String(rec["data_type"]),
+            nullable: String(rec["is_nullable"]).toUpperCase() === "YES",
+            is_primary_key: Number(rec["is_pk"] ?? 0) === 1,
+            default:
+              rec["column_default"] === null ||
+              rec["column_default"] === undefined
+                ? null
+                : String(rec["column_default"]),
+          }),
+        );
       }
 
       const out: Table[] = [];
@@ -357,7 +372,7 @@ export class SqlServerDriver extends DatabaseDriver {
             name: tableName,
             schema: ns,
             columns: colsByTable.get(tableName) ?? [],
-          })
+          }),
         );
       }
       return out;
@@ -385,7 +400,9 @@ export class SqlServerDriver extends DatabaseDriver {
   /** Per-driver health check via `SELECT 1` on a fresh request. */
   async healthCheck(conn: unknown): Promise<boolean> {
     try {
-      const handle = (await (conn as Promise<MssqlHandle> | MssqlHandle)) as MssqlHandle;
+      const handle = (await (conn as
+        | Promise<MssqlHandle>
+        | MssqlHandle)) as MssqlHandle;
       const res = await handle.pool.request().query("SELECT 1 AS one");
       return (res.recordset ?? []).length === 1;
     } catch {
