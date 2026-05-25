@@ -59,59 +59,32 @@ export class DynamoEnvelopeParseError extends Error {
  */
 const _DYNAMO_READ_OPS: ReadonlySet<string> = new Set([
   // envelope form
-  "get",
-  "query",
-  "scan",
-  "sample",
-  "batchGet",
+  "get", "query", "scan", "sample", "batchGet",
   // AWS SDK command form
-  "GetItem",
-  "GetItemCommand",
-  "Query",
-  "QueryCommand",
-  "Scan",
-  "ScanCommand",
-  "BatchGetItem",
-  "BatchGetItemCommand",
+  "GetItem", "GetItemCommand", "Query", "QueryCommand",
+  "Scan", "ScanCommand", "BatchGetItem", "BatchGetItemCommand",
   // describe / list — admin reads
-  "ListTables",
-  "ListTablesCommand",
-  "DescribeTable",
-  "DescribeTableCommand",
+  "ListTables", "ListTablesCommand", "DescribeTable", "DescribeTableCommand",
 ]);
 const _DYNAMO_WRITE_OPS: ReadonlySet<string> = new Set([
   // envelope form
-  "put",
-  "update",
-  "batchWrite",
-  "transactWrite",
+  "put", "update", "batchWrite", "transactWrite",
   // AWS SDK command form
-  "PutItem",
-  "PutItemCommand",
-  "UpdateItem",
-  "UpdateItemCommand",
-  "BatchWriteItem",
-  "BatchWriteItemCommand",
-  "TransactWriteItems",
-  "TransactWriteItemsCommand",
+  "PutItem", "PutItemCommand", "UpdateItem", "UpdateItemCommand",
+  "BatchWriteItem", "BatchWriteItemCommand",
+  "TransactWriteItems", "TransactWriteItemsCommand",
 ]);
 const _DYNAMO_DELETE_OPS: ReadonlySet<string> = new Set([
   // envelope form
   "delete",
   // AWS SDK command form
-  "DeleteItem",
-  "DeleteItemCommand",
+  "DeleteItem", "DeleteItemCommand",
 ]);
 const _DYNAMO_ADMIN_OPS: ReadonlySet<string> = new Set([
-  "createTable",
-  "deleteTable",
-  "updateTable",
-  "CreateTable",
-  "CreateTableCommand",
-  "DeleteTable",
-  "DeleteTableCommand",
-  "UpdateTable",
-  "UpdateTableCommand",
+  "createTable", "deleteTable", "updateTable",
+  "CreateTable", "CreateTableCommand",
+  "DeleteTable", "DeleteTableCommand",
+  "UpdateTable", "UpdateTableCommand",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -161,10 +134,7 @@ interface DynamoCommandCtor<I, O> {
 }
 interface DynamoModule {
   DynamoDBClient: new (config: Record<string, unknown>) => DynamoClient;
-  ListTablesCommand: DynamoCommandCtor<
-    Record<string, unknown>,
-    ListTablesOutput
-  >;
+  ListTablesCommand: DynamoCommandCtor<Record<string, unknown>, ListTablesOutput>;
   DescribeTableCommand: DynamoCommandCtor<
     { TableName: string },
     DescribeTableOutput
@@ -199,6 +169,15 @@ interface DynamoQueryEnvelope {
 }
 
 const READ_ONLY_OPS = new Set(["get", "query", "scan", "sample"]);
+
+/**
+ * Concurrency cap for the chunked `DescribeTable` fan-out in `getSchemaAsync`.
+ * Sized to roughly match the per-account `DescribeTable` TPS the AWS SDK
+ * tolerates with its default `maxAttempts: 3` retry; values much above this
+ * tend to hit `ProvisionedThroughputExceededException` on cold caches.
+ * Tune here if a deployment needs a different balance.
+ */
+const DESCRIBE_TABLE_CONCURRENCY = 10;
 
 // ---------------------------------------------------------------------------
 // Driver
@@ -297,9 +276,7 @@ export class DynamoDriver extends DatabaseDriver {
     maxRows: number = 1000,
     _timeoutMs: number = 30_000,
   ): Promise<ExecuteReadResult> {
-    const handle = (await (conn as
-      | Promise<DynamoHandle>
-      | DynamoHandle)) as DynamoHandle;
+    const handle = (await (conn as Promise<DynamoHandle> | DynamoHandle)) as DynamoHandle;
     const start = performance.now();
     try {
       const env = _parseEnvelope(query);
@@ -307,7 +284,8 @@ export class DynamoDriver extends DatabaseDriver {
         return {
           status: "error",
           error_code: "SQL_ERROR",
-          error: "DynamoDriver: query must be a JSON envelope {table, op, ...}",
+          error:
+            "DynamoDriver: query must be a JSON envelope {table, op, ...}",
           execution_time_ms: roundTo2(performance.now() - start),
         };
       }
@@ -376,11 +354,9 @@ export class DynamoDriver extends DatabaseDriver {
       if (env.filter !== undefined) {
         input["FilterExpression"] = env.filter.FilterExpression;
         if (env.filter.ExpressionAttributeValues)
-          input["ExpressionAttributeValues"] =
-            env.filter.ExpressionAttributeValues;
+          input["ExpressionAttributeValues"] = env.filter.ExpressionAttributeValues;
         if (env.filter.ExpressionAttributeNames)
-          input["ExpressionAttributeNames"] =
-            env.filter.ExpressionAttributeNames;
+          input["ExpressionAttributeNames"] = env.filter.ExpressionAttributeNames;
       }
       if (env.op === "query") {
         if (env.keyCondition === undefined) {
@@ -391,14 +367,12 @@ export class DynamoDriver extends DatabaseDriver {
             execution_time_ms: roundTo2(performance.now() - start),
           };
         }
-        input["KeyConditionExpression"] =
-          env.keyCondition.KeyConditionExpression;
+        input["KeyConditionExpression"] = env.keyCondition.KeyConditionExpression;
         const prevVals =
           (input["ExpressionAttributeValues"] as DynamoItem | undefined) ?? {};
         const prevNames =
-          (input["ExpressionAttributeNames"] as
-            | Record<string, string>
-            | undefined) ?? {};
+          (input["ExpressionAttributeNames"] as Record<string, string> | undefined) ??
+          {};
         if (env.keyCondition.ExpressionAttributeValues)
           input["ExpressionAttributeValues"] = {
             ...prevVals,
@@ -450,9 +424,7 @@ export class DynamoDriver extends DatabaseDriver {
     schemaName: string = "",
     tableFilter: string | null = null,
   ): Promise<Table[]> {
-    const handle = (await (conn as
-      | Promise<DynamoHandle>
-      | DynamoHandle)) as DynamoHandle;
+    const handle = (await (conn as Promise<DynamoHandle> | DynamoHandle)) as DynamoHandle;
     const { client, module } = handle;
     try {
       const listed = (await client.send(
@@ -464,9 +436,7 @@ export class DynamoDriver extends DatabaseDriver {
         tableFilter !== null && tableFilter !== undefined
           ? new RegExp(
               "^" +
-                tableFilter
-                  .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-                  .replace(/%/g, ".*") +
+                tableFilter.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/%/g, ".*") +
                 "$",
             )
           : null;
@@ -475,31 +445,25 @@ export class DynamoDriver extends DatabaseDriver {
         (name) => filterRe === null || filterRe.test(name),
       );
 
-      // ⚡ Bolt Optimization: Chunked DescribeTable calls
-      // Avoids an N+1 query problem by executing table descriptions concurrently,
-      // but batches them to avoid throttling errors from AWS limit.
-      const descResults: Array<{ name: string; desc: DescribeTableOutput }> =
-        [];
-      const concurrencyLimit = 10;
-
-      for (let i = 0; i < filteredNames.length; i += concurrencyLimit) {
-        const chunk = filteredNames.slice(i, i + concurrencyLimit);
-        const chunkPromises = chunk.map(async (name) => {
-          const desc = (await client.send(
-            new module.DescribeTableCommand({ TableName: name }),
-          )) as DescribeTableOutput;
-          return { name, desc };
-        });
-
-        // Wait for this chunk to complete before starting the next.
-        // We let exceptions bubble up naturally rather than swallowing them.
-        const chunkResults = await Promise.all(chunkPromises);
+      // Fan out DescribeTable in bounded-concurrency chunks. Promise.all per
+      // chunk preserves table ordering in `out`; chunk size is capped by
+      // DESCRIBE_TABLE_CONCURRENCY to stay within AWS per-account TPS.
+      const descResults: Array<{ name: string; desc: DescribeTableOutput }> = [];
+      for (let i = 0; i < filteredNames.length; i += DESCRIBE_TABLE_CONCURRENCY) {
+        const chunk = filteredNames.slice(i, i + DESCRIBE_TABLE_CONCURRENCY);
+        const chunkResults = await Promise.all(
+          chunk.map(async (name) => {
+            const desc = (await client.send(
+              new module.DescribeTableCommand({ TableName: name }),
+            )) as DescribeTableOutput;
+            return { name, desc };
+          }),
+        );
         descResults.push(...chunkResults);
       }
 
       const out: Table[] = [];
-      for (const res of descResults) {
-        const { name, desc } = res;
+      for (const { name, desc } of descResults) {
         const table = desc.Table;
         if (table === undefined) continue;
 
@@ -555,12 +519,8 @@ export class DynamoDriver extends DatabaseDriver {
   /** Per-driver health check via `ListTablesCommand` with Limit=1. */
   async healthCheck(conn: unknown): Promise<boolean> {
     try {
-      const handle = (await (conn as
-        | Promise<DynamoHandle>
-        | DynamoHandle)) as DynamoHandle;
-      await handle.client.send(
-        new handle.module.ListTablesCommand({ Limit: 1 }),
-      );
+      const handle = (await (conn as Promise<DynamoHandle> | DynamoHandle)) as DynamoHandle;
+      await handle.client.send(new handle.module.ListTablesCommand({ Limit: 1 }));
       return true;
     } catch {
       return false;
@@ -592,7 +552,9 @@ export class DynamoDriver extends DatabaseDriver {
         // distinct error so callers don't see the unhelpful default-deny
         // "ADMIN statements are never allowed" path.
         const msg = e instanceof Error ? e.message : String(e);
-        throw new DynamoEnvelopeParseError(`Malformed envelope JSON: ${msg}`);
+        throw new DynamoEnvelopeParseError(
+          `Malformed envelope JSON: ${msg}`,
+        );
       }
     }
 
