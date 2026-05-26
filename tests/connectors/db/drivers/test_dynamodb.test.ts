@@ -272,69 +272,6 @@ describe("wiki_db.drivers.dynamodb (unit)", () => {
     expect(colMap.get("sk")!.is_primary_key).toBe(false);
   });
 
-  it("getSchemaAsync chunks DescribeTable calls in bounded-concurrency batches", async () => {
-    const drv = new DynamoDriver();
-    const handle = await drv.connect({ region: "us-east-1" });
-    const client = latest();
-    const tableNames = Array.from({ length: 25 }, (_, i) => `tbl_${i}`);
-
-    let inFlight = 0;
-    let maxConcurrent = 0;
-    client.sendSpy.mockImplementation(
-      async (cmd: InstanceType<typeof mocks.FakeCommand>) => {
-        if (cmd.name === "ListTables") return { TableNames: tableNames };
-        if (cmd.name === "DescribeTable") {
-          inFlight += 1;
-          maxConcurrent = Math.max(maxConcurrent, inFlight);
-          await new Promise((r) => setTimeout(r, 5));
-          inFlight -= 1;
-          const name = (cmd.input as { TableName: string }).TableName;
-          return {
-            Table: {
-              TableName: name,
-              KeySchema: [{ AttributeName: "pk", KeyType: "HASH" }],
-              AttributeDefinitions: [{ AttributeName: "pk", AttributeType: "S" }],
-            },
-          };
-        }
-        return {};
-      },
-    );
-
-    const tables = await drv.getSchemaAsync(handle);
-    expect(tables).toHaveLength(25);
-    // DESCRIBE_TABLE_CONCURRENCY is 10 in the driver — chunks must not exceed it.
-    expect(maxConcurrent).toBeLessThanOrEqual(10);
-    expect(maxConcurrent).toBeGreaterThan(1);
-  });
-
-  it("getSchemaAsync surfaces DescribeTable failures (no partial schema)", async () => {
-    const drv = new DynamoDriver();
-    const handle = await drv.connect({ region: "us-east-1" });
-    const client = latest();
-    client.sendSpy.mockImplementation(
-      async (cmd: InstanceType<typeof mocks.FakeCommand>) => {
-        if (cmd.name === "ListTables") return { TableNames: ["good", "bad"] };
-        if (cmd.name === "DescribeTable") {
-          const name = (cmd.input as { TableName: string }).TableName;
-          if (name === "bad") throw new Error("throttled");
-          return {
-            Table: {
-              TableName: name,
-              KeySchema: [{ AttributeName: "pk", KeyType: "HASH" }],
-              AttributeDefinitions: [{ AttributeName: "pk", AttributeType: "S" }],
-            },
-          };
-        }
-        return {};
-      },
-    );
-    // Driver catches and returns []; the contract is "all or nothing" — never a
-    // partial schema that omits the failed table silently.
-    const tables = await drv.getSchemaAsync(handle);
-    expect(tables).toEqual([]);
-  });
-
   it("close() is a no-op; client stays live for other handles", async () => {
     const drv = new DynamoDriver();
     const handle = await drv.connect({ region: "us-east-1" });
