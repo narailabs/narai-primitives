@@ -432,45 +432,60 @@ export class DynamoDriver extends DatabaseDriver {
             )
           : null;
 
+      const validNames = names.filter((name) => filterRe === null || filterRe.test(name));
       const out: Table[] = [];
-      for (const name of names) {
-        if (filterRe !== null && !filterRe.test(name)) continue;
-        const desc = (await client.send(
-          new module.DescribeTableCommand({ TableName: name }),
-        )) as DescribeTableOutput;
-        const table = desc.Table;
-        if (table === undefined) continue;
 
-        const attrTypes = new Map<string, string>();
-        for (const a of table.AttributeDefinitions ?? []) {
-          attrTypes.set(a.AttributeName, _awsAttrType(a.AttributeType));
-        }
-        const keys = new Set(
-          (table.KeySchema ?? []).map((k) => k.AttributeName),
+      // ⚡ Bolt Optimization: Use chunked concurrent requests (Promise.all)
+      // instead of sequential iteration to parallelize AWS network calls.
+      // A concurrency limit of 10 speeds up schema extraction significantly
+      // while avoiding AWS API throttling exceptions (ProvisionedThroughputExceeded).
+      const CONCURRENCY = 10;
+      for (let i = 0; i < validNames.length; i += CONCURRENCY) {
+        const chunk = validNames.slice(i, i + CONCURRENCY);
+        const results = await Promise.all(
+          chunk.map(async (name) => {
+            const desc = (await client.send(
+              new module.DescribeTableCommand({ TableName: name }),
+            )) as DescribeTableOutput;
+            const table = desc.Table;
+            if (table === undefined) return null;
+
+            const attrTypes = new Map<string, string>();
+            for (const a of table.AttributeDefinitions ?? []) {
+              attrTypes.set(a.AttributeName, _awsAttrType(a.AttributeType));
+            }
+            const keys = new Set(
+              (table.KeySchema ?? []).map((k) => k.AttributeName),
+            );
+            const columns: Column[] = (table.KeySchema ?? []).map(
+              (k) =>
+                new Column({
+                  name: k.AttributeName,
+                  data_type: attrTypes.get(k.AttributeName) ?? "unknown",
+                  nullable: false,
+                  is_primary_key: true,
+                  default: null,
+                }),
+            );
+            for (const [attrName, attrType] of attrTypes) {
+              if (keys.has(attrName)) continue;
+              columns.push(
+                new Column({
+                  name: attrName,
+                  data_type: attrType,
+                  nullable: true,
+                  is_primary_key: false,
+                  default: null,
+                }),
+              );
+            }
+            return new Table({ name, schema: schemaName, columns });
+          })
         );
-        const columns: Column[] = (table.KeySchema ?? []).map(
-          (k) =>
-            new Column({
-              name: k.AttributeName,
-              data_type: attrTypes.get(k.AttributeName) ?? "unknown",
-              nullable: false,
-              is_primary_key: true,
-              default: null,
-            }),
-        );
-        for (const [attrName, attrType] of attrTypes) {
-          if (keys.has(attrName)) continue;
-          columns.push(
-            new Column({
-              name: attrName,
-              data_type: attrType,
-              nullable: true,
-              is_primary_key: false,
-              default: null,
-            }),
-          );
+
+        for (const t of results) {
+          if (t !== null) out.push(t);
         }
-        out.push(new Table({ name, schema: schemaName, columns }));
       }
       return out;
     } catch {
