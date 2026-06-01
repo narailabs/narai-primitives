@@ -432,45 +432,61 @@ export class DynamoDriver extends DatabaseDriver {
             )
           : null;
 
-      const out: Table[] = [];
-      for (const name of names) {
-        if (filterRe !== null && !filterRe.test(name)) continue;
-        const desc = (await client.send(
-          new module.DescribeTableCommand({ TableName: name }),
-        )) as DescribeTableOutput;
-        const table = desc.Table;
-        if (table === undefined) continue;
+      // ⚡ Bolt Optimization: Batch DescribeTableCommand requests in chunks
+      // to reduce N+1 network roundtrips for schema extraction.
+      const filteredNames = filterRe !== null
+        ? names.filter((n) => filterRe.test(n))
+        : names;
 
-        const attrTypes = new Map<string, string>();
-        for (const a of table.AttributeDefinitions ?? []) {
-          attrTypes.set(a.AttributeName, _awsAttrType(a.AttributeType));
-        }
-        const keys = new Set(
-          (table.KeySchema ?? []).map((k) => k.AttributeName),
+      const out: Table[] = [];
+      const chunkSize = 10;
+      for (let i = 0; i < filteredNames.length; i += chunkSize) {
+        const chunk = filteredNames.slice(i, i + chunkSize);
+        const descriptions = await Promise.all(
+          chunk.map((name) =>
+            client
+              .send(new module.DescribeTableCommand({ TableName: name }))
+              .catch(() => null)
+          )
         );
-        const columns: Column[] = (table.KeySchema ?? []).map(
-          (k) =>
-            new Column({
-              name: k.AttributeName,
-              data_type: attrTypes.get(k.AttributeName) ?? "unknown",
-              nullable: false,
-              is_primary_key: true,
-              default: null,
-            }),
-        );
-        for (const [attrName, attrType] of attrTypes) {
-          if (keys.has(attrName)) continue;
-          columns.push(
-            new Column({
-              name: attrName,
-              data_type: attrType,
-              nullable: true,
-              is_primary_key: false,
-              default: null,
-            }),
+
+        for (let j = 0; j < chunk.length; j++) {
+          const name = chunk[j]!;
+          const desc = descriptions[j] as DescribeTableOutput | null;
+          const table = desc?.Table;
+          if (table === undefined) continue;
+
+          const attrTypes = new Map<string, string>();
+          for (const a of table.AttributeDefinitions ?? []) {
+            attrTypes.set(a.AttributeName, _awsAttrType(a.AttributeType));
+          }
+          const keys = new Set(
+            (table.KeySchema ?? []).map((k) => k.AttributeName),
           );
+          const columns: Column[] = (table.KeySchema ?? []).map(
+            (k) =>
+              new Column({
+                name: k.AttributeName,
+                data_type: attrTypes.get(k.AttributeName) ?? "unknown",
+                nullable: false,
+                is_primary_key: true,
+                default: null,
+              }),
+          );
+          for (const [attrName, attrType] of attrTypes) {
+            if (keys.has(attrName)) continue;
+            columns.push(
+              new Column({
+                name: attrName,
+                data_type: attrType,
+                nullable: true,
+                is_primary_key: false,
+                default: null,
+              }),
+            );
+          }
+          out.push(new Table({ name, schema: schemaName, columns }));
         }
-        out.push(new Table({ name, schema: schemaName, columns }));
       }
       return out;
     } catch {
