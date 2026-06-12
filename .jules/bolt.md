@@ -4,3 +4,7 @@
 ## 2026-05-23 - SQL Server Schema Batch Optimization
 **Learning:** When querying INFORMATION_SCHEMA.COLUMNS, chunking IN (@table...) parameters to respect SQL Server's 2100 limit is unnecessary and inefficient. It's better to avoid passing the list of tables entirely by doing a JOIN with INFORMATION_SCHEMA.TABLES and applying the same filter directly.
 **Action:** Remove the chunking loop and use a JOIN to extract metadata for all relevant tables in a single DB query, simplifying logic and reducing compilation and network overhead.
+
+## 2024-06-12 - DynamoDB Schema Extraction Parallelization
+**Learning:** Calling `DescribeTableCommand` sequentially in a loop for DynamoDB schema extraction creates an N+1 performance bottleneck over the network.
+**Action:** Use chunked concurrent requests (`Promise.all` with a chunk size of 10) to parallelize network calls while avoiding AWS API throttling exceptions.
