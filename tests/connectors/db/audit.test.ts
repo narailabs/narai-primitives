@@ -298,6 +298,28 @@ describe("wiki_db.audit", () => {
     expect(out).not.toContain("response");
   });
 
+  it("scrubSqlSecrets handles a pathological unterminated quote without ReDoS", () => {
+    // Regression: the quoted-value body uses the unrolled-loop form
+    // `[^q\\]*(?:\\.[^q\\]*)*` so an unterminated quote — the worst case for
+    // the old `(?:[^q\\]|\\.)*` shape — can't trigger super-linear
+    // backtracking. A 100k-char run with no closing quote must complete
+    // well under the test timeout.
+    const evil = `password='${"a".repeat(100_000)}`;
+    const start = performance.now();
+    const out = scrubSqlSecrets(evil);
+    const elapsedMs = performance.now() - start;
+    // No closing quote → nothing to redact; the value is left intact.
+    expect(out).toBe(evil);
+    expect(elapsedMs).toBeLessThan(1000);
+  });
+
+  it("scrubSqlSecrets redacts a long escaped value in linear time", () => {
+    // The unrolled form still consumes long escaped runs correctly.
+    const value = `${"x".repeat(50_000)}\\'${"y".repeat(50_000)}`;
+    const out = scrubSqlSecrets(`token='${value}'`);
+    expect(out).toBe("token='[REDACTED]'");
+  });
+
   it("scrubSqlSecrets does not mangle JSON when 'authorization' appears inside a string value", () => {
     // Regression (Codex P2 on 6e3bf0f): the unquoted AUTH branch's
     // `[^\r\n]+` value class used to consume the JSON closing `"}` and
