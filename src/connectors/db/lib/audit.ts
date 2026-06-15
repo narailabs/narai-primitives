@@ -116,17 +116,12 @@ export interface LogQueryParams {
 // `{"message":"authorization: …"}` swallowed the trailing `"}` and
 // produced unterminated JSON.
 const _SENSITIVE_KEYS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth";
-// Quoted-value bodies use the unrolled-loop form `[^q\\]*(?:\\.[^q\\]*)*`
-// rather than `(?:[^q\\]|\\.)*`. Both match the same language, but the
-// unrolled form is provably linear: the non-escaped run `[^q\\]*` and the
-// escape group `\\.[^q\\]*` share no first character, so an unterminated
-// quote can't trigger super-linear backtracking (ReDoS).
 const _SENSITIVE_LITERAL_SQUOTE_RE = new RegExp(
-  `("?\\b(?:${_SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)'[^'\\\\]*(?:\\\\.[^'\\\\]*)*'`,
+  `("?\\b(?:${_SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)'(?:[^'\\\\]|\\\\.)*'`,
   "gi",
 );
 const _SENSITIVE_LITERAL_DQUOTE_RE = new RegExp(
-  `("?\\b(?:${_SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)"[^"\\\\]*(?:\\\\.[^"\\\\]*)*"`,
+  `("?\\b(?:${_SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)"(?:[^"\\\\]|\\\\.)*"`,
   "gi",
 );
 const _SENSITIVE_AUTH_QUOTED_RE =

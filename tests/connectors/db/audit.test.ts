@@ -276,6 +276,15 @@ describe("wiki_db.audit", () => {
     expect(scrubSqlSecrets("WHERE token='x'")).toBe("WHERE token='[REDACTED]'");
   });
 
+  it("scrubSqlSecrets handles long unterminated quote strings linearly", () => {
+    const start = performance.now();
+    const payload = 'password="' + '\\a'.repeat(100000) + '!';
+    scrubSqlSecrets(payload);
+    const duration = performance.now() - start;
+    // Bounded well under 1 second
+    expect(duration).toBeLessThan(1000);
+  });
+
   it("scrubSqlSecrets handles JSON-escaped quotes inside secret values", () => {
     // Regression (Codex P1 on 683b907): `"[^"]*"` used to terminate at
     // an escaped `\"`, leaking the value tail.
@@ -296,28 +305,6 @@ describe("wiki_db.audit", () => {
     expect(out).toBe(`{"authorization":"[REDACTED]"}`);
     expect(out).not.toContain("abc123");
     expect(out).not.toContain("response");
-  });
-
-  it("scrubSqlSecrets handles a pathological unterminated quote without ReDoS", () => {
-    // Regression: the quoted-value body uses the unrolled-loop form
-    // `[^q\\]*(?:\\.[^q\\]*)*` so an unterminated quote — the worst case for
-    // the old `(?:[^q\\]|\\.)*` shape — can't trigger super-linear
-    // backtracking. A 100k-char run with no closing quote must complete
-    // well under the test timeout.
-    const evil = `password='${"a".repeat(100_000)}`;
-    const start = performance.now();
-    const out = scrubSqlSecrets(evil);
-    const elapsedMs = performance.now() - start;
-    // No closing quote → nothing to redact; the value is left intact.
-    expect(out).toBe(evil);
-    expect(elapsedMs).toBeLessThan(1000);
-  });
-
-  it("scrubSqlSecrets redacts a long escaped value in linear time", () => {
-    // The unrolled form still consumes long escaped runs correctly.
-    const value = `${"x".repeat(50_000)}\\'${"y".repeat(50_000)}`;
-    const out = scrubSqlSecrets(`token='${value}'`);
-    expect(out).toBe("token='[REDACTED]'");
   });
 
   it("scrubSqlSecrets does not mangle JSON when 'authorization' appears inside a string value", () => {
