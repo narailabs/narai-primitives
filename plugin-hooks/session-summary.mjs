@@ -45,10 +45,20 @@ function aggregate(connector, sessionId, records) {
       avg_ms: s.ms_count > 0 ? Math.round(s.ms_total / s.ms_count) : 0,
     };
   }
-  const top_responses = [...records]
-    .sort((a, b) => b.response_bytes - a.response_bytes)
-    .slice(0, 3)
-    .map((r) => ({ action: r.action, response_bytes: r.response_bytes }));
+  // O(N) bounded top-K (mirrors aggregateRecords in src/toolkit/usage/aggregate.ts):
+  // insert each record into a descending list capped at 3 entries. Strict `>`
+  // preserves first-seen order among ties, matching the prior stable sort/slice.
+  const top_responses = [];
+  for (const r of records) {
+    let i = top_responses.length;
+    while (i > 0 && r.response_bytes > top_responses[i - 1].response_bytes) {
+      i--;
+    }
+    if (i < 3) {
+      top_responses.splice(i, 0, { action: r.action, response_bytes: r.response_bytes });
+      if (top_responses.length > 3) top_responses.pop();
+    }
+  }
   return {
     session_id: sessionId,
     connector,
