@@ -71,10 +71,19 @@ export function aggregateRecords(
     };
   }
 
-  const top_responses: UsageTopResponse[] = [...records]
-    .sort((a, b) => b.response_bytes - a.response_bytes)
-    .slice(0, 3)
-    .map((r) => ({ action: r.action, response_bytes: r.response_bytes }));
+  // ⚡ Bolt: Use an O(N) loop to find the top 3 responses instead of O(N log N) sort
+  // [...records].sort() blocks the event loop on large datasets and causes memory overhead
+  const topK: { action: string; response_bytes: number }[] = [];
+  for (const rec of records) {
+    if (topK.length < 3) {
+      topK.push({ action: rec.action, response_bytes: rec.response_bytes });
+      topK.sort((a, b) => b.response_bytes - a.response_bytes);
+    } else if (rec.response_bytes > topK[2].response_bytes) {
+      topK[2] = { action: rec.action, response_bytes: rec.response_bytes };
+      topK.sort((a, b) => b.response_bytes - a.response_bytes);
+    }
+  }
+  const top_responses: UsageTopResponse[] = topK;
 
   return {
     session_id: sessionId,
