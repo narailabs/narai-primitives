@@ -53,6 +53,82 @@ describe("aggregateRecords", () => {
     const s = aggregateRecords("sid", "github", [r({ execution_time_ms: undefined })]);
     expect(s.by_action["repo_info"].avg_ms).toBe(0);
   });
+
+  describe("top_responses (O(N) top-K)", () => {
+    it("returns exactly the top 3 in descending order when more than 3 records", () => {
+      const records = [1, 2, 3, 4, 5].map((n) => r({ action: `a${n}`, response_bytes: n }));
+      const s = aggregateRecords("sid", "github", records);
+      expect(s.top_responses).toEqual([
+        { action: "a5", response_bytes: 5 },
+        { action: "a4", response_bytes: 4 },
+        { action: "a3", response_bytes: 3 },
+      ]);
+    });
+
+    it("preserves first-seen order among ties", () => {
+      const records = [
+        r({ action: "first", response_bytes: 500 }),
+        r({ action: "second", response_bytes: 500 }),
+        r({ action: "third", response_bytes: 100 }),
+      ];
+      const s = aggregateRecords("sid", "github", records);
+      expect(s.top_responses).toEqual([
+        { action: "first", response_bytes: 500 },
+        { action: "second", response_bytes: 500 },
+        { action: "third", response_bytes: 100 },
+      ]);
+    });
+
+    it("keeps the first-seen record on a tie at the K boundary", () => {
+      const records = [
+        r({ action: "a", response_bytes: 900 }),
+        r({ action: "b", response_bytes: 500 }),
+        r({ action: "c", response_bytes: 300 }),
+        r({ action: "d", response_bytes: 300 }),
+      ];
+      const s = aggregateRecords("sid", "github", records);
+      expect(s.top_responses).toEqual([
+        { action: "a", response_bytes: 900 },
+        { action: "b", response_bytes: 500 },
+        { action: "c", response_bytes: 300 },
+      ]);
+    });
+
+    it("returns all records (no sentinel leakage) when fewer than 3", () => {
+      const records = [
+        r({ action: "a", response_bytes: 100 }),
+        r({ action: "b", response_bytes: 50 }),
+      ];
+      const s = aggregateRecords("sid", "github", records);
+      expect(s.top_responses).toEqual([
+        { action: "a", response_bytes: 100 },
+        { action: "b", response_bytes: 50 },
+      ]);
+      expect(s.top_responses.every((t) => t.action !== "" && t.response_bytes >= 0)).toBe(true);
+    });
+
+    it("retains zero-byte records (not swallowed by an empty-slot sentinel)", () => {
+      const s = aggregateRecords("sid", "github", [
+        r({ action: "a", response_bytes: 0 }),
+        r({ action: "b", response_bytes: 0 }),
+      ]);
+      expect(s.top_responses).toEqual([
+        { action: "a", response_bytes: 0 },
+        { action: "b", response_bytes: 0 },
+      ]);
+    });
+
+    it("does not mutate the input records array", () => {
+      const records = [
+        r({ action: "a", response_bytes: 1 }),
+        r({ action: "b", response_bytes: 3 }),
+        r({ action: "c", response_bytes: 2 }),
+      ];
+      const snapshot = records.map((x) => x.action);
+      aggregateRecords("sid", "github", records);
+      expect(records.map((x) => x.action)).toEqual(snapshot);
+    });
+  });
 });
 
 describe("renderSummaryMarkdown", () => {

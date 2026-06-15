@@ -27,13 +27,7 @@ export function aggregateRecords(
 
   const byAction: Record<
     string,
-    {
-      calls: number;
-      response_bytes: number;
-      estimated_tokens: number;
-      ms_total: number;
-      ms_count: number;
-    }
+    { calls: number; response_bytes: number; estimated_tokens: number; ms_total: number; ms_count: number }
   > = {};
 
   let totalBytes = 0;
@@ -77,34 +71,27 @@ export function aggregateRecords(
     };
   }
 
-  // ⚡ Bolt Optimization: Replace O(N log N) full array sort with O(N) top-K extraction.
-  // Avoids cloning the entire records array and sorting it, providing ~30x speedup for large datasets (e.g., 100k+ records).
-  const top3 = [
-    { action: "", response_bytes: -1 },
-    { action: "", response_bytes: -1 },
-    { action: "", response_bytes: -1 },
-  ];
-
+  // ⚡ Bolt Optimization: replace the O(N log N) full clone-and-sort with an
+  // O(N) bounded top-K pass. Each record is inserted into a descending list
+  // capped at 3 entries (O(1) per record), avoiding both the array clone and
+  // the sort. Strict `>` preserves first-seen order among ties, matching the
+  // prior stable-sort behaviour. Unlike a magic sentinel, an empty slot is
+  // represented by the list simply being short, so negative/zero byte counts
+  // are handled correctly.
+  const top_responses: UsageTopResponse[] = [];
   for (const r of records) {
-    if (r.response_bytes > top3[2].response_bytes) {
-      if (r.response_bytes > top3[1].response_bytes) {
-        if (r.response_bytes > top3[0].response_bytes) {
-          top3[2] = top3[1];
-          top3[1] = top3[0];
-          top3[0] = { action: r.action, response_bytes: r.response_bytes };
-        } else {
-          top3[2] = top3[1];
-          top3[1] = { action: r.action, response_bytes: r.response_bytes };
-        }
-      } else {
-        top3[2] = { action: r.action, response_bytes: r.response_bytes };
-      }
+    let i = top_responses.length;
+    while (i > 0 && r.response_bytes > top_responses[i - 1].response_bytes) {
+      i--;
+    }
+    if (i < 3) {
+      top_responses.splice(i, 0, {
+        action: r.action,
+        response_bytes: r.response_bytes,
+      });
+      if (top_responses.length > 3) top_responses.pop();
     }
   }
-
-  const top_responses: UsageTopResponse[] = top3.filter(
-    (x) => x.response_bytes !== -1,
-  );
 
   return {
     session_id: sessionId,
@@ -135,10 +122,7 @@ export function renderSummaryMarkdown(s: UsageSummary): string {
     .join("\n");
 
   const top = s.top_responses
-    .map(
-      (t, i) =>
-        `${i + 1}. ${t.action} (${t.response_bytes.toLocaleString()} bytes)`,
-    )
+    .map((t, i) => `${i + 1}. ${t.action} (${t.response_bytes.toLocaleString()} bytes)`)
     .join("\n");
 
   return [
