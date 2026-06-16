@@ -125,33 +125,46 @@ export function classifySqlKeywords(sql: string): OperationType {
 }
 
 /**
- * Split SQL on statement-terminating semicolons, respecting single- and double-
- * quoted string literals. Comments are stripped first, so line and block
- * comments cannot hide a semicolon.
+ * Split SQL on statement-terminating semicolons, respecting single-, double-,
+ * and backtick-quoted string literals/identifiers. Comments are stripped first,
+ * so line and block comments cannot hide a semicolon.
  *
  * Returns trimmed, non-empty statements. An input with a single trailing
- * semicolon returns one statement. Edge cases: `''` escaped quotes inside a
- * single-quoted literal work by accident of toggle semantics (exit + re-enter
- * with nothing in between). NOT handled: PostgreSQL dollar-quoted strings
- * (`$tag$...$tag$`) and backtick-quoted identifiers — tolerably over-split
- * rather than under-split, which is the right bias for a safety gate.
+ * semicolon returns one statement. Handles SQL-style `''` escaped quotes inside a
+ * literal, as well as `\` escaped characters. NOT handled: PostgreSQL dollar-quoted strings
+ * (`$tag$...$tag$`) — tolerably over-split rather than under-split, which is the
+ * right bias for a safety gate.
  */
 function _splitStatements(sql: string): string[] {
   const cleaned = Policy._stripComments(sql);
   const out: string[] = [];
   let start = 0;
-  let inSingle = false;
-  let inDouble = false;
+  let inString: string | null = null; // Either null, "'", '"', or '`'
+
   for (let i = 0; i < cleaned.length; i++) {
     const c = cleaned[i];
-    if (c === "'" && !inDouble) inSingle = !inSingle;
-    else if (c === '"' && !inSingle) inDouble = !inDouble;
-    else if (c === ";" && !inSingle && !inDouble) {
-      const s = cleaned.slice(start, i).trim();
-      if (s) out.push(s);
-      start = i + 1;
+
+    if (inString !== null) {
+      if (c === inString) {
+        if (i + 1 < cleaned.length && cleaned[i + 1] === inString) {
+          i++; // skip escaped quote e.g. ''
+        } else {
+          inString = null;
+        }
+      } else if (c === "\\" && i + 1 < cleaned.length) {
+        i++; // skip escaped char like \'
+      }
+    } else {
+      if (c === "'" || c === '"' || c === "`") {
+        inString = c;
+      } else if (c === ";") {
+        const s = cleaned.slice(start, i).trim();
+        if (s) out.push(s);
+        start = i + 1;
+      }
     }
   }
+
   const tail = cleaned.slice(start).trim();
   if (tail) out.push(tail);
   return out;
@@ -177,11 +190,6 @@ export function classifyStatements(sql: string): OperationType[] {
   }
   return stmts.map((s) => classifySqlKeywords(s));
 }
-
-// Regex to strip SQL line comments (-- ...) and block comments (/* ... */)
-const _LINE_COMMENT_RE = /--[^\n]*/g;
-// Python uses re.DOTALL so `.` matches newlines; in JS use the `s` flag.
-const _BLOCK_COMMENT_RE = /\/\*.*?\*\//gs;
 
 
 /**
@@ -243,11 +251,62 @@ export class Policy {
   // SQL classification
   // ------------------------------------------------------------------
 
-  /** Remove SQL comments from the statement. */
+  /**
+   * Strip SQL line comments (`-- ...`) and block comments (`/* ... *\/`).
+   * Skips string literals to prevent malicious strings from accidentally
+   * terminating a comment early or being parsed as a comment boundary.
+   * Used before keyword classification to prevent a comment like
+   * `/* DROP TABLE *\/ SELECT 1` from triggering a false positive.
+   */
   static _stripComments(sql: string): string {
-    let s = sql.replace(_BLOCK_COMMENT_RE, "");
-    s = s.replace(_LINE_COMMENT_RE, "");
-    return s.trim();
+    let out = "";
+    let i = 0;
+    while (i < sql.length) {
+      const ch = sql[i];
+      if (ch === "'" || ch === '"' || ch === "`") {
+        const quote = ch;
+        out += quote;
+        i++;
+        while (i < sql.length) {
+          if (sql[i] === quote) {
+            if (sql[i + 1] === quote) {
+              out += quote + quote;
+              i += 2;
+              continue;
+            }
+            out += quote;
+            i++;
+            break;
+          }
+          if (sql[i] === "\\" && i + 1 < sql.length) {
+            out += "\\" + sql[i+1];
+            i += 2;
+            continue;
+          }
+          out += sql[i];
+          i++;
+        }
+        continue;
+      }
+      if (ch === "-" && sql[i + 1] === "-") {
+        while (i < sql.length && sql[i] !== "\n") { i++; }
+        continue;
+      }
+      if (ch === "/" && sql[i + 1] === "*") {
+        i += 2;
+        while (i < sql.length) {
+          if (sql[i] === "*" && sql[i + 1] === "/") {
+            i += 2;
+            break;
+          }
+          i++;
+        }
+        continue;
+      }
+      out += ch;
+      i++;
+    }
+    return out.trim();
   }
 
   /** Determine the OperationType of a raw SQL string. */
