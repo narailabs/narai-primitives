@@ -124,71 +124,32 @@ export function classifySqlKeywords(sql: string): OperationType {
   return OperationType.ADMIN;
 }
 
-/**
- * If a PostgreSQL dollar-quoted string opens at `s[i]` (`$$` or `$tag$`, where
- * tag is an optional identifier that does not start with a digit), return the
- * index just past its matching close delimiter — or `s.length` if it is
- * unterminated. Returns -1 when `s[i]` does not open a dollar-quote (a `$1`
- * placeholder or a bare `$`). Content between the delimiters is fully literal:
- * no escapes, comments, or nested quotes are interpreted, matching Postgres.
- */
-function _dollarQuoteEnd(s: string, i: number): number {
-  if (s[i] !== "$") return -1;
-  let j = i + 1;
-  while (j < s.length) {
-    const ch = s[j]!;
-    const isIdent =
-      (ch >= "A" && ch <= "Z") ||
-      (ch >= "a" && ch <= "z") ||
-      (ch >= "0" && ch <= "9") ||
-      ch === "_";
-    if (!isIdent) break;
-    j++;
-  }
-  if (j >= s.length || s[j] !== "$") return -1; // opener has no closing `$`
-  const tag = s.slice(i + 1, j);
-  if (tag.length > 0 && tag[0]! >= "0" && tag[0]! <= "9") return -1; // `$1$`
-  const delim = s.slice(i, j + 1); // e.g. "$$" or "$func$"
-  const close = s.indexOf(delim, j + 1);
-  return close === -1 ? s.length : close + delim.length;
-}
+function _boundarySemicolons(sql: string, treatBackslashAsEscape: boolean): Set<number> {
+  const boundaries = new Set<number>();
+  let inString: string | null = null; // Either null, "'", '"', or '`'
 
-/**
- * Indices of `;` characters that terminate a statement under one SQL string-
- * escape convention. `backslashEscape=false` models SQLite / SQL Server /
- * Oracle / standard-conforming PostgreSQL, where `\` is an ordinary literal
- * char and only `''` doubling escapes a quote. `backslashEscape=true` models
- * MySQL/MariaDB default sql_mode and PostgreSQL `E'...'` strings, where `\`
- * escapes the next char. Single-, double-, and backtick-quoted literals plus
- * PostgreSQL dollar-quoted strings are all respected.
- */
-function _boundarySemicolons(s: string, backslashEscape: boolean): Set<number> {
-  const idx = new Set<number>();
-  let inString: string | null = null; // null, "'", '"', or '`'
-  for (let i = 0; i < s.length; i++) {
-    const c = s[i];
+  for (let i = 0; i < sql.length; i++) {
+    const c = sql[i];
+
     if (inString !== null) {
-      if (backslashEscape && c === "\\" && i + 1 < s.length) {
-        i++; // skip escaped char, e.g. \' or \\
-        continue;
-      }
       if (c === inString) {
-        if (i + 1 < s.length && s[i + 1] === inString) {
-          i++; // doubled-quote escape, e.g. ''
+        if (i + 1 < sql.length && sql[i + 1] === inString) {
+          i++; // skip escaped quote e.g. ''
         } else {
           inString = null;
         }
+      } else if (c === "\\" && treatBackslashAsEscape && i + 1 < sql.length) {
+        i++; // skip escaped char like \'
       }
-    } else if (c === "$") {
-      const end = _dollarQuoteEnd(s, i);
-      if (end !== -1) i = end - 1; // skip the dollar-quoted literal wholesale
-    } else if (c === "'" || c === '"' || c === "`") {
-      inString = c;
-    } else if (c === ";") {
-      idx.add(i);
+    } else {
+      if (c === "'" || c === '"' || c === "`") {
+        inString = c;
+      } else if (c === ";") {
+        boundaries.add(i);
+      }
     }
   }
-  return idx;
+  return boundaries;
 }
 
 /**
@@ -197,34 +158,34 @@ function _boundarySemicolons(s: string, backslashEscape: boolean): Set<number> {
  * so line and block comments cannot hide a semicolon.
  *
  * Returns trimmed, non-empty statements. An input with a single trailing
- * semicolon returns one statement.
+ * semicolon returns one statement. Handles SQL-standard `''` escaped quotes
+ * inside a literal.
  *
- * Escape-convention handling: a `;` is treated as a statement separator if it
- * is one under EITHER SQL escape convention — backslash-as-literal (SQLite,
- * SQL Server, Oracle, standard PostgreSQL) or backslash-as-escape (MySQL/
- * MariaDB default, PostgreSQL `E''`). Splitting at the union of both sets of
- * boundaries means a `;` that ANY supported dialect would treat as a separator
- * is never swallowed into a string literal — closing both the SQLite-style
- * `'\'; DROP …` and the MySQL-style `'\''; DROP …` bypass. The only cost is
- * over-splitting an exotic literal that embeds a `;` immediately beside a
- * backslash; that fails safe (escalates rather than allows), which is the right
- * bias for a safety gate. PostgreSQL dollar-quoted strings (`$$...$$` /
- * `$tag$...$tag$`) are recognized too, so a `;` or comment marker inside one is
- * treated as literal data rather than a separator.
+ * Backslash is deliberately NOT treated as a string escape: in SQLite, SQL
+ * Server, Oracle and standard-conforming PostgreSQL it is an ordinary literal
+ * character, so `'\'` is a complete string and a following `;` starts a new
+ * statement. Treating `\` as an escape there would keep the scanner in-string
+ * across the semicolon and hide an injected statement (under-split = bypass).
+ * MySQL/MariaDB (default sql_mode) does treat `\` as an escape; for the rarer
+ * `'\''`-style construct this errs toward over-splitting, the safe bias for a
+ * gate. Dialect-aware escaping is handled by union-splitting both boundary modes.
+ * NOT handled: PostgreSQL dollar-quoted strings (`$tag$...$tag$`) — also over-split
+ * rather than under.
  */
 function _splitStatements(sql: string): string[] {
   const cleaned = Policy._stripComments(sql);
-  const literal = _boundarySemicolons(cleaned, false);
-  const escape = _boundarySemicolons(cleaned, true);
+
+  const b1 = _boundarySemicolons(cleaned, false);
+  const b2 = _boundarySemicolons(cleaned, true);
+
+  const boundaries = Array.from(new Set([...b1, ...b2])).sort((a, b) => a - b);
 
   const out: string[] = [];
   let start = 0;
-  for (let i = 0; i < cleaned.length; i++) {
-    if (literal.has(i) || escape.has(i)) {
-      const s = cleaned.slice(start, i).trim();
-      if (s) out.push(s);
-      start = i + 1;
-    }
+  for (const b of boundaries) {
+    const s = cleaned.slice(start, b).trim();
+    if (s) out.push(s);
+    start = b + 1;
   }
 
   const tail = cleaned.slice(start).trim();
@@ -315,68 +276,65 @@ export class Policy {
 
   /**
    * Strip SQL line comments (`-- ...`) and block comments (`/* ... *\/`).
-   * Skips string literals — single/double/backtick quoted and PostgreSQL
-   * dollar-quoted (`$$...$$`) — so a comment marker that is actually literal
-   * data inside a string can't terminate a comment early, and (critically) so a
-   * real `--`/`/* *\/` inside a `$$...$$` body isn't mistaken for a comment and
-   * stripped, which would swallow the `;` that follows and hide a statement.
+   * Skips string literals to prevent malicious strings from accidentally
+   * terminating a comment early or being parsed as a comment boundary.
    * Used before keyword classification to prevent a comment like
    * `/* DROP TABLE *\/ SELECT 1` from triggering a false positive.
+   *
+   * This uses dual-mode logic for backslash escapes (treating `\` as literal
+   * vs treating `\` as escape) and strips the comment if it is considered a
+   * comment under either dialect convention. This fails safe (by over-stripping).
    */
   static _stripComments(sql: string): string {
-    let out = "";
-    let i = 0;
-    while (i < sql.length) {
-      const ch = sql[i];
-      if (ch === "'" || ch === '"' || ch === "`") {
-        const quote = ch;
-        out += quote;
-        i++;
-        while (i < sql.length) {
-          if (sql[i] === quote) {
-            if (sql[i + 1] === quote) {
-              out += quote + quote;
-              i += 2;
-              continue;
+    const isComment1 = new Array<boolean>(sql.length).fill(false);
+    const isComment2 = new Array<boolean>(sql.length).fill(false);
+
+    function scan(isComment: boolean[], treatBackslashAsEscape: boolean) {
+      let inString: string | null = null;
+      for (let i = 0; i < sql.length; i++) {
+        const c = sql[i] as string;
+        if (inString !== null) {
+          if (c === inString) {
+            if (i + 1 < sql.length && sql[i + 1] === inString) {
+              i++;
+            } else {
+              inString = null;
             }
-            out += quote;
+          } else if (c === "\\" && treatBackslashAsEscape && i + 1 < sql.length) {
             i++;
-            break;
           }
-          // Backslash is not treated as a string escape here — see
-          // `_splitStatements` for the dialect rationale. Keeping both scanners
-          // consistent ensures comment-stripping and statement-splitting agree
-          // on where string literals begin and end.
-          out += sql[i];
-          i++;
-        }
-        continue;
-      }
-      if (ch === "$") {
-        const end = _dollarQuoteEnd(sql, i);
-        if (end !== -1) {
-          out += sql.slice(i, end); // copy the dollar-quoted literal verbatim
-          i = end;
-          continue;
-        }
-      }
-      if (ch === "-" && sql[i + 1] === "-") {
-        while (i < sql.length && sql[i] !== "\n") { i++; }
-        continue;
-      }
-      if (ch === "/" && sql[i + 1] === "*") {
-        i += 2;
-        while (i < sql.length) {
-          if (sql[i] === "*" && sql[i + 1] === "/") {
+        } else {
+          if (c === "'" || c === '"' || c === "`") {
+            inString = c;
+          } else if (c === "-" && i + 1 < sql.length && sql[i + 1] === "-") {
+            const start = i;
+            while (i < sql.length && sql[i] !== "\n") { i++; }
+            for (let k = start; k < i; k++) isComment[k] = true;
+            i--; // so outer loop processes the newline
+          } else if (c === "/" && i + 1 < sql.length && sql[i + 1] === "*") {
+            const start = i;
             i += 2;
-            break;
+            while (i < sql.length) {
+              if (sql[i] === "*" && i + 1 < sql.length && sql[i + 1] === "/") {
+                i++;
+                break;
+              }
+              i++;
+            }
+            for (let k = start; k <= i && k < sql.length; k++) isComment[k] = true;
           }
-          i++;
         }
-        continue;
       }
-      out += ch;
-      i++;
+    }
+
+    scan(isComment1, false);
+    scan(isComment2, true);
+
+    let out = "";
+    for (let i = 0; i < sql.length; i++) {
+      if (!(isComment1[i] || isComment2[i])) {
+        out += sql[i];
+      }
     }
     return out.trim();
   }
