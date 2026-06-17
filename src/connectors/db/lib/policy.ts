@@ -136,25 +136,87 @@ export function classifySqlKeywords(sql: string): OperationType {
  * (`$tag$...$tag$`) and backtick-quoted identifiers — tolerably over-split
  * rather than under-split, which is the right bias for a safety gate.
  */
-function _splitStatements(sql: string): string[] {
-  const cleaned = Policy._stripComments(sql);
-  const out: string[] = [];
-  let start = 0;
+function _parseSqlDualMode(
+  sql: string,
+  treatBackslashAsEscape: boolean,
+  splitOnSemicolon: boolean,
+): string[] {
+  const stmts: string[] = [];
+  let curr = "";
   let inSingle = false;
   let inDouble = false;
-  for (let i = 0; i < cleaned.length; i++) {
-    const c = cleaned[i];
-    if (c === "'" && !inDouble) inSingle = !inSingle;
-    else if (c === '"' && !inSingle) inDouble = !inDouble;
-    else if (c === ";" && !inSingle && !inDouble) {
-      const s = cleaned.slice(start, i).trim();
-      if (s) out.push(s);
-      start = i + 1;
+  let inBacktick = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+
+  for (let i = 0; i < sql.length; i++) {
+    const c = sql[i]!;
+    const nextC = i + 1 < sql.length ? sql[i + 1]! : "";
+
+    if (inLineComment) {
+      if (c === "\n") {
+        inLineComment = false;
+        curr += " ";
+      }
+      continue;
     }
+    if (inBlockComment) {
+      if (c === "*" && nextC === "/") {
+        inBlockComment = false;
+        i++;
+        curr += " ";
+      }
+      continue;
+    }
+
+    if (!inSingle && !inDouble && !inBacktick) {
+      if (c === "-" && nextC === "-") {
+        inLineComment = true;
+        i++;
+        curr += " ";
+        continue;
+      }
+      if (c === "/" && nextC === "*") {
+        inBlockComment = true;
+        i++;
+        curr += " ";
+        continue;
+      }
+      if (splitOnSemicolon && c === ";") {
+        const trimmed = curr.trim();
+        if (trimmed) stmts.push(trimmed);
+        curr = "";
+        continue;
+      }
+    }
+
+    if (c === "'" && !inDouble && !inBacktick) {
+      inSingle = !inSingle;
+    } else if (c === '"' && !inSingle && !inBacktick) {
+      inDouble = !inDouble;
+    } else if (c === "\`" && !inSingle && !inDouble) {
+      inBacktick = !inBacktick;
+    } else if (treatBackslashAsEscape && c === "\\" && (inSingle || inDouble || inBacktick)) {
+      curr += c;
+      i++;
+      if (i < sql.length) {
+        curr += sql[i]!;
+      }
+      continue;
+    }
+    curr += c;
   }
-  const tail = cleaned.slice(start).trim();
-  if (tail) out.push(tail);
-  return out;
+
+  const trimmed = curr.trim();
+  if (trimmed) stmts.push(trimmed);
+
+  return stmts;
+}
+
+function _splitStatements(sql: string): string[] {
+  const m1 = _parseSqlDualMode(sql, true, true);
+  const m2 = _parseSqlDualMode(sql, false, true);
+  return Array.from(new Set([...m1, ...m2]));
 }
 
 /**
@@ -178,10 +240,7 @@ export function classifyStatements(sql: string): OperationType[] {
   return stmts.map((s) => classifySqlKeywords(s));
 }
 
-// Regex to strip SQL line comments (-- ...) and block comments (/* ... */)
-const _LINE_COMMENT_RE = /--[^\n]*/g;
-// Python uses re.DOTALL so `.` matches newlines; in JS use the `s` flag.
-const _BLOCK_COMMENT_RE = /\/\*.*?\*\//gs;
+// Regexes to strip SQL comments removed in favor of state-machine dual parsing.
 
 
 /**
@@ -245,9 +304,8 @@ export class Policy {
 
   /** Remove SQL comments from the statement. */
   static _stripComments(sql: string): string {
-    let s = sql.replace(_BLOCK_COMMENT_RE, "");
-    s = s.replace(_LINE_COMMENT_RE, "");
-    return s.trim();
+    const stmts = _parseSqlDualMode(sql, false, false);
+    return stmts.join(" ");
   }
 
   /** Determine the OperationType of a raw SQL string. */

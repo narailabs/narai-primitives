@@ -365,3 +365,16 @@ describe("TestCompoundStatement", () => {
     expect(r.decision).toBe(Decision.DENY);
   });
 });
+
+describe("Test Policy State Machine Parser", () => {
+  it("should not be bypassed by mixed quote/comment attacks", () => {
+    const policy = new Policy("auto");
+    const sql1 = "SELECT 'abc /*'; DROP TABLE users; --'";
+    const stmts1 = policy.checkQuery(sql1);
+    expect(stmts1.decision).not.toBe("allow");
+
+    const sql2 = "SELECT * FROM users WHERE name='abc /*'; DROP TABLE users; /* '";
+    const stmts2 = policy.checkQuery(sql2);
+    expect(stmts2.decision).not.toBe("allow");
+  });
+});
