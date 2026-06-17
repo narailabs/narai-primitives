@@ -125,49 +125,72 @@ export function classifySqlKeywords(sql: string): OperationType {
 }
 
 /**
+ * Indices of `;` characters that terminate a statement under one SQL string-
+ * escape convention. `backslashEscape=false` models SQLite / SQL Server /
+ * Oracle / standard-conforming PostgreSQL, where `\` is an ordinary literal
+ * char and only `''` doubling escapes a quote. `backslashEscape=true` models
+ * MySQL/MariaDB default sql_mode and PostgreSQL `E'...'` strings, where `\`
+ * escapes the next char. Single-, double-, and backtick-quoted literals are
+ * all respected.
+ */
+function _boundarySemicolons(s: string, backslashEscape: boolean): Set<number> {
+  const idx = new Set<number>();
+  let inString: string | null = null; // null, "'", '"', or '`'
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inString !== null) {
+      if (backslashEscape && c === "\\" && i + 1 < s.length) {
+        i++; // skip escaped char, e.g. \' or \\
+        continue;
+      }
+      if (c === inString) {
+        if (i + 1 < s.length && s[i + 1] === inString) {
+          i++; // doubled-quote escape, e.g. ''
+        } else {
+          inString = null;
+        }
+      }
+    } else if (c === "'" || c === '"' || c === "`") {
+      inString = c;
+    } else if (c === ";") {
+      idx.add(i);
+    }
+  }
+  return idx;
+}
+
+/**
  * Split SQL on statement-terminating semicolons, respecting single-, double-,
  * and backtick-quoted string literals/identifiers. Comments are stripped first,
  * so line and block comments cannot hide a semicolon.
  *
  * Returns trimmed, non-empty statements. An input with a single trailing
- * semicolon returns one statement. Handles SQL-standard `''` escaped quotes
- * inside a literal.
+ * semicolon returns one statement.
  *
- * Backslash is deliberately NOT treated as a string escape: in SQLite, SQL
- * Server, Oracle and standard-conforming PostgreSQL it is an ordinary literal
- * character, so `'\'` is a complete string and a following `;` starts a new
- * statement. Treating `\` as an escape there would keep the scanner in-string
- * across the semicolon and hide an injected statement (under-split = bypass).
- * MySQL/MariaDB (default sql_mode) does treat `\` as an escape; for the rarer
- * `'\''`-style construct this errs toward over-splitting, the safe bias for a
- * gate. Dialect-aware escaping is left as a follow-up. NOT handled: PostgreSQL
- * dollar-quoted strings (`$tag$...$tag$`) — also over-split rather than under.
+ * Escape-convention handling: a `;` is treated as a statement separator if it
+ * is one under EITHER SQL escape convention — backslash-as-literal (SQLite,
+ * SQL Server, Oracle, standard PostgreSQL) or backslash-as-escape (MySQL/
+ * MariaDB default, PostgreSQL `E''`). Splitting at the union of both sets of
+ * boundaries means a `;` that ANY supported dialect would treat as a separator
+ * is never swallowed into a string literal — closing both the SQLite-style
+ * `'\'; DROP …` and the MySQL-style `'\''; DROP …` bypass. The only cost is
+ * over-splitting an exotic literal that embeds a `;` immediately beside a
+ * backslash; that fails safe (escalates rather than allows), which is the right
+ * bias for a safety gate. NOT handled: PostgreSQL dollar-quoted strings
+ * (`$tag$...$tag$`) — also over-split rather than under.
  */
 function _splitStatements(sql: string): string[] {
   const cleaned = Policy._stripComments(sql);
+  const literal = _boundarySemicolons(cleaned, false);
+  const escape = _boundarySemicolons(cleaned, true);
+
   const out: string[] = [];
   let start = 0;
-  let inString: string | null = null; // Either null, "'", '"', or '`'
-
   for (let i = 0; i < cleaned.length; i++) {
-    const c = cleaned[i];
-
-    if (inString !== null) {
-      if (c === inString) {
-        if (i + 1 < cleaned.length && cleaned[i + 1] === inString) {
-          i++; // skip escaped quote e.g. ''
-        } else {
-          inString = null;
-        }
-      }
-    } else {
-      if (c === "'" || c === '"' || c === "`") {
-        inString = c;
-      } else if (c === ";") {
-        const s = cleaned.slice(start, i).trim();
-        if (s) out.push(s);
-        start = i + 1;
-      }
+    if (literal.has(i) || escape.has(i)) {
+      const s = cleaned.slice(start, i).trim();
+      if (s) out.push(s);
+      start = i + 1;
     }
   }
 
