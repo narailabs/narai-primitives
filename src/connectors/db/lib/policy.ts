@@ -125,13 +125,42 @@ export function classifySqlKeywords(sql: string): OperationType {
 }
 
 /**
+ * If a PostgreSQL dollar-quoted string opens at `s[i]` (`$$` or `$tag$`, where
+ * tag is an optional identifier that does not start with a digit), return the
+ * index just past its matching close delimiter — or `s.length` if it is
+ * unterminated. Returns -1 when `s[i]` does not open a dollar-quote (a `$1`
+ * placeholder or a bare `$`). Content between the delimiters is fully literal:
+ * no escapes, comments, or nested quotes are interpreted, matching Postgres.
+ */
+function _dollarQuoteEnd(s: string, i: number): number {
+  if (s[i] !== "$") return -1;
+  let j = i + 1;
+  while (j < s.length) {
+    const ch = s[j]!;
+    const isIdent =
+      (ch >= "A" && ch <= "Z") ||
+      (ch >= "a" && ch <= "z") ||
+      (ch >= "0" && ch <= "9") ||
+      ch === "_";
+    if (!isIdent) break;
+    j++;
+  }
+  if (j >= s.length || s[j] !== "$") return -1; // opener has no closing `$`
+  const tag = s.slice(i + 1, j);
+  if (tag.length > 0 && tag[0]! >= "0" && tag[0]! <= "9") return -1; // `$1$`
+  const delim = s.slice(i, j + 1); // e.g. "$$" or "$func$"
+  const close = s.indexOf(delim, j + 1);
+  return close === -1 ? s.length : close + delim.length;
+}
+
+/**
  * Indices of `;` characters that terminate a statement under one SQL string-
  * escape convention. `backslashEscape=false` models SQLite / SQL Server /
  * Oracle / standard-conforming PostgreSQL, where `\` is an ordinary literal
  * char and only `''` doubling escapes a quote. `backslashEscape=true` models
  * MySQL/MariaDB default sql_mode and PostgreSQL `E'...'` strings, where `\`
- * escapes the next char. Single-, double-, and backtick-quoted literals are
- * all respected.
+ * escapes the next char. Single-, double-, and backtick-quoted literals plus
+ * PostgreSQL dollar-quoted strings are all respected.
  */
 function _boundarySemicolons(s: string, backslashEscape: boolean): Set<number> {
   const idx = new Set<number>();
@@ -150,6 +179,9 @@ function _boundarySemicolons(s: string, backslashEscape: boolean): Set<number> {
           inString = null;
         }
       }
+    } else if (c === "$") {
+      const end = _dollarQuoteEnd(s, i);
+      if (end !== -1) i = end - 1; // skip the dollar-quoted literal wholesale
     } else if (c === "'" || c === '"' || c === "`") {
       inString = c;
     } else if (c === ";") {
@@ -176,8 +208,9 @@ function _boundarySemicolons(s: string, backslashEscape: boolean): Set<number> {
  * `'\'; DROP …` and the MySQL-style `'\''; DROP …` bypass. The only cost is
  * over-splitting an exotic literal that embeds a `;` immediately beside a
  * backslash; that fails safe (escalates rather than allows), which is the right
- * bias for a safety gate. NOT handled: PostgreSQL dollar-quoted strings
- * (`$tag$...$tag$`) — also over-split rather than under.
+ * bias for a safety gate. PostgreSQL dollar-quoted strings (`$$...$$` /
+ * `$tag$...$tag$`) are recognized too, so a `;` or comment marker inside one is
+ * treated as literal data rather than a separator.
  */
 function _splitStatements(sql: string): string[] {
   const cleaned = Policy._stripComments(sql);
@@ -282,8 +315,11 @@ export class Policy {
 
   /**
    * Strip SQL line comments (`-- ...`) and block comments (`/* ... *\/`).
-   * Skips string literals to prevent malicious strings from accidentally
-   * terminating a comment early or being parsed as a comment boundary.
+   * Skips string literals — single/double/backtick quoted and PostgreSQL
+   * dollar-quoted (`$$...$$`) — so a comment marker that is actually literal
+   * data inside a string can't terminate a comment early, and (critically) so a
+   * real `--`/`/* *\/` inside a `$$...$$` body isn't mistaken for a comment and
+   * stripped, which would swallow the `;` that follows and hide a statement.
    * Used before keyword classification to prevent a comment like
    * `/* DROP TABLE *\/ SELECT 1` from triggering a false positive.
    */
@@ -315,6 +351,14 @@ export class Policy {
           i++;
         }
         continue;
+      }
+      if (ch === "$") {
+        const end = _dollarQuoteEnd(sql, i);
+        if (end !== -1) {
+          out += sql.slice(i, end); // copy the dollar-quoted literal verbatim
+          i = end;
+          continue;
+        }
       }
       if (ch === "-" && sql[i + 1] === "-") {
         while (i < sql.length && sql[i] !== "\n") { i++; }
