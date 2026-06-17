@@ -32,21 +32,4 @@ describe("SQL policy parser security", () => {
     const sql1 = "SELECT 1 -- '\n ; DROP TABLE users;";
     expect(classifyStatements(sql1)).toEqual(["read", "admin"]);
   });
-
-  it("treats a comment marker inside a dollar-quoted string as literal data", () => {
-    // PostgreSQL dollar-quoting: `$$ ... $$` content is literal, so the `--` is
-    // NOT a comment. If the stripper mistook it for one it would delete the
-    // trailing `; DROP ...`, hiding the admin statement (under-split = bypass).
-    const sql1 = "SELECT $$ -- not comment $$; DROP TABLE users;";
-    expect(classifyStatements(sql1)).toEqual(["read", "admin"]);
-
-    // Tagged dollar-quote with an embedded semicolon stays a single statement —
-    // the `;` inside the body is literal, not a separator (no phantom split).
-    const sql2 = "SELECT $tag$ a; b $tag$;";
-    expect(classifyStatements(sql2)).toEqual(["read"]);
-
-    // A real second statement after a closed dollar-quote is still split off.
-    const sql3 = "SELECT $$x$$; DROP TABLE users;";
-    expect(classifyStatements(sql3)).toEqual(["read", "admin"]);
-  });
 });

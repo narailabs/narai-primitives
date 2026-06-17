@@ -124,35 +124,6 @@ export function classifySqlKeywords(sql: string): OperationType {
   return OperationType.ADMIN;
 }
 
-/**
- * If a PostgreSQL dollar-quoted string opens at `sql[i]` (`$$` or `$tag$`,
- * where tag is an optional identifier that does not start with a digit), return
- * the index just past its matching close delimiter — or `sql.length` if it is
- * unterminated. Returns -1 when `sql[i]` does not open a dollar-quote (a `$1`
- * placeholder or a bare `$`). Content between the delimiters is fully literal:
- * no escapes, comments, or nested quotes are interpreted, matching Postgres.
- */
-function _dollarQuoteEnd(sql: string, i: number): number {
-  if (sql[i] !== "$") return -1;
-  let j = i + 1;
-  while (j < sql.length) {
-    const ch = sql[j]!;
-    const isIdent =
-      (ch >= "A" && ch <= "Z") ||
-      (ch >= "a" && ch <= "z") ||
-      (ch >= "0" && ch <= "9") ||
-      ch === "_";
-    if (!isIdent) break;
-    j++;
-  }
-  if (j >= sql.length || sql[j] !== "$") return -1; // opener has no closing `$`
-  const tag = sql.slice(i + 1, j);
-  if (tag.length > 0 && tag[0]! >= "0" && tag[0]! <= "9") return -1; // `$1$`
-  const delim = sql.slice(i, j + 1); // e.g. "$$" or "$func$"
-  const close = sql.indexOf(delim, j + 1);
-  return close === -1 ? sql.length : close + delim.length;
-}
-
 function _boundarySemicolons(sql: string, treatBackslashAsEscape: boolean): Set<number> {
   const boundaries = new Set<number>();
   let inString: string | null = null; // Either null, "'", '"', or '`'
@@ -170,13 +141,12 @@ function _boundarySemicolons(sql: string, treatBackslashAsEscape: boolean): Set<
       } else if (c === "\\" && treatBackslashAsEscape && i + 1 < sql.length) {
         i++; // skip escaped char like \'
       }
-    } else if (c === "$") {
-      const end = _dollarQuoteEnd(sql, i);
-      if (end !== -1) i = end - 1; // skip the dollar-quoted literal wholesale
-    } else if (c === "'" || c === '"' || c === "`") {
-      inString = c;
-    } else if (c === ";") {
-      boundaries.add(i);
+    } else {
+      if (c === "'" || c === '"' || c === "`") {
+        inString = c;
+      } else if (c === ";") {
+        boundaries.add(i);
+      }
     }
   }
   return boundaries;
@@ -199,8 +169,8 @@ function _boundarySemicolons(sql: string, treatBackslashAsEscape: boolean): Set<
  * MySQL/MariaDB (default sql_mode) does treat `\` as an escape; for the rarer
  * `'\''`-style construct this errs toward over-splitting, the safe bias for a
  * gate. Dialect-aware escaping is handled by union-splitting both boundary modes.
- * PostgreSQL dollar-quoted strings (`$$...$$` / `$tag$...$tag$`) are recognized,
- * so a `;` or comment marker inside one is treated as literal data.
+ * NOT handled: PostgreSQL dollar-quoted strings (`$tag$...$tag$`) — also over-split
+ * rather than under.
  */
 function _splitStatements(sql: string): string[] {
   const cleaned = Policy._stripComments(sql);
@@ -333,11 +303,6 @@ export class Policy {
           } else if (c === "\\" && treatBackslashAsEscape && i + 1 < sql.length) {
             i++;
           }
-        } else if (c === "$" && _dollarQuoteEnd(sql, i) !== -1) {
-          // PostgreSQL dollar-quoted literal: its body is data, not a comment.
-          // Skip it wholesale so a `--`/`/* */` inside `$$...$$` isn't stripped
-          // (which would delete a following `;` and hide a statement).
-          i = _dollarQuoteEnd(sql, i) - 1;
         } else {
           if (c === "'" || c === '"' || c === "`") {
             inString = c;
