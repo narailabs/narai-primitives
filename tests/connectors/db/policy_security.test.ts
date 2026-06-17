@@ -11,13 +11,26 @@ describe("SQL policy parser security", () => {
     expect(classifyStatements(sql2)).toEqual(["read", "admin"]);
   });
 
-  it("safely handles strings masquerading as comments", () => {
-    // Attack: Try to hide a semicolon and DROP TABLE inside what looks like a comment but is actually a string due to escaping
-    const sql1 = "SELECT 1 '\\''; DROP TABLE users;";
+  it("over-splits on a backslash before a closing quote (dialect-safe)", () => {
+    // Codex P1 regression: in SQLite, SQL Server, Oracle and standard-conforming
+    // PostgreSQL, backslash is NOT a string escape, so `'\'` is a complete
+    // literal and the trailing `; DROP ...` is a separate statement. The parser
+    // must therefore treat the quote after the backslash as a real terminator —
+    // treating `\` as an escape would keep it in-string across the `;` and hide
+    // the DROP (under-split = bypass). Over-split is the safe bias for a gate.
+    const sql1 = "SELECT 1 '\\'; DROP TABLE users;"; // actual SQL: SELECT 1 '\'; DROP TABLE users;
     expect(classifyStatements(sql1)).toEqual(["read", "admin"]);
 
-    const sql2 = "SELECT 1 \"''\"; DROP TABLE users;";
+    // An escaped backslash followed by a real closing quote is still two stmts.
+    const sql2 = "SELECT 1 '\\\\'; DROP TABLE users;"; // actual SQL: SELECT 1 '\\'; DROP TABLE users;
     expect(classifyStatements(sql2)).toEqual(["read", "admin"]);
+  });
+
+  it("treats SQL-standard doubled quotes as in-string escapes", () => {
+    // `''` / `""` are escaped quotes in every supported dialect; the embedded
+    // `;` stays inside the literal and must not split off a phantom statement.
+    const sql = "SELECT 1 \"''\"; DROP TABLE users;";
+    expect(classifyStatements(sql)).toEqual(["read", "admin"]);
   });
 
   it("safely handles line comments containing strings with unclosed quotes", () => {

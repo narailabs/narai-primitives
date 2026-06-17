@@ -130,10 +130,18 @@ export function classifySqlKeywords(sql: string): OperationType {
  * so line and block comments cannot hide a semicolon.
  *
  * Returns trimmed, non-empty statements. An input with a single trailing
- * semicolon returns one statement. Handles SQL-style `''` escaped quotes inside a
- * literal, as well as `\` escaped characters. NOT handled: PostgreSQL dollar-quoted strings
- * (`$tag$...$tag$`) — tolerably over-split rather than under-split, which is the
- * right bias for a safety gate.
+ * semicolon returns one statement. Handles SQL-standard `''` escaped quotes
+ * inside a literal.
+ *
+ * Backslash is deliberately NOT treated as a string escape: in SQLite, SQL
+ * Server, Oracle and standard-conforming PostgreSQL it is an ordinary literal
+ * character, so `'\'` is a complete string and a following `;` starts a new
+ * statement. Treating `\` as an escape there would keep the scanner in-string
+ * across the semicolon and hide an injected statement (under-split = bypass).
+ * MySQL/MariaDB (default sql_mode) does treat `\` as an escape; for the rarer
+ * `'\''`-style construct this errs toward over-splitting, the safe bias for a
+ * gate. Dialect-aware escaping is left as a follow-up. NOT handled: PostgreSQL
+ * dollar-quoted strings (`$tag$...$tag$`) — also over-split rather than under.
  */
 function _splitStatements(sql: string): string[] {
   const cleaned = Policy._stripComments(sql);
@@ -151,8 +159,6 @@ function _splitStatements(sql: string): string[] {
         } else {
           inString = null;
         }
-      } else if (c === "\\" && i + 1 < cleaned.length) {
-        i++; // skip escaped char like \'
       }
     } else {
       if (c === "'" || c === '"' || c === "`") {
@@ -278,11 +284,10 @@ export class Policy {
             i++;
             break;
           }
-          if (sql[i] === "\\" && i + 1 < sql.length) {
-            out += "\\" + sql[i+1];
-            i += 2;
-            continue;
-          }
+          // Backslash is not treated as a string escape here — see
+          // `_splitStatements` for the dialect rationale. Keeping both scanners
+          // consistent ensures comment-stripping and statement-splitting agree
+          // on where string literals begin and end.
           out += sql[i];
           i++;
         }
