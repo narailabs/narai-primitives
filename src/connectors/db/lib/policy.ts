@@ -82,20 +82,28 @@ const _DECISION_RANK: Record<Decision, number> = {
 // -----------------------------------------------------------------------
 
 const _READ_KEYWORDS: ReadonlySet<string> = new Set([
-  "SELECT", "EXPLAIN", "SHOW", "DESCRIBE", "DESC", "WITH",
+  "SELECT",
+  "EXPLAIN",
+  "SHOW",
+  "DESCRIBE",
+  "DESC",
+  "WITH",
 ]);
 const _WRITE_KEYWORDS: ReadonlySet<string> = new Set([
-  "INSERT", "UPDATE", "REPLACE", "MERGE", "UPSERT",
+  "INSERT",
+  "UPDATE",
+  "REPLACE",
+  "MERGE",
+  "UPSERT",
 ]);
-const _DELETE_KEYWORDS: ReadonlySet<string> = new Set([
-  "DELETE", "TRUNCATE",
-]);
+const _DELETE_KEYWORDS: ReadonlySet<string> = new Set(["DELETE", "TRUNCATE"]);
 const _ADMIN_KEYWORDS: ReadonlySet<string> = new Set([
-  "CREATE", "DROP", "ALTER", "RENAME",
+  "CREATE",
+  "DROP",
+  "ALTER",
+  "RENAME",
 ]);
-const _PRIVILEGE_KEYWORDS: ReadonlySet<string> = new Set([
-  "GRANT", "REVOKE",
-]);
+const _PRIVILEGE_KEYWORDS: ReadonlySet<string> = new Set(["GRANT", "REVOKE"]);
 
 /**
  * Classify a SQL string by its leading keyword.
@@ -136,24 +144,87 @@ export function classifySqlKeywords(sql: string): OperationType {
  * (`$tag$...$tag$`) and backtick-quoted identifiers — tolerably over-split
  * rather than under-split, which is the right bias for a safety gate.
  */
-function _splitStatements(sql: string): string[] {
-  const cleaned = Policy._stripComments(sql);
+function _splitAndStrip(sql: string, backslashEscapes: boolean): string[] {
   const out: string[] = [];
-  let start = 0;
+  let currentStmt = "";
+  let i = 0;
   let inSingle = false;
   let inDouble = false;
-  for (let i = 0; i < cleaned.length; i++) {
-    const c = cleaned[i];
-    if (c === "'" && !inDouble) inSingle = !inSingle;
-    else if (c === '"' && !inSingle) inDouble = !inDouble;
-    else if (c === ";" && !inSingle && !inDouble) {
-      const s = cleaned.slice(start, i).trim();
-      if (s) out.push(s);
-      start = i + 1;
+  let inBacktick = false;
+
+  while (i < sql.length) {
+    const c = sql[i];
+    const next = sql[i + 1];
+
+    if (!inSingle && !inDouble && !inBacktick) {
+      if (c === "-" && next === "-") {
+        while (i < sql.length && sql[i] !== "\n") i++;
+        currentStmt += "\n";
+        continue;
+      }
+      if (c === "/" && next === "*") {
+        i += 2;
+        while (i < sql.length && !(sql[i] === "*" && sql[i + 1] === "/")) i++;
+        i += 2;
+        currentStmt += " ";
+        continue;
+      }
+
+      if (c === ";") {
+        const s = currentStmt.trim();
+        if (s) out.push(s);
+        currentStmt = "";
+        i++;
+        continue;
+      }
+
+      if (c === "'") inSingle = true;
+      else if (c === '"') inDouble = true;
+      else if (c === "`") inBacktick = true;
+
+      currentStmt += c;
+      i++;
+    } else {
+      currentStmt += c;
+      if (backslashEscapes && c === "\\") {
+        if (i + 1 < sql.length) {
+          currentStmt += sql[i + 1];
+          i += 2;
+        } else {
+          i++;
+        }
+        continue;
+      }
+
+      if (inSingle && c === "'") {
+        if (next === "'") {
+          currentStmt += "'";
+          i += 2;
+          continue;
+        }
+        inSingle = false;
+      } else if (inDouble && c === '"') {
+        if (next === '"') {
+          currentStmt += '"';
+          i += 2;
+          continue;
+        }
+        inDouble = false;
+      } else if (inBacktick && c === "`") {
+        if (next === "`") {
+          currentStmt += "`";
+          i += 2;
+          continue;
+        }
+        inBacktick = false;
+      }
+
+      i++;
     }
   }
-  const tail = cleaned.slice(start).trim();
-  if (tail) out.push(tail);
+
+  const s = currentStmt.trim();
+  if (s) out.push(s);
   return out;
 }
 
@@ -171,18 +242,20 @@ function _splitStatements(sql: string): string[] {
  * decision is allow.
  */
 export function classifyStatements(sql: string): OperationType[] {
-  const stmts = _splitStatements(sql);
-  if (stmts.length === 0) {
-    throw new Error("Empty SQL statement");
-  }
-  return stmts.map((s) => classifySqlKeywords(s));
+  return splitStatementsDualMode(sql).map((s) => classifySqlKeywords(s));
 }
 
-// Regex to strip SQL line comments (-- ...) and block comments (/* ... */)
-const _LINE_COMMENT_RE = /--[^\n]*/g;
-// Python uses re.DOTALL so `.` matches newlines; in JS use the `s` flag.
-const _BLOCK_COMMENT_RE = /\/\*.*?\*\//gs;
+export function splitStatementsDualMode(sql: string): string[] {
+  const stmts1 = _splitAndStrip(sql, false);
+  const stmts2 = _splitAndStrip(sql, true);
 
+  // Union to over-split/fail-safe, but preserve order to match execution
+  const allStmts = Array.from(new Set([...stmts1, ...stmts2]));
+  if (allStmts.length === 0) {
+    throw new Error("Empty SQL statement");
+  }
+  return allStmts;
+}
 
 /**
  * Heuristic: a SELECT is "unbounded" if it reads from a table but has
@@ -204,7 +277,10 @@ export type ApprovalMode =
   | "grant_required";
 
 const _VALID_APPROVAL_MODES: ReadonlySet<ApprovalMode> = new Set([
-  "auto", "confirm_once", "confirm_each", "grant_required",
+  "auto",
+  "confirm_once",
+  "confirm_each",
+  "grant_required",
 ]);
 
 /**
@@ -245,9 +321,7 @@ export class Policy {
 
   /** Remove SQL comments from the statement. */
   static _stripComments(sql: string): string {
-    let s = sql.replace(_BLOCK_COMMENT_RE, "");
-    s = s.replace(_LINE_COMMENT_RE, "");
-    return s.trim();
+    return _stripCommentsStateMachine(sql, false);
   }
 
   /** Determine the OperationType of a raw SQL string. */
@@ -283,7 +357,10 @@ export class Policy {
   checkQuery(sql: string, driver?: DatabaseDriver): PolicyResult {
     const stripped = sql.trim();
     if (!stripped) {
-      const result: PolicyResult = { decision: "deny", reason: "Empty SQL statement" };
+      const result: PolicyResult = {
+        decision: "deny",
+        reason: "Empty SQL statement",
+      };
       _emitDeny(result.reason, null);
       return result;
     }
@@ -307,8 +384,12 @@ export class Policy {
       return { decision: "deny", reason };
     }
 
-    const statements = _splitStatements(stripped);
-    const perStmt: Array<{ stmt: string; op: OperationType; result: PolicyResult }> = [];
+    const statements = splitStatementsDualMode(stripped);
+    const perStmt: Array<{
+      stmt: string;
+      op: OperationType;
+      result: PolicyResult;
+    }> = [];
     for (let i = 0; i < statements.length; i++) {
       const stmt = statements[i]!;
       const op = classifications[i]!;
@@ -319,7 +400,10 @@ export class Policy {
     // reason and op reflect the earliest culprit (predictable messaging).
     let winner = perStmt[0]!;
     for (const entry of perStmt.slice(1)) {
-      if (_DECISION_RANK[entry.result.decision] > _DECISION_RANK[winner.result.decision]) {
+      if (
+        _DECISION_RANK[entry.result.decision] >
+        _DECISION_RANK[winner.result.decision]
+      ) {
         winner = entry;
       }
     }
@@ -329,7 +413,8 @@ export class Policy {
     // write/delete/admin half.
     let final = winner.result;
     if (statements.length > 1 && final.decision === "present_only") {
-      const combined = perStmt.map((e) => _formatStatement(e.stmt)).join("; ") + ";";
+      const combined =
+        perStmt.map((e) => _formatStatement(e.stmt)).join("; ") + ";";
       final = { ...final, formatted_sql: combined };
     }
 
@@ -369,7 +454,11 @@ export class Policy {
     }
     if (rule === "present") {
       const formatted = _formatStatement(stmt);
-      return { decision: "present_only", reason: _presentReason(op), formatted_sql: formatted };
+      return {
+        decision: "present_only",
+        reason: _presentReason(op),
+        formatted_sql: formatted,
+      };
     }
     // rule === "allow"
     if (op === OperationType.READ) {
@@ -377,7 +466,10 @@ export class Policy {
     }
     // Config validation prevents "allow" from reaching ADMIN/PRIVILEGE; only
     // WRITE/DELETE remain.
-    return { decision: "allow", reason: `${op.toUpperCase()} allowed by policy` };
+    return {
+      decision: "allow",
+      reason: `${op.toUpperCase()} allowed by policy`,
+    };
   }
 
   /**
@@ -400,7 +492,8 @@ export class Policy {
     const result = this._decideOne(stmt, op);
     if (result.decision === "deny") _emitDeny(result.reason, op);
     else if (result.decision === "escalate") _emitEscalate(result.reason, op);
-    else if (result.decision === "present_only") _emitPresentOnly(result.reason, op, result.formatted_sql);
+    else if (result.decision === "present_only")
+      _emitPresentOnly(result.reason, op, result.formatted_sql);
     else if (op !== OperationType.READ) _emitAllow(op);
     return result;
   }
@@ -562,7 +655,8 @@ function _emitEscalate(reason: string, op: OperationType | null): void {
 /** Default deny reason per operation type (stable strings used by evals). */
 function _denyReason(op: OperationType): string {
   if (op === OperationType.ADMIN) return "ADMIN statements are never allowed";
-  if (op === OperationType.PRIVILEGE) return "PRIVILEGE statements are never allowed";
+  if (op === OperationType.PRIVILEGE)
+    return "PRIVILEGE statements are never allowed";
   if (op === OperationType.WRITE) return "WRITE statements are not allowed";
   if (op === OperationType.DELETE) return "DELETE statements are not allowed";
   return "READ statements are not allowed";
@@ -617,9 +711,7 @@ function _emitPresentOnly(
   // can't leak. Same helper used by audit.logQuery.
   const scrubbed = scrubSqlSecrets(formattedSql);
   const truncated =
-    scrubbed.length > 500
-      ? scrubbed.slice(0, 500) + "\u2026"
-      : scrubbed;
+    scrubbed.length > 500 ? scrubbed.slice(0, 500) + "\u2026" : scrubbed;
   const details: Record<string, unknown> = {
     reason,
     formatted_sql: truncated,
@@ -647,4 +739,79 @@ export function policyResultJson(result: PolicyResult): string {
     decision: result.decision,
     reason: result.reason,
   });
+}
+function _stripCommentsStateMachine(
+  sql: string,
+  backslashEscapes: boolean,
+): string {
+  let out = "";
+  let i = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let inBacktick = false;
+
+  while (i < sql.length) {
+    const c = sql[i];
+    const next = sql[i + 1];
+
+    if (!inSingle && !inDouble && !inBacktick) {
+      if (c === "-" && next === "-") {
+        while (i < sql.length && sql[i] !== "\n") i++;
+        out += "\n";
+        continue;
+      }
+      if (c === "/" && next === "*") {
+        i += 2;
+        while (i < sql.length && !(sql[i] === "*" && sql[i + 1] === "/")) i++;
+        i += 2;
+        out += " ";
+        continue;
+      }
+
+      if (c === "'") inSingle = true;
+      else if (c === '"') inDouble = true;
+      else if (c === "`") inBacktick = true;
+
+      out += c;
+      i++;
+    } else {
+      out += c;
+      if (backslashEscapes && c === "\\") {
+        if (i + 1 < sql.length) {
+          out += sql[i + 1];
+          i += 2;
+        } else {
+          i++;
+        }
+        continue;
+      }
+
+      if (inSingle && c === "'") {
+        if (next === "'") {
+          out += "'";
+          i += 2;
+          continue;
+        }
+        inSingle = false;
+      } else if (inDouble && c === '"') {
+        if (next === '"') {
+          out += '"';
+          i += 2;
+          continue;
+        }
+        inDouble = false;
+      } else if (inBacktick && c === "`") {
+        if (next === "`") {
+          out += "`";
+          i += 2;
+          continue;
+        }
+        inBacktick = false;
+      }
+
+      i++;
+    }
+  }
+
+  return out.trim();
 }
