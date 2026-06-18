@@ -71,10 +71,17 @@ export function aggregateRecords(
     };
   }
 
-  const top_responses: UsageTopResponse[] = [...records]
-    .sort((a, b) => b.response_bytes - a.response_bytes)
-    .slice(0, 3)
-    .map((r) => ({ action: r.action, response_bytes: r.response_bytes }));
+  // Top-K extraction using an O(N) approach to avoid an O(N log N) sorting bottleneck on large datasets.
+  const top_responses: UsageTopResponse[] = [];
+  for (const rec of records) {
+    if (top_responses.length < 3) {
+      top_responses.push({ action: rec.action, response_bytes: rec.response_bytes });
+      top_responses.sort((a, b) => b.response_bytes - a.response_bytes);
+    } else if (rec.response_bytes > top_responses[2].response_bytes) {
+      top_responses[2] = { action: rec.action, response_bytes: rec.response_bytes };
+      top_responses.sort((a, b) => b.response_bytes - a.response_bytes);
+    }
+  }
 
   return {
     session_id: sessionId,

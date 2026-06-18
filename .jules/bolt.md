@@ -4,3 +4,6 @@
 ## 2026-05-23 - SQL Server Schema Batch Optimization
 **Learning:** When querying INFORMATION_SCHEMA.COLUMNS, chunking IN (@table...) parameters to respect SQL Server's 2100 limit is unnecessary and inefficient. It's better to avoid passing the list of tables entirely by doing a JOIN with INFORMATION_SCHEMA.TABLES and applying the same filter directly.
 **Action:** Remove the chunking loop and use a JOIN to extract metadata for all relevant tables in a single DB query, simplifying logic and reducing compilation and network overhead.
+## 2024-05-14 - O(N log N) Bottleneck in Usage Aggregation
+**Learning:** Using `[...records].sort().slice(0, K)` for Top-K extraction in usage metrics aggregation causes an O(N log N) performance bottleneck. This blocks the Node.js event loop on large datasets.
+**Action:** Replace sorting logic with an O(N) manual loop or priority queue for Top-K extraction, especially in synchronous data processing pipelines.
