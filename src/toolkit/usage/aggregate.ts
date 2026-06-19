@@ -27,7 +27,13 @@ export function aggregateRecords(
 
   const byAction: Record<
     string,
-    { calls: number; response_bytes: number; estimated_tokens: number; ms_total: number; ms_count: number }
+    {
+      calls: number;
+      response_bytes: number;
+      estimated_tokens: number;
+      ms_total: number;
+      ms_count: number;
+    }
   > = {};
 
   let totalBytes = 0;
@@ -71,10 +77,21 @@ export function aggregateRecords(
     };
   }
 
-  const top_responses: UsageTopResponse[] = [...records]
-    .sort((a, b) => b.response_bytes - a.response_bytes)
-    .slice(0, 3)
-    .map((r) => ({ action: r.action, response_bytes: r.response_bytes }));
+  // ⚡ Bolt: Optimize top responses extraction to O(N) to avoid event loop blocking on large datasets.
+  const topK: UsageRecord[] = [];
+  for (const rec of records) {
+    if (topK.length < 3) {
+      topK.push(rec);
+      topK.sort((a, b) => b.response_bytes - a.response_bytes);
+    } else if (rec.response_bytes > topK[2].response_bytes) {
+      topK[2] = rec;
+      topK.sort((a, b) => b.response_bytes - a.response_bytes);
+    }
+  }
+  const top_responses: UsageTopResponse[] = topK.map((r) => ({
+    action: r.action,
+    response_bytes: r.response_bytes,
+  }));
 
   return {
     session_id: sessionId,
@@ -105,7 +122,10 @@ export function renderSummaryMarkdown(s: UsageSummary): string {
     .join("\n");
 
   const top = s.top_responses
-    .map((t, i) => `${i + 1}. ${t.action} (${t.response_bytes.toLocaleString()} bytes)`)
+    .map(
+      (t, i) =>
+        `${i + 1}. ${t.action} (${t.response_bytes.toLocaleString()} bytes)`,
+    )
     .join("\n");
 
   return [
