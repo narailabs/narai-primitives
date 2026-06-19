@@ -124,6 +124,30 @@ export function classifySqlKeywords(sql: string): OperationType {
   return OperationType.ADMIN;
 }
 
+function _dollarQuoteEnd(sql: string, startIdx: number): number {
+  let tag = "";
+  for (let i = startIdx + 1; i < sql.length; i++) {
+    if (sql[i] === "$") {
+      tag = sql.substring(startIdx, i + 1);
+      break;
+    }
+    if (!/^[A-Za-z0-9_]$/.test(sql[i] as string)) {
+      return -1;
+    }
+  }
+
+  if (tag === "") {
+    return -1;
+  }
+
+  const endIdx = sql.indexOf(tag, startIdx + tag.length);
+  if (endIdx === -1) {
+    return sql.length;
+  }
+
+  return endIdx + tag.length;
+}
+
 function _boundarySemicolons(sql: string, treatBackslashAsEscape: boolean): Set<number> {
   const boundaries = new Set<number>();
   let inString: string | null = null; // Either null, "'", '"', or '`'
@@ -142,8 +166,16 @@ function _boundarySemicolons(sql: string, treatBackslashAsEscape: boolean): Set<
         i++; // skip escaped char like \'
       }
     } else {
+      if (c === "[" || (c === "/" && i + 2 < sql.length && sql[i + 1] === "*" && sql[i + 2] === "!")) {
+        throw new Error("Ambiguous or unrecognized SQL construct");
+      }
       if (c === "'" || c === '"' || c === "`") {
         inString = c;
+      } else if (c === "$") {
+        const dEnd = _dollarQuoteEnd(sql, i);
+        if (dEnd !== -1) {
+          i = dEnd - 1; // Advance loop to end of dollar quote
+        }
       } else if (c === ";") {
         boundaries.add(i);
       }
@@ -161,16 +193,9 @@ function _boundarySemicolons(sql: string, treatBackslashAsEscape: boolean): Set<
  * semicolon returns one statement. Handles SQL-standard `''` escaped quotes
  * inside a literal.
  *
- * Backslash is deliberately NOT treated as a string escape: in SQLite, SQL
- * Server, Oracle and standard-conforming PostgreSQL it is an ordinary literal
- * character, so `'\'` is a complete string and a following `;` starts a new
- * statement. Treating `\` as an escape there would keep the scanner in-string
- * across the semicolon and hide an injected statement (under-split = bypass).
- * MySQL/MariaDB (default sql_mode) does treat `\` as an escape; for the rarer
- * `'\''`-style construct this errs toward over-splitting, the safe bias for a
- * gate. Dialect-aware escaping is handled by union-splitting both boundary modes.
- * NOT handled: PostgreSQL dollar-quoted strings (`$tag$...$tag$`) — also over-split
- * rather than under.
+ * Dialect-aware escaping is handled by scanning with both backslash-as-literal
+ * and backslash-as-escape semantics. If the two modes disagree on statement
+ * boundaries, the function fails closed and throws an error.
  */
 function _splitStatements(sql: string): string[] {
   const cleaned = Policy._stripComments(sql);
@@ -178,7 +203,18 @@ function _splitStatements(sql: string): string[] {
   const b1 = _boundarySemicolons(cleaned, false);
   const b2 = _boundarySemicolons(cleaned, true);
 
-  const boundaries = Array.from(new Set([...b1, ...b2])).sort((a, b) => a - b);
+  if (b1.size !== b2.size) {
+    throw new Error("Ambiguous SQL statement boundaries");
+  }
+  const b1Array = Array.from(b1).sort((a, b) => a - b);
+  const b2Array = Array.from(b2).sort((a, b) => a - b);
+  for (let i = 0; i < b1Array.length; i++) {
+    if (b1Array[i] !== b2Array[i]) {
+      throw new Error("Ambiguous SQL statement boundaries");
+    }
+  }
+
+  const boundaries = b1Array;
 
   const out: string[] = [];
   let start = 0;
@@ -282,8 +318,8 @@ export class Policy {
    * `/* DROP TABLE *\/ SELECT 1` from triggering a false positive.
    *
    * This uses dual-mode logic for backslash escapes (treating `\` as literal
-   * vs treating `\` as escape) and strips the comment if it is considered a
-   * comment under either dialect convention. This fails safe (by over-stripping).
+   * vs treating `\` as escape). If the two modes disagree on what constitutes
+   * a comment, it fails closed and throws an error.
    */
   static _stripComments(sql: string): string {
     const isComment1 = new Array<boolean>(sql.length).fill(false);
@@ -303,7 +339,15 @@ export class Policy {
           } else if (c === "\\" && treatBackslashAsEscape && i + 1 < sql.length) {
             i++;
           }
+        } else if (c === "$" && _dollarQuoteEnd(sql, i) !== -1) {
+          // PostgreSQL dollar-quoted literal: its body is data, not a comment.
+          // Skip it wholesale so a `--`/`/* *\/` inside `$$...$$` isn't stripped
+          // (which would delete a following `;` and hide a statement).
+          i = _dollarQuoteEnd(sql, i) - 1;
         } else {
+          if (c === "[" || (c === "/" && i + 2 < sql.length && sql[i + 1] === "*" && sql[i + 2] === "!")) {
+            throw new Error("Ambiguous or unrecognized SQL construct");
+          }
           if (c === "'" || c === '"' || c === "`") {
             inString = c;
           } else if (c === "-" && i + 1 < sql.length && sql[i + 1] === "-") {
@@ -332,7 +376,10 @@ export class Policy {
 
     let out = "";
     for (let i = 0; i < sql.length; i++) {
-      if (!(isComment1[i] || isComment2[i])) {
+      if (isComment1[i] !== isComment2[i]) {
+        throw new Error("Ambiguous SQL comment boundaries");
+      }
+      if (!isComment1[i]) {
         out += sql[i];
       }
     }

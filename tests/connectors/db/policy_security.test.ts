@@ -3,7 +3,6 @@ import { classifyStatements } from "../../../src/connectors/db/lib/policy.js";
 
 describe("SQL policy parser security", () => {
   it("safely handles comments masquerading as strings", () => {
-    // Attack: Use a block comment start inside a string literal
     const sql1 = "SELECT 1 '/*' ; DROP TABLE users;";
     expect(classifyStatements(sql1)).toEqual(["read", "admin"]);
 
@@ -12,17 +11,10 @@ describe("SQL policy parser security", () => {
   });
 
   it("safely handles strings masquerading as comments", () => {
-    // Attack: Try to hide a semicolon and DROP TABLE inside what looks like a comment but is actually a string due to escaping
-    // The previous bug was that `\` was treated as an escape character, meaning `\'` was parsed as a quote inside a string.
-    // However, in standard SQL, backslash is just a backslash, and the only escape is `''`.
-    // So `SELECT 1 '\'; DROP TABLE users;` was incorrectly parsed as an unterminated string.
-    // To handle dialects correctly, the parser uses a union split of both backslash-as-literal (SQLite, Postgres standard)
-    // and backslash-as-escape (MySQL, Postgres E''). Both styles are split correctly.
+    // Test the fail-closed approach for ambiguous SQL statement boundaries
+    // where `\` causes a mismatch between dialects.
     const sql1 = "SELECT 1 '\\'; DROP TABLE users;";
-    expect(classifyStatements(sql1)).toEqual(["read", "admin"]);
-
-    const sql2 = "SELECT 1 '\\''; DROP TABLE users;";
-    expect(classifyStatements(sql2)).toEqual(["read", "admin"]);
+    expect(() => classifyStatements(sql1)).toThrow(/Ambiguous SQL statement boundaries/);
 
     const sql3 = "SELECT 1 \"''\"; DROP TABLE users;";
     expect(classifyStatements(sql3)).toEqual(["read", "admin"]);
@@ -31,5 +23,27 @@ describe("SQL policy parser security", () => {
   it("safely handles line comments containing strings with unclosed quotes", () => {
     const sql1 = "SELECT 1 -- '\n ; DROP TABLE users;";
     expect(classifyStatements(sql1)).toEqual(["read", "admin"]);
+  });
+
+  it("safely handles PostgreSQL dollar quotes", () => {
+    const sql1 = "SELECT $$ -- not comment $$; DROP TABLE users;";
+    expect(classifyStatements(sql1)).toEqual(["read", "admin"]);
+
+    const sql2 = "SELECT $tag$ SELECT 1; $tag$; DROP TABLE users;";
+    expect(classifyStatements(sql2)).toEqual(["read", "admin"]);
+  });
+
+  it("throws error for ambiguous dialect-specific escapes", () => {
+    // Escape `\'` is ambiguous between MySQL and SQLite
+    const sql2 = "SELECT 1 '\\''; DROP TABLE users;";
+    expect(() => classifyStatements(sql2)).toThrow(/Ambiguous SQL statement boundaries/);
+  });
+
+  it("throws error for SQL Server brackets and MySQL executable comments", () => {
+    const sql1 = "SELECT 1 AS [--]; DROP TABLE users;";
+    expect(() => classifyStatements(sql1)).toThrow(/Ambiguous or unrecognized SQL construct/);
+
+    const sql2 = "SELECT 1 /*!50000 */; DROP TABLE users;";
+    expect(() => classifyStatements(sql2)).toThrow(/Ambiguous or unrecognized SQL construct/);
   });
 });
