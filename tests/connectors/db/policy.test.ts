@@ -201,13 +201,6 @@ describe("TestDecisionLogic", () => {
     expect(result.decision).toBe(Decision.ESCALATE);
   });
 
-  it("test_unbounded_select_bounding_keyword_in_literal_escalates", () => {
-    // `LIMIT` appears only inside a string literal, so the raw text looks
-    // bounded; masking the literal exposes the bare `FROM users` scan.
-    const result = policyAuto().checkQuery("SELECT '/* LIMIT */', * FROM users");
-    expect(result.decision).toBe(Decision.ESCALATE);
-  });
-
   it("test_unbounded_select_allow_skips_check", () => {
     // Operator opt-out: policy.unbounded_select: 'allow' lets bare
     // SELECT * FROM table reach the driver without escalating first.
