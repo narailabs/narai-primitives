@@ -142,7 +142,12 @@ function _dollarQuoteEnd(sql: string, startIdx: number): number {
 
   const endIdx = sql.indexOf(tag, startIdx + tag.length);
   if (endIdx === -1) {
-    return sql.length;
+    // Unterminated dollar quote. Treating it as running to EOF is fail-open:
+    // a SQL Server identifier suffix like `col$tag$` would swallow a trailing
+    // `; DROP TABLE users;`, hiding the statement from the classifier while the
+    // driver still executes it. Return -1 so `$` is scanned as an ordinary
+    // character and the real statement boundaries stay visible (fail closed).
+    return -1;
   }
 
   return endIdx + tag.length;
