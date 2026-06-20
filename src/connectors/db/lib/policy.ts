@@ -125,6 +125,15 @@ export function classifySqlKeywords(sql: string): OperationType {
 }
 
 function _dollarQuoteEnd(sql: string, startIdx: number): number {
+  // PostgreSQL dollar quotes only start at a token boundary. When `$` is
+  // preceded by an identifier character it is part of a regular identifier
+  // (e.g. the SQL Server alias `col$tag$`), not a literal opener. Treating it
+  // as one is fail-open: `SELECT 1 AS col$tag$; DROP TABLE users; SELECT 2 AS
+  // col$tag$` would pair the two `$tag$` fragments and swallow the `; DROP`.
+  if (startIdx > 0 && /[A-Za-z0-9_]/.test(sql[startIdx - 1] as string)) {
+    return -1;
+  }
+
   let tag = "";
   for (let i = startIdx + 1; i < sql.length; i++) {
     if (sql[i] === "$") {
@@ -146,6 +155,43 @@ function _dollarQuoteEnd(sql: string, startIdx: number): number {
   }
 
   return endIdx + tag.length;
+}
+
+/**
+ * Replace the *contents* of string literals (single-, double-, backtick-quoted
+ * and `$tag$` dollar-quoted) with spaces, preserving the surrounding structure
+ * and length. Used by `_isUnboundedSelect` so a bounding keyword hidden inside
+ * a literal can't fool the bounded-read heuristic. Handles SQL-standard `''`
+ * doubling; leaves the delimiters themselves in place.
+ */
+function _maskStringLiterals(sql: string): string {
+  const out = sql.split("");
+  let inString: string | null = null;
+  for (let i = 0; i < sql.length; i++) {
+    const c = sql[i];
+    if (inString !== null) {
+      if (c === inString) {
+        if (i + 1 < sql.length && sql[i + 1] === inString) {
+          out[i] = " ";
+          out[i + 1] = " ";
+          i++; // skip the doubled (escaped) quote
+        } else {
+          inString = null; // keep the closing delimiter
+        }
+      } else {
+        out[i] = " ";
+      }
+    } else if (c === "'" || c === '"' || c === "`") {
+      inString = c;
+    } else if (c === "$") {
+      const dEnd = _dollarQuoteEnd(sql, i);
+      if (dEnd !== -1) {
+        for (let k = i + 1; k < dEnd - 1; k++) out[k] = " ";
+        i = dEnd - 1;
+      }
+    }
+  }
+  return out.join("");
 }
 
 function _boundarySemicolons(sql: string, treatBackslashAsEscape: boolean): Set<number> {
@@ -397,8 +443,15 @@ export class Policy {
 
   /** Return true if the SELECT appears to lack a bounding clause. */
   static _isUnboundedSelect(sql: string): boolean {
-    if (!_UNBOUNDED_RE.test(sql)) return false;
-    return !_BOUNDED_KEYWORDS_RE.test(sql);
+    // Run the heuristic on both the raw text and a copy with string-literal
+    // contents blanked, and escalate if either looks unbounded. A bounding
+    // keyword that appears only inside a literal (e.g. `SELECT '/* LIMIT */',
+    // * FROM users`) must not make a full-table scan look bounded; masking
+    // the literal exposes the real shape. OR-ing with the raw scan keeps the
+    // check fail-closed if the masker mishandles an exotic quoting dialect.
+    const looksUnbounded = (text: string): boolean =>
+      _UNBOUNDED_RE.test(text) && !_BOUNDED_KEYWORDS_RE.test(text);
+    return looksUnbounded(sql) || looksUnbounded(_maskStringLiterals(sql));
   }
 
   // ------------------------------------------------------------------

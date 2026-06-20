@@ -34,6 +34,13 @@ describe("SQL policy parser security", () => {
 
     const sql3 = "SELECT 1 AS col$tag$ WHERE 1=1; DROP TABLE users;";
     expect(classifyStatements(sql3)).toEqual(["read", "admin"]);
+
+    // Two `col$tag$` aliases supply a matching closing tag, but `$` here is
+    // inside an identifier (not a token-boundary dollar quote), so the real
+    // semicolons must still split the batch.
+    const sql4 =
+      "SELECT 1 AS col$tag$; DROP TABLE users; SELECT 2 AS col$tag$";
+    expect(classifyStatements(sql4)).toEqual(["read", "admin", "read"]);
   });
 
   it("throws error for ambiguous dialect-specific escapes", () => {
