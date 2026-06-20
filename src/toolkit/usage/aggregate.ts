@@ -27,7 +27,13 @@ export function aggregateRecords(
 
   const byAction: Record<
     string,
-    { calls: number; response_bytes: number; estimated_tokens: number; ms_total: number; ms_count: number }
+    {
+      calls: number;
+      response_bytes: number;
+      estimated_tokens: number;
+      ms_total: number;
+      ms_count: number;
+    }
   > = {};
 
   let totalBytes = 0;
@@ -71,10 +77,23 @@ export function aggregateRecords(
     };
   }
 
-  const top_responses: UsageTopResponse[] = [...records]
-    .sort((a, b) => b.response_bytes - a.response_bytes)
-    .slice(0, 3)
-    .map((r) => ({ action: r.action, response_bytes: r.response_bytes }));
+  // ⚡ Bolt: Replace O(N log N) sorting with O(N) manual Top-K extraction
+  // Avoids blocking the Node.js event loop for large datasets by keeping an array
+  // of at most 3 items and doing a constant-time sort on it.
+  const top3: UsageRecord[] = [];
+  for (const r of records) {
+    if (top3.length < 3) {
+      top3.push(r);
+      top3.sort((a, b) => b.response_bytes - a.response_bytes);
+    } else if (r.response_bytes > top3[2].response_bytes) {
+      top3[2] = r;
+      top3.sort((a, b) => b.response_bytes - a.response_bytes);
+    }
+  }
+  const top_responses: UsageTopResponse[] = top3.map((r) => ({
+    action: r.action,
+    response_bytes: r.response_bytes,
+  }));
 
   return {
     session_id: sessionId,
@@ -105,7 +124,10 @@ export function renderSummaryMarkdown(s: UsageSummary): string {
     .join("\n");
 
   const top = s.top_responses
-    .map((t, i) => `${i + 1}. ${t.action} (${t.response_bytes.toLocaleString()} bytes)`)
+    .map(
+      (t, i) =>
+        `${i + 1}. ${t.action} (${t.response_bytes.toLocaleString()} bytes)`,
+    )
     .join("\n");
 
   return [
