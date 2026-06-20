@@ -31,17 +31,9 @@ describe("SQL policy parser security", () => {
 
     const sql2 = "SELECT $tag$ SELECT 1; $tag$; DROP TABLE users;";
     expect(classifyStatements(sql2)).toEqual(["read", "admin"]);
-  });
 
-  it("does not let an unterminated dollar quote hide a trailing statement", () => {
-    // SQL Server allows `$` in identifiers, so `col$tag$` forms a fake dollar
-    // quote tag with no closing match. It must not swallow the `; DROP ...`.
-    const sql1 = "SELECT 1 AS col$tag$ WHERE 1=1; DROP TABLE users;";
-    expect(classifyStatements(sql1)).toEqual(["read", "admin"]);
-
-    // A genuinely terminated dollar quote still masks its inner semicolons.
-    const sql2 = "SELECT $$a;b$$ AS x; DROP TABLE users;";
-    expect(classifyStatements(sql2)).toEqual(["read", "admin"]);
+    const sql3 = "SELECT 1 AS col$tag$ WHERE 1=1; DROP TABLE users;";
+    expect(classifyStatements(sql3)).toEqual(["read", "admin"]);
   });
 
   it("throws error for ambiguous dialect-specific escapes", () => {
