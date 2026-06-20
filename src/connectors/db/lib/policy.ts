@@ -82,20 +82,28 @@ const _DECISION_RANK: Record<Decision, number> = {
 // -----------------------------------------------------------------------
 
 const _READ_KEYWORDS: ReadonlySet<string> = new Set([
-  "SELECT", "EXPLAIN", "SHOW", "DESCRIBE", "DESC", "WITH",
+  "SELECT",
+  "EXPLAIN",
+  "SHOW",
+  "DESCRIBE",
+  "DESC",
+  "WITH",
 ]);
 const _WRITE_KEYWORDS: ReadonlySet<string> = new Set([
-  "INSERT", "UPDATE", "REPLACE", "MERGE", "UPSERT",
+  "INSERT",
+  "UPDATE",
+  "REPLACE",
+  "MERGE",
+  "UPSERT",
 ]);
-const _DELETE_KEYWORDS: ReadonlySet<string> = new Set([
-  "DELETE", "TRUNCATE",
-]);
+const _DELETE_KEYWORDS: ReadonlySet<string> = new Set(["DELETE", "TRUNCATE"]);
 const _ADMIN_KEYWORDS: ReadonlySet<string> = new Set([
-  "CREATE", "DROP", "ALTER", "RENAME",
+  "CREATE",
+  "DROP",
+  "ALTER",
+  "RENAME",
 ]);
-const _PRIVILEGE_KEYWORDS: ReadonlySet<string> = new Set([
-  "GRANT", "REVOKE",
-]);
+const _PRIVILEGE_KEYWORDS: ReadonlySet<string> = new Set(["GRANT", "REVOKE"]);
 
 /**
  * Classify a SQL string by its leading keyword.
@@ -124,37 +132,160 @@ export function classifySqlKeywords(sql: string): OperationType {
   return OperationType.ADMIN;
 }
 
-/**
- * Split SQL on statement-terminating semicolons, respecting single- and double-
- * quoted string literals. Comments are stripped first, so line and block
- * comments cannot hide a semicolon.
- *
- * Returns trimmed, non-empty statements. An input with a single trailing
- * semicolon returns one statement. Edge cases: `''` escaped quotes inside a
- * single-quoted literal work by accident of toggle semantics (exit + re-enter
- * with nothing in between). NOT handled: PostgreSQL dollar-quoted strings
- * (`$tag$...$tag$`) and backtick-quoted identifiers — tolerably over-split
- * rather than under-split, which is the right bias for a safety gate.
- */
-function _splitStatements(sql: string): string[] {
-  const cleaned = Policy._stripComments(sql);
-  const out: string[] = [];
-  let start = 0;
+function _parseSqlBoundaries(sql: string, backslashEscapes: boolean): number[] {
+  const boundaries: number[] = [];
   let inSingle = false;
   let inDouble = false;
-  for (let i = 0; i < cleaned.length; i++) {
-    const c = cleaned[i];
-    if (c === "'" && !inDouble) inSingle = !inSingle;
-    else if (c === '"' && !inSingle) inDouble = !inDouble;
-    else if (c === ";" && !inSingle && !inDouble) {
-      const s = cleaned.slice(start, i).trim();
-      if (s) out.push(s);
-      start = i + 1;
+  let inBacktick = false;
+  let dollarTag: string | null = null;
+  let inLineComment = false;
+  let inBlockComment = false;
+
+  let i = 0;
+  while (i < sql.length) {
+    const c = sql[i];
+    const next = sql[i + 1] ?? "";
+
+    if (
+      !inSingle &&
+      !inDouble &&
+      !inBacktick &&
+      dollarTag === null &&
+      !inLineComment &&
+      !inBlockComment
+    ) {
+      if (c === "-" && next === "-") {
+        inLineComment = true;
+        i += 2;
+        continue;
+      }
+      if (c === "/" && next === "*") {
+        if (sql[i + 2] === "!") {
+          throw new Error(
+            "Executable comments (/*! ... */) are ambiguous and forbidden.",
+          );
+        }
+        inBlockComment = true;
+        i += 2;
+        continue;
+      }
+      if (c === "[") {
+        throw new Error(
+          "Square bracket identifiers ([...]) are ambiguous and forbidden.",
+        );
+      }
+      if (c === "$") {
+        const match = sql.slice(i).match(/^\$([a-zA-Z_0-9]*)\$/);
+        if (match) {
+          dollarTag = match[0]!;
+          i += match[0]!.length;
+          continue;
+        }
+      }
+
+      if (c === "'") inSingle = true;
+      else if (c === '"') inDouble = true;
+      else if (c === "`") inBacktick = true;
+      else if (c === ";") {
+        boundaries.push(i);
+      }
+      i++;
+      continue;
     }
+
+    if (inLineComment) {
+      if (c === "\n") inLineComment = false;
+      i++;
+      continue;
+    }
+    if (inBlockComment) {
+      if (c === "*" && next === "/") {
+        inBlockComment = false;
+        i += 2;
+        continue;
+      }
+      i++;
+      continue;
+    }
+
+    if (dollarTag !== null) {
+      if (sql.slice(i).startsWith(dollarTag)) {
+        i += dollarTag.length;
+        dollarTag = null;
+      } else {
+        i++;
+      }
+      continue;
+    }
+
+    if (backslashEscapes && c === "\\") {
+      i += 2; // skip escaped
+      continue;
+    }
+
+    if (inSingle && c === "'") {
+      if (!backslashEscapes && next === "'") {
+        i += 2;
+        continue;
+      }
+      inSingle = false;
+    } else if (inDouble && c === '"') {
+      if (!backslashEscapes && next === '"') {
+        i += 2;
+        continue;
+      }
+      inDouble = false;
+    } else if (inBacktick && c === "`") {
+      if (!backslashEscapes && next === "`") {
+        i += 2;
+        continue;
+      }
+      inBacktick = false;
+    }
+
+    i++;
   }
-  const tail = cleaned.slice(start).trim();
-  if (tail) out.push(tail);
-  return out;
+
+  if (inSingle || inDouble || inBacktick || dollarTag !== null) {
+    throw new Error("Unclosed string or identifier literal detected.");
+  }
+  if (inBlockComment) {
+    throw new Error("Unclosed block comment detected.");
+  }
+
+  return boundaries;
+}
+
+/**
+ * Split SQL on statement-terminating semicolons using a 'fail-closed' dual-mode
+ * parsing strategy. Evaluates SQL under both backslash-as-literal (Standard/SQLite)
+ * and backslash-as-escape (MySQL) semantics. Throws an error if the modes disagree
+ * on statement boundaries, or if ambiguous constructs like [ or /*! are encountered.
+ * Tracks PostgreSQL dollar-quotes ($$...$$).
+ */
+function _splitStatements(sql: string): string[] {
+  const escapedBoundaries = _parseSqlBoundaries(sql, true);
+  const literalBoundaries = _parseSqlBoundaries(sql, false);
+
+  if (escapedBoundaries.join(",") !== literalBoundaries.join(",")) {
+    throw new Error(
+      "Ambiguous SQL statement boundaries detected under different escaping rules.",
+    );
+  }
+
+  const statements: string[] = [];
+  let start = 0;
+  for (const b of literalBoundaries) {
+    statements.push(sql.slice(start, b));
+    start = b + 1;
+  }
+  const tail = sql.slice(start);
+  if (tail) statements.push(tail);
+
+  // Strip comments and return non-empty statements
+  return statements
+    .map((s) => Policy._stripComments(s).trim())
+    .filter((s) => s !== "");
 }
 
 /**
@@ -183,7 +314,6 @@ const _LINE_COMMENT_RE = /--[^\n]*/g;
 // Python uses re.DOTALL so `.` matches newlines; in JS use the `s` flag.
 const _BLOCK_COMMENT_RE = /\/\*.*?\*\//gs;
 
-
 /**
  * Heuristic: a SELECT is "unbounded" if it reads from a table but has
  * no WHERE, LIMIT, JOIN, or specific id filter.
@@ -204,7 +334,10 @@ export type ApprovalMode =
   | "grant_required";
 
 const _VALID_APPROVAL_MODES: ReadonlySet<ApprovalMode> = new Set([
-  "auto", "confirm_once", "confirm_each", "grant_required",
+  "auto",
+  "confirm_once",
+  "confirm_each",
+  "grant_required",
 ]);
 
 /**
@@ -283,7 +416,10 @@ export class Policy {
   checkQuery(sql: string, driver?: DatabaseDriver): PolicyResult {
     const stripped = sql.trim();
     if (!stripped) {
-      const result: PolicyResult = { decision: "deny", reason: "Empty SQL statement" };
+      const result: PolicyResult = {
+        decision: "deny",
+        reason: "Empty SQL statement",
+      };
       _emitDeny(result.reason, null);
       return result;
     }
@@ -308,7 +444,11 @@ export class Policy {
     }
 
     const statements = _splitStatements(stripped);
-    const perStmt: Array<{ stmt: string; op: OperationType; result: PolicyResult }> = [];
+    const perStmt: Array<{
+      stmt: string;
+      op: OperationType;
+      result: PolicyResult;
+    }> = [];
     for (let i = 0; i < statements.length; i++) {
       const stmt = statements[i]!;
       const op = classifications[i]!;
@@ -319,7 +459,10 @@ export class Policy {
     // reason and op reflect the earliest culprit (predictable messaging).
     let winner = perStmt[0]!;
     for (const entry of perStmt.slice(1)) {
-      if (_DECISION_RANK[entry.result.decision] > _DECISION_RANK[winner.result.decision]) {
+      if (
+        _DECISION_RANK[entry.result.decision] >
+        _DECISION_RANK[winner.result.decision]
+      ) {
         winner = entry;
       }
     }
@@ -329,7 +472,8 @@ export class Policy {
     // write/delete/admin half.
     let final = winner.result;
     if (statements.length > 1 && final.decision === "present_only") {
-      const combined = perStmt.map((e) => _formatStatement(e.stmt)).join("; ") + ";";
+      const combined =
+        perStmt.map((e) => _formatStatement(e.stmt)).join("; ") + ";";
       final = { ...final, formatted_sql: combined };
     }
 
@@ -369,7 +513,11 @@ export class Policy {
     }
     if (rule === "present") {
       const formatted = _formatStatement(stmt);
-      return { decision: "present_only", reason: _presentReason(op), formatted_sql: formatted };
+      return {
+        decision: "present_only",
+        reason: _presentReason(op),
+        formatted_sql: formatted,
+      };
     }
     // rule === "allow"
     if (op === OperationType.READ) {
@@ -377,7 +525,10 @@ export class Policy {
     }
     // Config validation prevents "allow" from reaching ADMIN/PRIVILEGE; only
     // WRITE/DELETE remain.
-    return { decision: "allow", reason: `${op.toUpperCase()} allowed by policy` };
+    return {
+      decision: "allow",
+      reason: `${op.toUpperCase()} allowed by policy`,
+    };
   }
 
   /**
@@ -400,7 +551,8 @@ export class Policy {
     const result = this._decideOne(stmt, op);
     if (result.decision === "deny") _emitDeny(result.reason, op);
     else if (result.decision === "escalate") _emitEscalate(result.reason, op);
-    else if (result.decision === "present_only") _emitPresentOnly(result.reason, op, result.formatted_sql);
+    else if (result.decision === "present_only")
+      _emitPresentOnly(result.reason, op, result.formatted_sql);
     else if (op !== OperationType.READ) _emitAllow(op);
     return result;
   }
@@ -562,7 +714,8 @@ function _emitEscalate(reason: string, op: OperationType | null): void {
 /** Default deny reason per operation type (stable strings used by evals). */
 function _denyReason(op: OperationType): string {
   if (op === OperationType.ADMIN) return "ADMIN statements are never allowed";
-  if (op === OperationType.PRIVILEGE) return "PRIVILEGE statements are never allowed";
+  if (op === OperationType.PRIVILEGE)
+    return "PRIVILEGE statements are never allowed";
   if (op === OperationType.WRITE) return "WRITE statements are not allowed";
   if (op === OperationType.DELETE) return "DELETE statements are not allowed";
   return "READ statements are not allowed";
@@ -617,9 +770,7 @@ function _emitPresentOnly(
   // can't leak. Same helper used by audit.logQuery.
   const scrubbed = scrubSqlSecrets(formattedSql);
   const truncated =
-    scrubbed.length > 500
-      ? scrubbed.slice(0, 500) + "\u2026"
-      : scrubbed;
+    scrubbed.length > 500 ? scrubbed.slice(0, 500) + "\u2026" : scrubbed;
   const details: Record<string, unknown> = {
     reason,
     formatted_sql: truncated,
