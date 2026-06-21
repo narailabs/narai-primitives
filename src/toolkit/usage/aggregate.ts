@@ -27,7 +27,13 @@ export function aggregateRecords(
 
   const byAction: Record<
     string,
-    { calls: number; response_bytes: number; estimated_tokens: number; ms_total: number; ms_count: number }
+    {
+      calls: number;
+      response_bytes: number;
+      estimated_tokens: number;
+      ms_total: number;
+      ms_count: number;
+    }
   > = {};
 
   let totalBytes = 0;
@@ -35,6 +41,10 @@ export function aggregateRecords(
   let errors = 0;
   let start = records[0].ts;
   let end = records[0].ts;
+
+  // Manual Top-K extraction (K=3) to avoid O(N log N) sorting and full array cloning
+  // which can block the Node.js event loop on large datasets.
+  const top_responses: UsageTopResponse[] = [];
 
   for (const rec of records) {
     totalBytes += rec.response_bytes;
@@ -59,6 +69,21 @@ export function aggregateRecords(
       slot.ms_total += rec.execution_time_ms;
       slot.ms_count += 1;
     }
+
+    // Update Top-K responses
+    if (top_responses.length < 3) {
+      top_responses.push({
+        action: rec.action,
+        response_bytes: rec.response_bytes,
+      });
+      top_responses.sort((a, b) => b.response_bytes - a.response_bytes);
+    } else if (rec.response_bytes > top_responses[2].response_bytes) {
+      top_responses[2] = {
+        action: rec.action,
+        response_bytes: rec.response_bytes,
+      };
+      top_responses.sort((a, b) => b.response_bytes - a.response_bytes);
+    }
   }
 
   const by_action: Record<string, UsageActionBreakdown> = {};
@@ -70,11 +95,6 @@ export function aggregateRecords(
       avg_ms: s.ms_count > 0 ? Math.round(s.ms_total / s.ms_count) : 0,
     };
   }
-
-  const top_responses: UsageTopResponse[] = [...records]
-    .sort((a, b) => b.response_bytes - a.response_bytes)
-    .slice(0, 3)
-    .map((r) => ({ action: r.action, response_bytes: r.response_bytes }));
 
   return {
     session_id: sessionId,
@@ -105,7 +125,10 @@ export function renderSummaryMarkdown(s: UsageSummary): string {
     .join("\n");
 
   const top = s.top_responses
-    .map((t, i) => `${i + 1}. ${t.action} (${t.response_bytes.toLocaleString()} bytes)`)
+    .map(
+      (t, i) =>
+        `${i + 1}. ${t.action} (${t.response_bytes.toLocaleString()} bytes)`,
+    )
     .join("\n");
 
   return [
