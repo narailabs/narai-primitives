@@ -59,6 +59,14 @@ describe("SQL policy parser security", () => {
     expect(() => classifyStatements(sql3)).toThrow(/Ambiguous or unrecognized SQL construct/);
   });
 
+  it("stops line comments at carriage returns (CR-only line endings)", () => {
+    // SQL Server accepts a bare CR as a line terminator. `--\r` must end the
+    // line comment so the following `; DROP TABLE users;` is not swallowed
+    // into a single READ while the driver executes the batch.
+    const sql = "SELECT 1 --\r; DROP TABLE users;";
+    expect(classifyStatements(sql)).toEqual(["read", "admin"]);
+  });
+
   it("safely handles dollar quotes containing identical subtags", () => {
     // Attack: `$` character in an identifier preceding the dollar-quote
     // The previous bug allowed `col$$tag$` to start a dollar quote.

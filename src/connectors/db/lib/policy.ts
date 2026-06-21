@@ -368,9 +368,13 @@ export class Policy {
             inString = c;
           } else if (c === "-" && i + 1 < sql.length && sql[i + 1] === "-") {
             const start = i;
-            while (i < sql.length && sql[i] !== "\n") { i++; }
+            // A line comment ends at a line terminator. SQL Server (and others)
+            // accept a bare CR as a line ending, so stop at `\r` as well as
+            // `\n` — otherwise `SELECT 1 --\r; DROP TABLE users;` would swallow
+            // the `;` and `DROP` into one READ while the driver runs the batch.
+            while (i < sql.length && sql[i] !== "\n" && sql[i] !== "\r") { i++; }
             for (let k = start; k < i; k++) isComment[k] = true;
-            i--; // so outer loop processes the newline
+            i--; // so outer loop processes the line terminator
           } else if (c === "/" && i + 1 < sql.length && sql[i + 1] === "*") {
             const start = i;
             i += 2;
