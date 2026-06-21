@@ -125,12 +125,6 @@ export function classifySqlKeywords(sql: string): OperationType {
 }
 
 function _dollarQuoteEnd(sql: string, startIdx: number): number {
-  // PostgreSQL token-boundary rule: `$` only starts a dollar-quote when it is
-  // not preceded by an identifier char. `$` itself counts as an identifier
-  // char in SQL Server/MySQL, so `col$$tag$` is one identifier — not a
-  // dollar-quote opener. Excluding `$` here let an alias like `col$$tag$`
-  // open a bogus literal that swallowed a following `; DROP TABLE …;`,
-  // classifying a write as a single READ.
   if (startIdx > 0 && /^[A-Za-z0-9_$]$/.test(sql[startIdx - 1] as string)) {
     return -1;
   }
@@ -158,19 +152,16 @@ function _dollarQuoteEnd(sql: string, startIdx: number): number {
   return endIdx + tag.length;
 }
 
-/**
- * Detect the start of a dialect "executable comment" at index `i`. MySQL uses
- * `/*!`, MariaDB additionally uses `/*M!` (optionally with a version number,
- * e.g. `/*M!100000`). Their contents execute on the server but read as inert
- * comments to a generic stripper, so e.g. `SELECT 1 /*M!… UNION SELECT … *\/`
- * would classify as a bare READ while the driver runs the hidden statement.
- * We fail closed on all of them.
- */
 function _isExecCommentStart(sql: string, i: number): boolean {
-  if (sql[i] !== "/" || sql[i + 1] !== "*") return false;
-  let j = i + 2;
-  while (j < sql.length && /^[A-Za-z]$/.test(sql[j] as string)) j++;
-  return sql[j] === "!";
+  if (sql[i] !== "/") return false;
+  if (i + 2 >= sql.length) return false;
+  if (sql[i + 1] !== "*") return false;
+  for (let j = i + 2; j < sql.length; j++) {
+    const c = sql[j] as string;
+    if (c === "!") return true;
+    if (!/^[A-Za-z]$/.test(c)) return false;
+  }
+  return false;
 }
 
 function _boundarySemicolons(sql: string, treatBackslashAsEscape: boolean): Set<number> {
