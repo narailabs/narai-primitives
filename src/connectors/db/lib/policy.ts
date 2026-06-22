@@ -125,7 +125,12 @@ export function classifySqlKeywords(sql: string): OperationType {
 }
 
 function _dollarQuoteEnd(sql: string, startIdx: number): number {
-  if (startIdx > 0 && /^[A-Za-z0-9_$]$/.test(sql[startIdx - 1] as string)) {
+  // A `$` preceded by an identifier character is part of that identifier, not
+  // the start of a PostgreSQL dollar quote. Include SQL Server identifier-prefix
+  // chars `#` (temp tables) and `@` (variables) so payloads like `#$tag$` are not
+  // mistaken for a dollar quote that swallows a later `; DROP ...` into a single
+  // READ classification.
+  if (startIdx > 0 && /^[A-Za-z0-9_$#@]$/.test(sql[startIdx - 1] as string)) {
     return -1;
   }
 

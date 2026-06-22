@@ -74,4 +74,16 @@ describe("SQL policy parser security", () => {
     const sql = "SELECT 1 AS col$$tag$; DROP TABLE users; SELECT 2 AS col$$tag$";
     expect(classifyStatements(sql)).toEqual(["read", "admin", "read"]);
   });
+
+  it("does not open dollar quotes after SQL Server identifier prefixes", () => {
+    // Attack: a temp table name `#$tag$` makes `$` part of the identifier (SQL
+    // Server temp-table prefix `#`), so it must not start a dollar quote that
+    // swallows the `; DROP TABLE users;` into a single READ.
+    const sql = "SELECT * FROM #$tag$; DROP TABLE users; SELECT * FROM #$tag$";
+    expect(classifyStatements(sql)).toEqual(["read", "admin", "read"]);
+
+    // Same for the `@` variable prefix.
+    const sql2 = "SELECT @x$tag$; DROP TABLE users; SELECT @x$tag$";
+    expect(classifyStatements(sql2)).toEqual(["read", "admin", "read"]);
+  });
 });
