@@ -86,4 +86,12 @@ describe("SQL policy parser security", () => {
     const sql2 = "SELECT @x$tag$; DROP TABLE users; SELECT @x$tag$";
     expect(classifyStatements(sql2)).toEqual(["read", "admin", "read"]);
   });
+
+  it("does not open dollar quotes after Unicode identifier characters", () => {
+    // Attack: a non-ASCII letter is a valid identifier char, so `é$tag$` is an
+    // alias, not a dollar quote. The boundary check must use the full Unicode
+    // identifier class, not an ASCII-only enumeration.
+    const sql = "SELECT 1 AS é$tag$; DROP TABLE users; SELECT 2 AS é$tag$";
+    expect(classifyStatements(sql)).toEqual(["read", "admin", "read"]);
+  });
 });
