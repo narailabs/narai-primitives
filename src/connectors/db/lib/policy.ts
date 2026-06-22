@@ -126,10 +126,8 @@ export function classifySqlKeywords(sql: string): OperationType {
 
 function _dollarQuoteEnd(sql: string, startIdx: number): number {
   // A `$` preceded by an identifier character is part of that identifier, not
-  // the start of a PostgreSQL dollar quote. Use the full Unicode identifier
-  // class — Unicode letters (`\p{L}`) and digits (`\p{Nd}`) plus `_`, `$`, and
-  // SQL Server prefixes `#` (temp tables) / `@` (variables) — rather than an
-  // ASCII enumeration, so an identifier like `é$tag$` or `#$tag$` is not
+  // the start of a PostgreSQL dollar quote. Include SQL Server identifier-prefix
+  // chars `#` (temp tables) and `@` (variables) so payloads like `#$tag$` are not
   // mistaken for a dollar quote that swallows a later `; DROP ...` into a single
   // READ classification.
   if (startIdx > 0 && /^[\p{L}\p{Nd}_$#@]$/u.test(sql[startIdx - 1] as string)) {
@@ -142,7 +140,7 @@ function _dollarQuoteEnd(sql: string, startIdx: number): number {
       tag = sql.substring(startIdx, i + 1);
       break;
     }
-    if (!/^[A-Za-z0-9_]$/.test(sql[i] as string)) {
+    if (!/^[\p{L}\p{Nd}_]$/u.test(sql[i] as string)) {
       return -1;
     }
   }
@@ -375,13 +373,9 @@ export class Policy {
             inString = c;
           } else if (c === "-" && i + 1 < sql.length && sql[i + 1] === "-") {
             const start = i;
-            // A line comment ends at a line terminator. SQL Server (and others)
-            // accept a bare CR as a line ending, so stop at `\r` as well as
-            // `\n` — otherwise `SELECT 1 --\r; DROP TABLE users;` would swallow
-            // the `;` and `DROP` into one READ while the driver runs the batch.
             while (i < sql.length && sql[i] !== "\n" && sql[i] !== "\r") { i++; }
             for (let k = start; k < i; k++) isComment[k] = true;
-            i--; // so outer loop processes the line terminator
+            i--; // so outer loop processes the newline or carriage return
           } else if (c === "/" && i + 1 < sql.length && sql[i + 1] === "*") {
             const start = i;
             i += 2;

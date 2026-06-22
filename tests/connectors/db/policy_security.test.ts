@@ -23,6 +23,10 @@ describe("SQL policy parser security", () => {
   it("safely handles line comments containing strings with unclosed quotes", () => {
     const sql1 = "SELECT 1 -- '\n ; DROP TABLE users;";
     expect(classifyStatements(sql1)).toEqual(["read", "admin"]);
+
+    // Also stop at carriage returns (\r)
+    const sql2 = "SELECT 1 --\r; DROP TABLE users;";
+    expect(classifyStatements(sql2)).toEqual(["read", "admin"]);
   });
 
   it("safely handles PostgreSQL dollar quotes", () => {
@@ -59,39 +63,21 @@ describe("SQL policy parser security", () => {
     expect(() => classifyStatements(sql3)).toThrow(/Ambiguous or unrecognized SQL construct/);
   });
 
-  it("stops line comments at carriage returns (CR-only line endings)", () => {
-    // SQL Server accepts a bare CR as a line terminator. `--\r` must end the
-    // line comment so the following `; DROP TABLE users;` is not swallowed
-    // into a single READ while the driver executes the batch.
-    const sql = "SELECT 1 --\r; DROP TABLE users;";
-    expect(classifyStatements(sql)).toEqual(["read", "admin"]);
-  });
-
   it("safely handles dollar quotes containing identical subtags", () => {
     // Attack: `$` character in an identifier preceding the dollar-quote
     // The previous bug allowed `col$$tag$` to start a dollar quote.
     // This correctly parses as [read, admin, read] instead of swallowing the drop table.
     const sql = "SELECT 1 AS col$$tag$; DROP TABLE users; SELECT 2 AS col$$tag$";
     expect(classifyStatements(sql)).toEqual(["read", "admin", "read"]);
-  });
 
-  it("does not open dollar quotes after SQL Server identifier prefixes", () => {
-    // Attack: a temp table name `#$tag$` makes `$` part of the identifier (SQL
-    // Server temp-table prefix `#`), so it must not start a dollar quote that
-    // swallows the `; DROP TABLE users;` into a single READ.
-    const sql = "SELECT * FROM #$tag$; DROP TABLE users; SELECT * FROM #$tag$";
-    expect(classifyStatements(sql)).toEqual(["read", "admin", "read"]);
-
-    // Same for the `@` variable prefix.
-    const sql2 = "SELECT @x$tag$; DROP TABLE users; SELECT @x$tag$";
+    // Test SQL Server `#` and `@` prefixes
+    const sql2 = "SELECT * FROM #$tag$; DROP TABLE users; SELECT * FROM #$tag$";
     expect(classifyStatements(sql2)).toEqual(["read", "admin", "read"]);
-  });
+    const sql3 = "SELECT * FROM @$tag$; DROP TABLE users; SELECT * FROM @$tag$";
+    expect(classifyStatements(sql3)).toEqual(["read", "admin", "read"]);
 
-  it("does not open dollar quotes after Unicode identifier characters", () => {
-    // Attack: a non-ASCII letter is a valid identifier char, so `é$tag$` is an
-    // alias, not a dollar quote. The boundary check must use the full Unicode
-    // identifier class, not an ASCII-only enumeration.
-    const sql = "SELECT 1 AS é$tag$; DROP TABLE users; SELECT 2 AS é$tag$";
-    expect(classifyStatements(sql)).toEqual(["read", "admin", "read"]);
+    // Test Unicode identifiers
+    const sql4 = "SELECT 1 AS é$tag$; DROP TABLE users; SELECT 2 AS é$tag$";
+    expect(classifyStatements(sql4)).toEqual(["read", "admin", "read"]);
   });
 });
