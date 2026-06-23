@@ -22,3 +22,7 @@
 **Vulnerability:** A malicious actor could bypass SQL parsing logic by using `\r` instead of `\n` to prematurely terminate line comments or by embedding PostgreSQL dollar quotes right after Unicode identifiers or dialect-specific identifiers (e.g. `col$tag$`, `@$tag$`). This would cause the parser to misunderstand the true SQL boundary and allow hidden commands to pass through.
 **Learning:** SQL parsing needs to be universally robust to character encodings and line terminators. Hard-coded ASCII checks or partial line terminator checks can leave gaps that attackers exploit.
 **Prevention:** Incorporate full Unicode matching (`[\p{L}\p{Nd}_$#@]/u`) when verifying token boundaries and ensure line comment logic terminates correctly on both `\r` and `\n`.
+## 2026-06-16 - [Fix MySQL Line Comment Requirements]
+**Vulnerability:** A malicious actor could bypass SQL parsing logic by appending `--` directly after an identifier (like `1--1 UNION...`) which would falsely trigger line comment stripping, causing the parser to omit trailing instructions while the database properly executed them.
+**Learning:** Comment conventions differ subtly between database engines. In MySQL, `--` is only considered a line comment if it's followed by a space or a control character.
+**Prevention:** Incorporate precise space checks for the `--` delimiter so that substrings like `1--1` remain part of the statement execution stack and fail-close the validation check.
