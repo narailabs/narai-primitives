@@ -371,7 +371,19 @@ export class Policy {
           }
           if (c === "'" || c === '"' || c === "`") {
             inString = c;
-          } else if (c === "-" && i + 1 < sql.length && sql[i + 1] === "-") {
+          } else if (
+            c === "-" &&
+            i + 1 < sql.length &&
+            sql[i + 1] === "-" &&
+            // MySQL/MariaDB only treat `--` as a line comment when the second
+            // dash is followed by whitespace, a control char, or end-of-input;
+            // otherwise `--` is two minus operators and the rest executes
+            // (`SELECT 1--1 UNION SELECT password FROM users`). Stripping such a
+            // `--` here would hide the UNION from the unbounded-read classifier
+            // and skip the escalation prompt. Only strip the unambiguous
+            // comment form so a `--`-cloaked statement stays visible on MySQL.
+            (i + 2 >= sql.length || (sql[i + 2] as string).charCodeAt(0) <= 0x20)
+          ) {
             const start = i;
             while (i < sql.length && sql[i] !== "\n" && sql[i] !== "\r") { i++; }
             for (let k = start; k < i; k++) isComment[k] = true;

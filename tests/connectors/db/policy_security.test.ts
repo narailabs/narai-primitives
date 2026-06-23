@@ -29,6 +29,18 @@ describe("SQL policy parser security", () => {
     expect(classifyStatements(sql2)).toEqual(["read", "admin"]);
   });
 
+  it("does not treat MySQL `--` without trailing whitespace as a comment", () => {
+    // On MySQL/MariaDB `--` is only a comment when followed by whitespace/control;
+    // `--1` is `- -1`, so the UNION executes and exfiltrates while the previous
+    // unconditional strip reduced this to `SELECT 1` and skipped escalation.
+    const attack = "SELECT 1--1 UNION SELECT password FROM users";
+    expect(Policy._isUnboundedSelect(attack)).toBe(true);
+
+    // The hidden statement must stay visible to keyword classification too.
+    const sql = "SELECT 1--1; DROP TABLE users;";
+    expect(classifyStatements(sql)).toEqual(["read", "admin"]);
+  });
+
   it("safely handles PostgreSQL dollar quotes", () => {
     const sql1 = "SELECT $$ -- not comment $$; DROP TABLE users;";
     expect(classifyStatements(sql1)).toEqual(["read", "admin"]);
