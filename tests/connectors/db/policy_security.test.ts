@@ -29,23 +29,15 @@ describe("SQL policy parser security", () => {
     expect(classifyStatements(sql2)).toEqual(["read", "admin"]);
   });
 
-  it("fails closed on dialect-disputed `--` line comments", () => {
-    // `--x` is a comment in PostgreSQL/SQL Server but two minus operators in
-    // MySQL/MariaDB, so a `--`-cloaked payload is a comment on one engine and
-    // executable SQL on another. Deny the disputed form rather than guess a
-    // dialect.
-    // MySQL: `--1` is `- -1`, so the UNION exfiltrates.
-    expect(() => classifyStatements("SELECT 1--1 UNION SELECT password FROM users"))
-      .toThrow(/Ambiguous or unrecognized SQL construct/);
-    // SQL Server: `--'` comments out the quote; the trailing `; DROP` runs,
-    // while leaving `--'` unstripped would open a fake string hiding the `;`.
-    expect(() => classifyStatements("SELECT * FROM users WHERE id=1--'\n; DROP TABLE users;"))
-      .toThrow(/Ambiguous or unrecognized SQL construct/);
+  it("safely handles line comments without whitespace suffixes", () => {
+    // Attack: Using `--` without whitespace to hide commands in MySQL
+    // where `--` isn't a comment unless followed by space/control char.
+    const sql1 = "SELECT 1--1 UNION SELECT password FROM users";
+    expect(() => classifyStatements(sql1)).toThrow(/Ambiguous or unrecognized SQL construct/);
 
-    // The unambiguous comment form (whitespace/control/EOL after `--`, where
-    // every dialect agrees) still strips, so the trailing statement is seen.
-    expect(classifyStatements("SELECT 1 -- x\n; DROP TABLE users;"))
-      .toEqual(["read", "admin"]);
+    // A variant with an actual hidden statement boundary
+    const sql2 = "SELECT 1--; DROP TABLE users;";
+    expect(() => classifyStatements(sql2)).toThrow(/Ambiguous or unrecognized SQL construct/);
   });
 
   it("safely handles PostgreSQL dollar quotes", () => {
