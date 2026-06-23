@@ -29,17 +29,23 @@ describe("SQL policy parser security", () => {
     expect(classifyStatements(sql2)).toEqual(["read", "admin"]);
   });
 
-  it("does not treat MySQL `--` without trailing whitespace as a comment", () => {
-    // On MySQL/MariaDB `--` is only a comment when followed by whitespace/control;
-    // `--1` is `- -1`, so the UNION executes and exfiltrates. The previous
-    // unconditional strip reduced this to `SELECT 1` and skipped the
-    // unbounded-read escalation — pin the escalation property directly.
-    const attack = "SELECT 1--1 UNION SELECT password FROM users";
-    expect(Policy._isUnboundedSelect(attack)).toBe(true);
+  it("fails closed on dialect-disputed `--` line comments", () => {
+    // `--x` is a comment in PostgreSQL/SQL Server but two minus operators in
+    // MySQL/MariaDB, so a `--`-cloaked payload is a comment on one engine and
+    // executable SQL on another. Deny the disputed form rather than guess a
+    // dialect.
+    // MySQL: `--1` is `- -1`, so the UNION exfiltrates.
+    expect(() => classifyStatements("SELECT 1--1 UNION SELECT password FROM users"))
+      .toThrow(/Ambiguous or unrecognized SQL construct/);
+    // SQL Server: `--'` comments out the quote; the trailing `; DROP` runs,
+    // while leaving `--'` unstripped would open a fake string hiding the `;`.
+    expect(() => classifyStatements("SELECT * FROM users WHERE id=1--'\n; DROP TABLE users;"))
+      .toThrow(/Ambiguous or unrecognized SQL construct/);
 
-    // The hidden statement must stay visible to keyword classification too.
-    const sql = "SELECT 1--1; DROP TABLE users;";
-    expect(classifyStatements(sql)).toEqual(["read", "admin"]);
+    // The unambiguous comment form (whitespace/control/EOL after `--`, where
+    // every dialect agrees) still strips, so the trailing statement is seen.
+    expect(classifyStatements("SELECT 1 -- x\n; DROP TABLE users;"))
+      .toEqual(["read", "admin"]);
   });
 
   it("safely handles PostgreSQL dollar quotes", () => {

@@ -371,12 +371,20 @@ export class Policy {
           }
           if (c === "'" || c === '"' || c === "`") {
             inString = c;
-          } else if (
-            c === "-" &&
-            i + 1 < sql.length &&
-            sql[i + 1] === "-" &&
-            (i + 2 >= sql.length || /[\s\x00-\x1F]/.test(sql[i + 2] as string))
-          ) {
+          } else if (c === "-" && i + 1 < sql.length && sql[i + 1] === "-") {
+            // `--` line comment, but dialects DISAGREE on the no-whitespace
+            // form: MySQL/MariaDB only start a comment when `--` is followed by
+            // whitespace/control (else it's two minus operators), while
+            // PostgreSQL/SQL Server treat `--x` as a comment regardless. So a
+            // `--`-cloaked payload is a comment on one engine and executable
+            // SQL on another — `SELECT 1--1 UNION ...` exfiltrates on MySQL,
+            // `... id=1--'\n; DROP ...` runs the DROP on SQL Server while the
+            // unstripped `'` opens a fake string that hides the `;` boundary.
+            // Fail closed on the disputed form; only strip when every dialect
+            // agrees it's a comment (whitespace/control/EOL after the dashes).
+            if (!(i + 2 >= sql.length || /[\s\x00-\x1F]/.test(sql[i + 2] as string))) {
+              throw new Error("Ambiguous or unrecognized SQL construct");
+            }
             const start = i;
             while (i < sql.length && sql[i] !== "\n" && sql[i] !== "\r") { i++; }
             for (let k = start; k < i; k++) isComment[k] = true;
