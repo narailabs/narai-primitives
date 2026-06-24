@@ -74,6 +74,21 @@ describe("SQL policy parser security", () => {
     expect(() => classifyStatements(sql3)).toThrow(/Ambiguous or unrecognized SQL construct/);
   });
 
+  it("throws error for SQL Server nested block comments", () => {
+    // Attack: T-SQL nests block comments, so SQL Server treats the whole
+    // `/* outer /* inner */ ' still comment */` as ONE comment, hiding the
+    // `'` inside it. A non-nesting stripper stops at the first `*/`, leaving a
+    // dangling quote that swallows the real `; DROP TABLE users;` and
+    // misclassifies the batch as a single READ. Fail closed instead.
+    const sql1 = "SELECT 1 /* outer /* inner */ ' still comment */; DROP TABLE users;";
+    expect(() => classifyStatements(sql1)).toThrow(/Ambiguous or unrecognized SQL construct/);
+
+    // Bare nesting without a hidden quote still fails closed — boundaries are
+    // dialect-dependent regardless of payload.
+    const sql2 = "SELECT 1 /* a /* b */ c */; DROP TABLE users;";
+    expect(() => classifyStatements(sql2)).toThrow(/Ambiguous or unrecognized SQL construct/);
+  });
+
   it("safely handles dollar quotes containing identical subtags", () => {
     // Attack: `$` character in an identifier preceding the dollar-quote
     // The previous bug allowed `col$$tag$` to start a dollar quote.

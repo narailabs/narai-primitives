@@ -383,6 +383,17 @@ export class Policy {
             const start = i;
             i += 2;
             while (i < sql.length) {
+              // A nested `/*` is dialect-dependent: SQL Server (T-SQL) nests
+              // block comments, so `/* a /* b */ c */` is ONE comment there,
+              // whereas MySQL/Postgres/SQLite stop at the first `*/`. The same
+              // input thus has different comment (and statement) boundaries per
+              // dialect, so fail closed rather than guess — matching the
+              // dual-mode stance for `--x`, `[`, and `/*!` above. Otherwise a
+              // payload like `/* a /* b */ ' c */; DROP ...` leaves a dangling
+              // quote that hides the real `;` and misclassifies DROP as READ.
+              if (sql[i] === "/" && i + 1 < sql.length && sql[i + 1] === "*") {
+                throw new Error("Ambiguous or unrecognized SQL construct");
+              }
               if (sql[i] === "*" && i + 1 < sql.length && sql[i + 1] === "/") {
                 i++;
                 break;
