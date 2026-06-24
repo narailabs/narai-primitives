@@ -71,10 +71,28 @@ export function aggregateRecords(
     };
   }
 
-  const top_responses: UsageTopResponse[] = [...records]
-    .sort((a, b) => b.response_bytes - a.response_bytes)
-    .slice(0, 3)
-    .map((r) => ({ action: r.action, response_bytes: r.response_bytes }));
+  // ⚡ Bolt: Top-K extraction using O(N) pass to avoid blocking event loop with O(N log N) sort()
+  let top1: UsageRecord | null = null;
+  let top2: UsageRecord | null = null;
+  let top3: UsageRecord | null = null;
+
+  for (const r of records) {
+    if (!top1 || r.response_bytes > top1.response_bytes) {
+      top3 = top2;
+      top2 = top1;
+      top1 = r;
+    } else if (!top2 || r.response_bytes > top2.response_bytes) {
+      top3 = top2;
+      top2 = r;
+    } else if (!top3 || r.response_bytes > top3.response_bytes) {
+      top3 = r;
+    }
+  }
+
+  const top_responses: UsageTopResponse[] = [];
+  if (top1) top_responses.push({ action: top1.action, response_bytes: top1.response_bytes });
+  if (top2) top_responses.push({ action: top2.action, response_bytes: top2.response_bytes });
+  if (top3) top_responses.push({ action: top3.action, response_bytes: top3.response_bytes });
 
   return {
     session_id: sessionId,
