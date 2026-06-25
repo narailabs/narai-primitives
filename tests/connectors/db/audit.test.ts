@@ -287,6 +287,15 @@ describe("wiki_db.audit", () => {
     expect(scrubSqlSecrets("WHERE token='x'")).toBe("WHERE token='[REDACTED]'");
   });
 
+  it("scrubSqlSecrets handles long unterminated quote strings linearly", () => {
+    const start = performance.now();
+    const payload = 'password="' + '\\a'.repeat(100000) + '!';
+    scrubSqlSecrets(payload);
+    const duration = performance.now() - start;
+    // Bounded well under 1 second
+    expect(duration).toBeLessThan(1000);
+  });
+
   it("scrubSqlSecrets handles JSON-escaped quotes inside secret values", () => {
     // Regression (Codex P1 on 683b907): `"[^"]*"` used to terminate at
     // an escaped `\"`, leaking the value tail.

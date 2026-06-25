@@ -122,6 +122,15 @@ describe("scrubSecrets", () => {
     expect(scrubSecrets("api-key='x'")).toBe("api-key='[REDACTED]'");
   });
 
+  it("handles long unterminated quote strings linearly", () => {
+    const start = performance.now();
+    const payload = 'password="' + '\\a'.repeat(100000) + '!';
+    scrubSecrets(payload);
+    const duration = performance.now() - start;
+    // Bounded well under 1 second
+    expect(duration).toBeLessThan(1000);
+  });
+
   it("handles JSON-escaped quotes inside double-quoted secret values", () => {
     // Regression (Codex P1 on 683b907): `"[^"]*"` terminated at the escaped
     // quote inside `"abc\"def"`, leaving `def"}` in the log.

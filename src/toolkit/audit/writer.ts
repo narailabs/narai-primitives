@@ -54,11 +54,11 @@ export interface AuditWriterOptions {
  */
 const SENSITIVE_KEYS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth";
 const SENSITIVE_SQUOTE_RE = new RegExp(
-  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)'(?:\\\\.|[^'\\\\])*'`,
+  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)'(?:[^'\\\\]|\\\\.)*'`,
   "gi",
 );
 const SENSITIVE_DQUOTE_RE = new RegExp(
-  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)"(?:\\\\.|[^"\\\\])*"`,
+  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)"(?:[^"\\\\]|\\\\.)*"`,
   "gi",
 );
 const SENSITIVE_AUTH_QUOTED_RE =
