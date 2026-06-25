@@ -230,14 +230,31 @@ async function onPreToolUse(cfg) {
   } catch {
     return;
   }
-  if (payload.tool_name !== "Bash") return;
-  const command = payload.tool_input?.command;
+  // Derive the tool being gated and the text to scan. Bash scans the
+  // command; Write scans the file content; Edit scans the incoming text
+  // (new_string only — old_string is the text being removed). `command`
+  // therefore holds the candidate text for whichever tool fired.
+  let scanTool;
+  let command;
+  if (payload.tool_name === "Bash") {
+    scanTool = "Bash";
+    command = payload.tool_input?.command;
+  } else if (payload.tool_name === "Write") {
+    scanTool = "Write";
+    command = payload.tool_input?.content;
+  } else if (payload.tool_name === "Edit") {
+    scanTool = "Edit";
+    command = payload.tool_input?.new_string;
+  } else {
+    return;
+  }
   if (typeof command !== "string" || command.length === 0) return;
 
   const decisions = [];
 
-  // 1. db-guard (only if kind=db, and not opted out via user_config)
-  if (cfg.kind === "db" && process.env.DB_AGENT_GUARDRAILS !== "off") {
+  // 1. db-guard (Bash only; only if kind=db, and not opted out via user_config).
+  //    The token-blocklist engine is command-shaped and meaningless for file content.
+  if (scanTool === "Bash" && cfg.kind === "db" && process.env.DB_AGENT_GUARDRAILS !== "off") {
     const guardrailsPath = path.join(
       process.env.CLAUDE_PLUGIN_ROOT,
       "hooks",
@@ -289,7 +306,7 @@ async function onPreToolUse(cfg) {
   if (fs.existsSync(pluginGatesFile)) {
     try {
       const gateCfg = JSON.parse(fs.readFileSync(pluginGatesFile, "utf-8"));
-      applyGatesManifest(gateCfg, cfg.name, command, disabled, decisions);
+      applyGatesManifest(gateCfg, cfg.name, command, disabled, decisions, scanTool);
     } catch (err) {
       process.stderr.write(
         `dispatcher: plugin-root gate scan failed (${err.message})\n`,
@@ -324,7 +341,7 @@ async function onPreToolUse(cfg) {
       if (!fs.existsSync(gatesFile)) continue;
       try {
         const gateCfg = JSON.parse(fs.readFileSync(gatesFile, "utf-8"));
-        applyGatesManifest(gateCfg, slug, command, disabled, decisions);
+        applyGatesManifest(gateCfg, slug, command, disabled, decisions, scanTool);
       } catch (err) {
         process.stderr.write(
           `dispatcher: gate scan failed for ${gatesFile} (${err.message})\n`,
@@ -508,14 +525,23 @@ export function effectiveEnforcement(manifestEnforcement) {
  * field), a rule whose pattern will not compile becomes a hard deny instead
  * of being silently skipped — we cannot prove the command is safe.
  */
-export function applyGatesManifest(manifest, source, command, disabled, decisions) {
+export function applyGatesManifest(manifest, source, text, disabled, decisions, scanTool = "Bash") {
   const enforcement = effectiveEnforcement(manifest.enforcement);
+  // Bash commands are split on chaining operators so anchored rules apply
+  // per-segment. File content (Write/Edit) is matched as a single unit so
+  // characters like `;` or `|` inside the file do not fragment it.
+  const segments = scanTool === "Bash" ? splitCompound(text) : [text];
   for (const rule of manifest.rules ?? []) {
     if (
       !["deny", "ask", "allow"].includes(rule.decision) ||
       typeof rule.pattern !== "string"
     ) continue;
     if (typeof rule.name === "string" && disabled.has(rule.name)) continue;
+    // A rule applies to a tool only if listed in `applies_to`. Default is
+    // Bash-only, so every existing rule keeps its current behavior and is
+    // skipped on Write/Edit unless it explicitly opts in.
+    const appliesTo = Array.isArray(rule.applies_to) ? rule.applies_to : ["Bash"];
+    if (!appliesTo.includes(scanTool)) continue;
     let re;
     try { re = new RegExp(rule.pattern); } catch {
       if (enforcement === "fail_closed") {
@@ -526,7 +552,7 @@ export function applyGatesManifest(manifest, source, command, disabled, decision
       }
       continue;
     }
-    for (const segment of splitCompound(command)) {
+    for (const segment of segments) {
       if (re.test(segment)) {
         decisions.push({
           decision: rule.decision,
