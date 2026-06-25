@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "name": "db-strict",
+  "enforcement": "fail_closed",
+  "rules": [
+    {
+      "name": "python_db_driver_import",
+      "decision": "deny",
+      "reason": "Importing a database driver in-process bypasses the connector. Route DB access through the sanctioned connector instead.",
+      "pattern": "[iI][mM][pP][oO][rR][tT]\\s+(psycopg2|psycopg|pymysql|MySQLdb|sqlite3|pymongo|pyodbc|asyncpg|sqlalchemy)\\b|[fF][rR][oO][mM]\\s+(psycopg2|psycopg|pymysql|MySQLdb|sqlite3|pymongo|pyodbc|asyncpg|sqlalchemy)\\s+[iI][mM][pP][oO][rR][tT]\\b"
+    },
+    {
+      "name": "node_db_driver_require",
+      "decision": "deny",
+      "reason": "Requiring a database driver in-process bypasses the connector. Route DB access through the sanctioned connector instead.",
+      "pattern": "[rR][eE][qQ][uU][iI][rR][eE]\\s*\\(\\s*['\"\\\\]+(pg|mysql2|mysql|mongodb|mssql|tedious|better-sqlite3|sqlite3|oracledb)['\"\\\\]+\\s*\\)"
+    },
+    {
+      "name": "jdbc_url",
+      "decision": "deny",
+      "reason": "A JDBC connection URL bypasses the connector. Route DB access through the sanctioned connector instead.",
+      "pattern": "[jJ][dD][bB][cC]:(postgresql|mysql|mariadb|sqlserver|oracle|sqlite|mongodb)://"
+    },
+    {
+      "name": "node_db_client_construct",
+      "decision": "deny",
+      "reason": "Constructing a database client in-process bypasses the connector. Route DB access through the sanctioned connector instead.",
+      "pattern": "[nN][eE][wW]\\s+(Pool|Client)\\s*\\([^)]*\\b(host|port|database|connectionString|user|password)\\b"
+    },
+    {
+      "name": "raw_dml_exec",
+      "decision": "deny",
+      "reason": "Executing raw DML/DDL inline bypasses the connector. Route DB access through the sanctioned connector instead.",
+      "pattern": "(-c\\b|-e\\b|--eval\\b|--command\\b|--query\\b|python3?|node|deno|ruby|perl|php)\\b.*([iI][nN][sS][eE][rR][tT]\\s+[iI][nN][tT][oO]|[uU][pP][dD][aA][tT][eE]\\s+.+\\s+[sS][eE][tT]\\b|[dD][eE][lL][eE][tT][eE]\\s+[fF][rR][oO][mM]|[dD][rR][oO][pP]\\s+[tT][aA][bB][lL][eE]|[tT][rR][uU][nN][cC][aA][tT][eE]\\s+([tT][aA][bB][lL][eE]\\s+)?)"
+    }
+  ]
+}

@@ -14,6 +14,7 @@
  */
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
+import * as path from "node:path";
 
 // Module-level state
 const _state = {
@@ -29,6 +30,14 @@ const _state = {
 export function enableAudit(filePath: string, sessionId?: string | null): void {
   _state.enabled = true;
   _state.path = filePath;
+  // Create the parent directory up front so the first append does not
+  // silently drop the record when the directory is missing. Wrapped so
+  // enableAudit preserves its never-throw contract.
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  } catch {
+    // best-effort; a write failure later is still swallowed in _writeRecord
+  }
   _state.sessionId =
     sessionId !== undefined && sessionId !== null
       ? sessionId

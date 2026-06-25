@@ -32,6 +32,12 @@ import {
   type OperationType,
 } from "./lib/policy.js";
 import { executeQuery, type QueryableDriver } from "./lib/query.js";
+import {
+  FileGrantStore,
+  grantStorePathFor,
+  shouldIssueReadGrant,
+  type GrantStore,
+} from "./lib/grant-store.js";
 import { SQLiteDriver } from "./lib/drivers/sqlite.js";
 import type {
   DatabaseDriver,
@@ -70,6 +76,10 @@ interface QueryParamsValidated {
   approval_mode?: string;
   max_rows: number;
   timeout_ms: number;
+  // Explicit per-run approval for grant_required: when true, authorizes a
+  // read grant for the configured window. Absent/false leaves the gate
+  // intact (default behavior unchanged).
+  approve_grant?: boolean;
 }
 
 interface SchemaParamsValidated {
@@ -164,6 +174,12 @@ function validateQueryParams(p: Params): QueryParamsValidated {
   if (typeof approval === "string" && approval.length > 0) {
     v.approval_mode = approval;
   }
+  // Truthy `approve_grant` (boolean true or the string "true") opts this run
+  // into issuing a read grant under grant_required. Anything else is ignored.
+  const approveGrant = p["approve_grant"];
+  if (approveGrant === true || approveGrant === "true") {
+    v.approve_grant = true;
+  }
   return v;
 }
 
@@ -197,6 +213,7 @@ export function _preCheckPolicy(
   sql: string,
   approvalMode: string,
   rules: PolicyRules,
+  grantStore?: GrantStore,
 ): { response: FetchResult; exitCode: number } | null {
   let ops: OperationType[];
   try {
@@ -219,7 +236,10 @@ export function _preCheckPolicy(
 
   let policy: Policy;
   try {
-    policy = new Policy(approvalMode, rules);
+    policy =
+      grantStore !== undefined
+        ? new Policy(approvalMode, rules, grantStore)
+        : new Policy(approvalMode, rules);
   } catch (e) {
     return {
       response: {
@@ -636,12 +656,38 @@ async function runOnEnv(
     };
   }
 
+  // Durable grants for grant_required: back the policy with a file store
+  // keyed by server alias so a grant issued in one (short-lived) invocation
+  // is visible to the next, and distinct DB targets never share a grant.
+  // The SAME instance is passed to the pre-check and execution policies so
+  // they agree within this run. Other modes keep the default in-process
+  // store (behavior unchanged).
+  let grantStore: GrantStore | undefined;
+  if (approvalMode === "grant_required" || grantDurationHours !== undefined) {
+    grantStore = new FileGrantStore(grantStorePathFor(serverName));
+  }
+
+  // Issuance: an explicit `approve_grant` on this run is the human approval
+  // authorizing reads against this target for the window. Record the grant
+  // BEFORE the gate so the approved read is permitted to run and subsequent
+  // reads within the window need no re-prompt. Without the flag nothing is
+  // seeded, so the gate stands by default. Only `read` is ever granted.
+  if (action === "query" && grantStore !== undefined) {
+    const q = v as QueryParamsValidated;
+    if (shouldIssueReadGrant(approvalMode, q.approve_grant === true)) {
+      const ttlSeconds =
+        grantDurationHours !== undefined ? grantDurationHours * 3600 : 300;
+      const issuer = new Policy(approvalMode, rules, grantStore);
+      issuer.addGrant("read", ttlSeconds);
+    }
+  }
+
   // Pre-connect policy gate: short-circuit deny/escalate/present_only
   // before we load any driver or open any connection. This is the
   // load-bearing invariant documented in CLAUDE.md and the plugin spec.
   if (action === "query") {
     const q = v as QueryParamsValidated;
-    const short = _preCheckPolicy(q.sql, approvalMode, rules);
+    const short = _preCheckPolicy(q.sql, approvalMode, rules, grantStore);
     if (short !== null) {
       clearEnvironments();
       return short.response;
@@ -672,11 +718,13 @@ async function runOnEnv(
       );
     }
     const qv = v as QueryParamsValidated;
-    const policy = new Policy(approvalMode, rules);
-    // Silence unused-var lint for metadata we carry for future audit
-    // enrichment — keeping the shape so callers can add grant checks later
-    // without re-plumbing.
-    void grantDurationHours;
+    // Under grant_required, share the same FileGrantStore the pre-check used
+    // so a persisted (or just-issued) read grant is honored here; other modes
+    // use the default in-process store.
+    const policy =
+      grantStore !== undefined
+        ? new Policy(approvalMode, rules, grantStore)
+        : new Policy(approvalMode, rules);
     const queryable = adaptDriver(conn.driver, conn.native);
     return await executeQuery(queryable, qv.sql, policy, {
       max_rows: qv.max_rows,

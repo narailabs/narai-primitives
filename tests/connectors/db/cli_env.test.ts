@@ -726,3 +726,107 @@ describe("cli env plugin config (V2.0 ~/.connectors/config.yaml)", () => {
     expect(result.error_code).toBe("CONFIG_ERROR");
   });
 });
+
+describe("cli grant_required durable grants", () => {
+  let tmp: string;
+  let origHome: string | undefined;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "db-grant-cli-"));
+    // Redirect the grant store dir (~/.config/wiki_db/grants) into tmp so the
+    // FileGrantStore writes are isolated from the real home directory.
+    origHome = process.env["HOME"];
+    process.env["HOME"] = tmp;
+    clearEnvironments();
+  });
+  afterEach(() => {
+    clearEnvironments();
+    if (origHome !== undefined) process.env["HOME"] = origHome;
+    else delete process.env["HOME"];
+    try {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+  });
+
+  it("denies a read with no grant, then allows after an approved run persists one", async () => {
+    const dbPath = makeFixtureDb(tmp);
+    const configPath = makeConfig(tmp, {
+      prod: {
+        driver: "sqlite",
+        database: dbPath,
+        schema: "",
+        approval_mode: "grant_required",
+      },
+    });
+    const sql = "SELECT name FROM users WHERE id = 1";
+
+    // 1. No grant yet → denied (gate intact).
+    const out1 = await captureStdout(async () => {
+      const code = await main(
+        argsFor("query", { env: "prod", config_path: configPath, sql }),
+      );
+      expect(code).toBe(1);
+    });
+    expect((parseResult(out1) as { status: string }).status).toBe("denied");
+
+    // 2. Approved run (approve_grant) → executes AND persists a read grant.
+    const out2 = await captureStdout(async () => {
+      const code = await main(
+        argsFor("query", {
+          env: "prod",
+          config_path: configPath,
+          sql,
+          approve_grant: true,
+        }),
+      );
+      expect(code).toBe(0);
+    });
+    expect((parseResult(out2) as { status: string }).status).toBe("ok");
+
+    // 3. Fresh invocation, NO approve flag → still allowed (grant persisted).
+    const out3 = await captureStdout(async () => {
+      const code = await main(
+        argsFor("query", { env: "prod", config_path: configPath, sql }),
+      );
+      expect(code).toBe(0);
+    });
+    expect((parseResult(out3) as { status: string }).status).toBe("ok");
+  });
+
+  it("never lets a grant unlock a PRIVILEGE statement", async () => {
+    const dbPath = makeFixtureDb(tmp);
+    const configPath = makeConfig(tmp, {
+      prod: {
+        driver: "sqlite",
+        database: dbPath,
+        schema: "",
+        approval_mode: "grant_required",
+      },
+    });
+    // Approve to issue a read grant.
+    await captureStdout(async () => {
+      await main(
+        argsFor("query", {
+          env: "prod",
+          config_path: configPath,
+          sql: "SELECT name FROM users WHERE id = 1",
+          approve_grant: true,
+        }),
+      );
+    });
+    // A privilege statement must still be denied (privilege: deny).
+    const out = await captureStdout(async () => {
+      const code = await main(
+        argsFor("query", {
+          env: "prod",
+          config_path: configPath,
+          sql: "GRANT SELECT ON users TO someone",
+        }),
+      );
+      expect(code).toBe(1);
+    });
+    expect((parseResult(out) as { status: string }).status).toBe("denied");
+  });
+});

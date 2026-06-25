@@ -63,6 +63,14 @@ Update imports:
 
 All eleven old packages are deprecated on npm and will receive no new releases.
 
+## Configuration
+
+Connectors read `~/.connectors/config.yaml` (user defaults) with
+`<cwd>/.connectors/config.yaml` (repo overlay) merged on top. For the `db`
+connector specifically — overriding a server target and policy per-repo, and the
+admin/privilege ceiling that an overlay cannot bypass — see
+[`docs/db-layered-config.md`](docs/db-layered-config.md).
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Contributors touching `src/toolkit/agent_resolver.ts`, `src/hub/index.ts`, `src/credentials/`, or `src/connectors/db/` should also read [`docs/architecture-invariants.md`](docs/architecture-invariants.md).
