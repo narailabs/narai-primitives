@@ -113,6 +113,31 @@ async function loadToolkit() {
 }
 
 /**
+ * Lazily load the db audit module from dist. Returns the module namespace
+ * ({ enableAudit, logEvent, scrubSqlSecrets, ... }) or null if unavailable.
+ * Only used when NARAI_AUDIT_PATH is set, so the common path stays cheap.
+ */
+async function loadAudit() {
+  const { existsSync } = fs;
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    path.join(__dirname, "..", "dist", "connectors", "db", "lib", "audit.js"),
+    process.env.CLAUDE_PLUGIN_DATA
+      ? path.join(process.env.CLAUDE_PLUGIN_DATA, "node_modules", "narai-primitives", "dist", "connectors", "db", "lib", "audit.js")
+      : null,
+  ].filter((p) => p !== null);
+  for (const p of candidates) {
+    if (!existsSync(p)) continue;
+    try {
+      return await import(pathToFileURL(p).href);
+    } catch {
+      // try next
+    }
+  }
+  return null;
+}
+
+/**
  * Walk siblings of `pluginDataDir` looking for a `node_modules/narai-primitives`
  * at `wantedVersion`. Returns the matched node_modules path, or null if no
  * usable sibling found. Used to skip redundant npm install when N builtin
@@ -325,6 +350,27 @@ async function onPreToolUse(cfg) {
       permissionDecisionReason: winner.reason,
     },
   }));
+
+  // Best-effort audit of blocked/escalated decisions. Only runs when an
+  // audit destination is configured, keeping the common allow path cheap.
+  const auditPath = process.env.NARAI_AUDIT_PATH;
+  if (auditPath && (winner.decision === "deny" || winner.decision === "ask")) {
+    try {
+      const audit = await loadAudit();
+      if (audit && typeof audit.logEvent === "function") {
+        audit.enableAudit(auditPath);
+        const scrub = typeof audit.scrubSqlSecrets === "function"
+          ? audit.scrubSqlSecrets
+          : (s) => s;
+        audit.logEvent({
+          event_type: winner.decision === "deny" ? "guardrail_deny" : "guardrail_ask",
+          details: { tool: payload.tool_name, command: scrub(command), reason: winner.reason },
+        });
+      }
+    } catch (err) {
+      process.stderr.write(`dispatcher: decision audit failed (${err.message})\n`);
+    }
+  }
 }
 
 async function readStdin() {
