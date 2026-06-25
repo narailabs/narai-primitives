@@ -27,7 +27,13 @@ export function aggregateRecords(
 
   const byAction: Record<
     string,
-    { calls: number; response_bytes: number; estimated_tokens: number; ms_total: number; ms_count: number }
+    {
+      calls: number;
+      response_bytes: number;
+      estimated_tokens: number;
+      ms_total: number;
+      ms_count: number;
+    }
   > = {};
 
   let totalBytes = 0;
@@ -36,12 +42,29 @@ export function aggregateRecords(
   let start = records[0].ts;
   let end = records[0].ts;
 
+  let top1: UsageRecord | null = null;
+  let top2: UsageRecord | null = null;
+  let top3: UsageRecord | null = null;
+
   for (const rec of records) {
     totalBytes += rec.response_bytes;
     totalTokens += rec.estimated_tokens;
     if (rec.status !== "success") errors += 1;
     if (rec.ts < start) start = rec.ts;
     if (rec.ts > end) end = rec.ts;
+
+    // ⚡ Bolt: Replace O(N log N) sort with O(N) Top-K manual tracking
+    // Avoids sorting the entire records array to find the 3 largest response_bytes.
+    if (!top1 || rec.response_bytes > top1.response_bytes) {
+      top3 = top2;
+      top2 = top1;
+      top1 = rec;
+    } else if (!top2 || rec.response_bytes > top2.response_bytes) {
+      top3 = top2;
+      top2 = rec;
+    } else if (!top3 || rec.response_bytes > top3.response_bytes) {
+      top3 = rec;
+    }
 
     const slot =
       byAction[rec.action] ??
@@ -71,9 +94,8 @@ export function aggregateRecords(
     };
   }
 
-  const top_responses: UsageTopResponse[] = [...records]
-    .sort((a, b) => b.response_bytes - a.response_bytes)
-    .slice(0, 3)
+  const top_responses: UsageTopResponse[] = [top1, top2, top3]
+    .filter((r): r is UsageRecord => r !== null)
     .map((r) => ({ action: r.action, response_bytes: r.response_bytes }));
 
   return {
@@ -105,7 +127,10 @@ export function renderSummaryMarkdown(s: UsageSummary): string {
     .join("\n");
 
   const top = s.top_responses
-    .map((t, i) => `${i + 1}. ${t.action} (${t.response_bytes.toLocaleString()} bytes)`)
+    .map(
+      (t, i) =>
+        `${i + 1}. ${t.action} (${t.response_bytes.toLocaleString()} bytes)`,
+    )
     .join("\n");
 
   return [
