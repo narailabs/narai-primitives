@@ -203,6 +203,17 @@ describe("wiki_db.audit", () => {
     }
   });
 
+  // ---------- 10. creates parent directories ----------
+  it("creates parent directories for the audit file", () => {
+    const logPath = path.join(tmpPath, "nested", "deep", "events.jsonl");
+    enableAudit(logPath, "mkdir-test");
+    logEvent({ event_type: "guardrail_deny", details: { rule: "x" } });
+    expect(fs.existsSync(logPath)).toBe(true);
+    const record = JSON.parse(fs.readFileSync(logPath, "utf-8").trim()) as
+      Record<string, unknown>;
+    expect(record["event_type"]).toBe("guardrail_deny");
+  });
+
   // ---------- scrubSqlSecrets unit tests ----------
   it("scrubSqlSecrets masks single-quoted credential literals", () => {
     expect(

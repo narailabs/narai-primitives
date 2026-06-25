@@ -113,6 +113,31 @@ async function loadToolkit() {
 }
 
 /**
+ * Lazily load the db audit module from dist. Returns the module namespace
+ * ({ enableAudit, logEvent, scrubSqlSecrets, ... }) or null if unavailable.
+ * Only used when NARAI_AUDIT_PATH is set, so the common path stays cheap.
+ */
+async function loadAudit() {
+  const { existsSync } = fs;
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    path.join(__dirname, "..", "dist", "connectors", "db", "lib", "audit.js"),
+    process.env.CLAUDE_PLUGIN_DATA
+      ? path.join(process.env.CLAUDE_PLUGIN_DATA, "node_modules", "narai-primitives", "dist", "connectors", "db", "lib", "audit.js")
+      : null,
+  ].filter((p) => p !== null);
+  for (const p of candidates) {
+    if (!existsSync(p)) continue;
+    try {
+      return await import(pathToFileURL(p).href);
+    } catch {
+      // try next
+    }
+  }
+  return null;
+}
+
+/**
  * Walk siblings of `pluginDataDir` looking for a `node_modules/narai-primitives`
  * at `wantedVersion`. Returns the matched node_modules path, or null if no
  * usable sibling found. Used to skip redundant npm install when N builtin
@@ -205,14 +230,31 @@ async function onPreToolUse(cfg) {
   } catch {
     return;
   }
-  if (payload.tool_name !== "Bash") return;
-  const command = payload.tool_input?.command;
+  // Derive the tool being gated and the text to scan. Bash scans the
+  // command; Write scans the file content; Edit scans the incoming text
+  // (new_string only — old_string is the text being removed). `command`
+  // therefore holds the candidate text for whichever tool fired.
+  let scanTool;
+  let command;
+  if (payload.tool_name === "Bash") {
+    scanTool = "Bash";
+    command = payload.tool_input?.command;
+  } else if (payload.tool_name === "Write") {
+    scanTool = "Write";
+    command = payload.tool_input?.content;
+  } else if (payload.tool_name === "Edit") {
+    scanTool = "Edit";
+    command = payload.tool_input?.new_string;
+  } else {
+    return;
+  }
   if (typeof command !== "string" || command.length === 0) return;
 
   const decisions = [];
 
-  // 1. db-guard (only if kind=db, and not opted out via user_config)
-  if (cfg.kind === "db" && process.env.DB_AGENT_GUARDRAILS !== "off") {
+  // 1. db-guard (Bash only; only if kind=db, and not opted out via user_config).
+  //    The token-blocklist engine is command-shaped and meaningless for file content.
+  if (scanTool === "Bash" && cfg.kind === "db" && process.env.DB_AGENT_GUARDRAILS !== "off") {
     const guardrailsPath = path.join(
       process.env.CLAUDE_PLUGIN_ROOT,
       "hooks",
@@ -221,21 +263,30 @@ async function onPreToolUse(cfg) {
     if (fs.existsSync(guardrailsPath)) {
       try {
         const toolkit = await loadToolkit();
-        if (toolkit) {
+        if (toolkit && typeof toolkit.findBlockingRule === "function") {
           const { findBlockingRule, defaultDenyMessage, loadGuardrailManifest } = toolkit;
-          if (typeof findBlockingRule === "function") {
-            const manifest = loadGuardrailManifest(guardrailsPath);
-            const match = findBlockingRule(command, [manifest]);
-            if (match) {
-              decisions.push({
-                decision: "deny",
-                reason: defaultDenyMessage(match),
-              });
-            }
+          const manifest = loadGuardrailManifest(guardrailsPath);
+          const match = findBlockingRule(command, [manifest]);
+          if (match) {
+            decisions.push({
+              decision: "deny",
+              reason: defaultDenyMessage(match),
+            });
           }
+        } else if (effectiveEnforcement(undefined) === "fail_closed") {
+          decisions.push({
+            decision: "deny",
+            reason: "fail-closed enforcement: db guardrail engine is unavailable",
+          });
         }
       } catch (err) {
         process.stderr.write(`dispatcher: db-guard failed (${err.message})\n`);
+        if (effectiveEnforcement(undefined) === "fail_closed") {
+          decisions.push({
+            decision: "deny",
+            reason: `fail-closed enforcement: db guardrail manifest could not be evaluated (${err.message})`,
+          });
+        }
       }
     }
   }
@@ -255,11 +306,17 @@ async function onPreToolUse(cfg) {
   if (fs.existsSync(pluginGatesFile)) {
     try {
       const gateCfg = JSON.parse(fs.readFileSync(pluginGatesFile, "utf-8"));
-      applyGatesManifest(gateCfg, cfg.name, command, disabled, decisions);
+      applyGatesManifest(gateCfg, cfg.name, command, disabled, decisions, scanTool);
     } catch (err) {
       process.stderr.write(
         `dispatcher: plugin-root gate scan failed (${err.message})\n`,
       );
+      if (effectiveEnforcement(undefined) === "fail_closed") {
+        decisions.push({
+          decision: "deny",
+          reason: `fail-closed enforcement: gates manifest at ${pluginGatesFile} could not be parsed`,
+        });
+      }
     }
   }
 
@@ -284,11 +341,17 @@ async function onPreToolUse(cfg) {
       if (!fs.existsSync(gatesFile)) continue;
       try {
         const gateCfg = JSON.parse(fs.readFileSync(gatesFile, "utf-8"));
-        applyGatesManifest(gateCfg, slug, command, disabled, decisions);
+        applyGatesManifest(gateCfg, slug, command, disabled, decisions, scanTool);
       } catch (err) {
         process.stderr.write(
           `dispatcher: gate scan failed for ${gatesFile} (${err.message})\n`,
         );
+        if (effectiveEnforcement(undefined) === "fail_closed") {
+          decisions.push({
+            decision: "deny",
+            reason: `fail-closed enforcement: gates manifest at ${gatesFile} could not be parsed`,
+          });
+        }
       }
     }
   }
@@ -304,6 +367,27 @@ async function onPreToolUse(cfg) {
       permissionDecisionReason: winner.reason,
     },
   }));
+
+  // Best-effort audit of blocked/escalated decisions. Only runs when an
+  // audit destination is configured, keeping the common allow path cheap.
+  const auditPath = process.env.NARAI_AUDIT_PATH;
+  if (auditPath && (winner.decision === "deny" || winner.decision === "ask")) {
+    try {
+      const audit = await loadAudit();
+      if (audit && typeof audit.logEvent === "function") {
+        audit.enableAudit(auditPath);
+        const scrub = typeof audit.scrubSqlSecrets === "function"
+          ? audit.scrubSqlSecrets
+          : (s) => s;
+        audit.logEvent({
+          event_type: winner.decision === "deny" ? "guardrail_deny" : "guardrail_ask",
+          details: { tool: payload.tool_name, command: scrub(command), reason: winner.reason },
+        });
+      }
+    } catch (err) {
+      process.stderr.write(`dispatcher: decision audit failed (${err.message})\n`);
+    }
+  }
 }
 
 async function readStdin() {
@@ -420,20 +504,55 @@ async function ensureBootstrap(pluginRoot, pluginData) {
 }
 
 /**
+ * Resolve the effective enforcement posture from the global
+ * NARAI_GATE_ENFORCEMENT env var and an optional manifest-level field.
+ * Strictest wins: fail-closed if either requests it, else fail-open.
+ */
+export function effectiveEnforcement(manifestEnforcement) {
+  const env = process.env.NARAI_GATE_ENFORCEMENT;
+  if (env === "fail_closed" || manifestEnforcement === "fail_closed") {
+    return "fail_closed";
+  }
+  return "fail_open";
+}
+
+/**
  * Apply a parsed gates.json manifest to a command. Rules with invalid
  * shape, disabled names, or uncompilable patterns are skipped. Anchored
  * patterns match per-segment so chaining (`echo ok; psql ...`) can't bypass.
+ *
+ * Under fail-closed enforcement (env var or the manifest's `enforcement`
+ * field), a rule whose pattern will not compile becomes a hard deny instead
+ * of being silently skipped — we cannot prove the command is safe.
  */
-function applyGatesManifest(manifest, source, command, disabled, decisions) {
+export function applyGatesManifest(manifest, source, text, disabled, decisions, scanTool = "Bash") {
+  const enforcement = effectiveEnforcement(manifest.enforcement);
+  // Bash commands are split on chaining operators so anchored rules apply
+  // per-segment. File content (Write/Edit) is matched as a single unit so
+  // characters like `;` or `|` inside the file do not fragment it.
+  const segments = scanTool === "Bash" ? splitCompound(text) : [text];
   for (const rule of manifest.rules ?? []) {
     if (
       !["deny", "ask", "allow"].includes(rule.decision) ||
       typeof rule.pattern !== "string"
     ) continue;
     if (typeof rule.name === "string" && disabled.has(rule.name)) continue;
+    // A rule applies to a tool only if listed in `applies_to`. Default is
+    // Bash-only, so every existing rule keeps its current behavior and is
+    // skipped on Write/Edit unless it explicitly opts in.
+    const appliesTo = Array.isArray(rule.applies_to) ? rule.applies_to : ["Bash"];
+    if (!appliesTo.includes(scanTool)) continue;
     let re;
-    try { re = new RegExp(rule.pattern); } catch { continue; }
-    for (const segment of splitCompound(command)) {
+    try { re = new RegExp(rule.pattern); } catch {
+      if (enforcement === "fail_closed") {
+        decisions.push({
+          decision: "deny",
+          reason: `fail-closed enforcement: ${source} gate rule '${rule.name ?? "rule"}' has an invalid pattern`,
+        });
+      }
+      continue;
+    }
+    for (const segment of segments) {
       if (re.test(segment)) {
         decisions.push({
           decision: rule.decision,

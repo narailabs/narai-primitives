@@ -237,3 +237,54 @@ describe("defaultDenyMessage", () => {
     expect(msg).toContain("psql");
   });
 });
+
+describe("guardrail manifest — enforcement field", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "guardrail-enf-"));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeManifest(obj: unknown): string {
+    const p = path.join(dir, "guardrails.json");
+    fs.writeFileSync(p, JSON.stringify(obj));
+    return p;
+  }
+
+  it("accepts a manifest with enforcement: fail_closed", () => {
+    const p = writeManifest({
+      version: 1,
+      name: "x",
+      enforcement: "fail_closed",
+      rules: [],
+    });
+    expect(loadGuardrailManifest(p).enforcement).toBe("fail_closed");
+  });
+
+  it("accepts a manifest with enforcement: fail_open", () => {
+    const p = writeManifest({
+      version: 1,
+      name: "x",
+      enforcement: "fail_open",
+      rules: [],
+    });
+    expect(loadGuardrailManifest(p).enforcement).toBe("fail_open");
+  });
+
+  it("omits enforcement when absent", () => {
+    const p = writeManifest({ version: 1, name: "x", rules: [] });
+    expect(loadGuardrailManifest(p).enforcement).toBeUndefined();
+  });
+
+  it("rejects an invalid enforcement value", () => {
+    const p = writeManifest({
+      version: 1,
+      name: "x",
+      enforcement: "fail_clsoed",
+      rules: [],
+    });
+    expect(() => loadGuardrailManifest(p)).toThrow(/enforcement/);
+  });
+});

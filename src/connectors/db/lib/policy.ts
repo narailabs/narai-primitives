@@ -21,11 +21,11 @@
  * method without going through the SQL keyword path. Policy.checkQuery
  * accepts an optional driver and dispatches accordingly.
  */
-import { performance } from "node:perf_hooks";
 import type { PolicyDecision } from "narai-primitives/config";
 import type { DatabaseDriver } from "./drivers/base.js";
 import { logEvent, scrubSqlSecrets } from "./audit.js";
 import { DEFAULT_POLICY, type PolicyRules } from "./plugin_config.js";
+import { MemoryGrantStore, type GrantStore } from "./grant-store.js";
 
 /**
  * Possible outcomes of a db-internal policy check (wire format = lowercase
@@ -124,34 +124,137 @@ export function classifySqlKeywords(sql: string): OperationType {
   return OperationType.ADMIN;
 }
 
+function _dollarQuoteEnd(sql: string, startIdx: number): number {
+  // A `$` preceded by an identifier character is part of that identifier, not
+  // the start of a PostgreSQL dollar quote. Include SQL Server identifier-prefix
+  // chars `#` (temp tables) and `@` (variables) so payloads like `#$tag$` are not
+  // mistaken for a dollar quote that swallows a later `; DROP ...` into a single
+  // READ classification.
+  if (startIdx > 0) {
+    let precedingChar = sql[startIdx - 1] as string;
+    if (
+      startIdx >= 2 &&
+      /[\uDC00-\uDFFF]/.test(precedingChar) &&
+      /[\uD800-\uDBFF]/.test(sql[startIdx - 2] as string)
+    ) {
+      precedingChar = (sql[startIdx - 2] as string) + precedingChar;
+    }
+    if (/^[\p{L}\p{Nd}_$#@]$/u.test(precedingChar)) {
+      return -1;
+    }
+  }
+
+  let tag = "";
+  for (let i = startIdx + 1; i < sql.length; i++) {
+    if (sql[i] === "$") {
+      tag = sql.substring(startIdx, i + 1);
+      break;
+    }
+    if (!/^[\p{L}\p{Nd}_]$/u.test(sql[i] as string)) {
+      return -1;
+    }
+  }
+
+  if (tag === "") {
+    return -1;
+  }
+
+  const endIdx = sql.indexOf(tag, startIdx + tag.length);
+  if (endIdx === -1) {
+    return -1;
+  }
+
+  return endIdx + tag.length;
+}
+
+function _isExecCommentStart(sql: string, i: number): boolean {
+  if (sql[i] !== "/") return false;
+  if (i + 2 >= sql.length) return false;
+  if (sql[i + 1] !== "*") return false;
+  for (let j = i + 2; j < sql.length; j++) {
+    const c = sql[j] as string;
+    if (c === "!") return true;
+    if (!/^[A-Za-z]$/.test(c)) return false;
+  }
+  return false;
+}
+
+function _boundarySemicolons(sql: string, treatBackslashAsEscape: boolean): Set<number> {
+  const boundaries = new Set<number>();
+  let inString: string | null = null; // Either null, "'", '"', or '`'
+
+  for (let i = 0; i < sql.length; i++) {
+    const c = sql[i];
+
+    if (inString !== null) {
+      if (c === inString) {
+        if (i + 1 < sql.length && sql[i + 1] === inString) {
+          i++; // skip escaped quote e.g. ''
+        } else {
+          inString = null;
+        }
+      } else if (c === "\\" && treatBackslashAsEscape && i + 1 < sql.length) {
+        i++; // skip escaped char like \'
+      }
+    } else {
+      if (c === "[" || _isExecCommentStart(sql, i)) {
+        throw new Error("Ambiguous or unrecognized SQL construct");
+      }
+      if (c === "'" || c === '"' || c === "`") {
+        inString = c;
+      } else if (c === "$") {
+        const dEnd = _dollarQuoteEnd(sql, i);
+        if (dEnd !== -1) {
+          i = dEnd - 1; // Advance loop to end of dollar quote
+        }
+      } else if (c === ";") {
+        boundaries.add(i);
+      }
+    }
+  }
+  return boundaries;
+}
+
 /**
- * Split SQL on statement-terminating semicolons, respecting single- and double-
- * quoted string literals. Comments are stripped first, so line and block
- * comments cannot hide a semicolon.
+ * Split SQL on statement-terminating semicolons, respecting single-, double-,
+ * and backtick-quoted string literals/identifiers. Comments are stripped first,
+ * so line and block comments cannot hide a semicolon.
  *
  * Returns trimmed, non-empty statements. An input with a single trailing
- * semicolon returns one statement. Edge cases: `''` escaped quotes inside a
- * single-quoted literal work by accident of toggle semantics (exit + re-enter
- * with nothing in between). NOT handled: PostgreSQL dollar-quoted strings
- * (`$tag$...$tag$`) and backtick-quoted identifiers — tolerably over-split
- * rather than under-split, which is the right bias for a safety gate.
+ * semicolon returns one statement. Handles SQL-standard `''` escaped quotes
+ * inside a literal.
+ *
+ * Dialect-aware escaping is handled by scanning with both backslash-as-literal
+ * and backslash-as-escape semantics. If the two modes disagree on statement
+ * boundaries, the function fails closed and throws an error.
  */
 function _splitStatements(sql: string): string[] {
   const cleaned = Policy._stripComments(sql);
-  const out: string[] = [];
-  let start = 0;
-  let inSingle = false;
-  let inDouble = false;
-  for (let i = 0; i < cleaned.length; i++) {
-    const c = cleaned[i];
-    if (c === "'" && !inDouble) inSingle = !inSingle;
-    else if (c === '"' && !inSingle) inDouble = !inDouble;
-    else if (c === ";" && !inSingle && !inDouble) {
-      const s = cleaned.slice(start, i).trim();
-      if (s) out.push(s);
-      start = i + 1;
+
+  const b1 = _boundarySemicolons(cleaned, false);
+  const b2 = _boundarySemicolons(cleaned, true);
+
+  if (b1.size !== b2.size) {
+    throw new Error("Ambiguous SQL statement boundaries");
+  }
+  const b1Array = Array.from(b1).sort((a, b) => a - b);
+  const b2Array = Array.from(b2).sort((a, b) => a - b);
+  for (let i = 0; i < b1Array.length; i++) {
+    if (b1Array[i] !== b2Array[i]) {
+      throw new Error("Ambiguous SQL statement boundaries");
     }
   }
+
+  const boundaries = b1Array;
+
+  const out: string[] = [];
+  let start = 0;
+  for (const b of boundaries) {
+    const s = cleaned.slice(start, b).trim();
+    if (s) out.push(s);
+    start = b + 1;
+  }
+
   const tail = cleaned.slice(start).trim();
   if (tail) out.push(tail);
   return out;
@@ -177,11 +280,6 @@ export function classifyStatements(sql: string): OperationType[] {
   }
   return stmts.map((s) => classifySqlKeywords(s));
 }
-
-// Regex to strip SQL line comments (-- ...) and block comments (/* ... */)
-const _LINE_COMMENT_RE = /--[^\n]*/g;
-// Python uses re.DOTALL so `.` matches newlines; in JS use the `s` flag.
-const _BLOCK_COMMENT_RE = /\/\*.*?\*\//gs;
 
 
 /**
@@ -219,7 +317,11 @@ export class Policy {
   private readonly _approval_mode: ApprovalMode;
   private readonly _rules: PolicyRules;
   private _session_approved: boolean;
-  private readonly _grants: Map<string, number>; // grant_type -> expiry (ms, performance.now())
+  // grant_type -> expiry (wall-clock epoch ms). Backed by an injectable
+  // store so grants can persist across the connector's short-lived
+  // subprocess invocations (FileGrantStore) or stay in-process (default
+  // MemoryGrantStore).
+  private readonly _grants: GrantStore;
   // G-DB-AUDIT: grant_types that have already had a `grant_expired` event
   // emitted (de-dupes spam from repeated isGrantActive polling).
   private readonly _expired_logged: Set<string>;
@@ -227,6 +329,7 @@ export class Policy {
   constructor(
     approvalMode: string = "auto",
     rules: PolicyRules = DEFAULT_POLICY,
+    grantStore: GrantStore = new MemoryGrantStore(),
   ) {
     if (!_VALID_APPROVAL_MODES.has(approvalMode as ApprovalMode)) {
       // Match Python repr(): single-quoted string.
@@ -235,7 +338,7 @@ export class Policy {
     this._approval_mode = approvalMode as ApprovalMode;
     this._rules = rules;
     this._session_approved = false;
-    this._grants = new Map();
+    this._grants = grantStore;
     this._expired_logged = new Set();
   }
 
@@ -243,11 +346,93 @@ export class Policy {
   // SQL classification
   // ------------------------------------------------------------------
 
-  /** Remove SQL comments from the statement. */
+  /**
+   * Strip SQL line comments (`-- ...`) and block comments (`/* ... *\/`).
+   * Skips string literals to prevent malicious strings from accidentally
+   * terminating a comment early or being parsed as a comment boundary.
+   * Used before keyword classification to prevent a comment like
+   * `/* DROP TABLE *\/ SELECT 1` from triggering a false positive.
+   *
+   * This uses dual-mode logic for backslash escapes (treating `\` as literal
+   * vs treating `\` as escape). If the two modes disagree on what constitutes
+   * a comment, it fails closed and throws an error.
+   */
   static _stripComments(sql: string): string {
-    let s = sql.replace(_BLOCK_COMMENT_RE, "");
-    s = s.replace(_LINE_COMMENT_RE, "");
-    return s.trim();
+    const isComment1 = new Array<boolean>(sql.length).fill(false);
+    const isComment2 = new Array<boolean>(sql.length).fill(false);
+
+    function scan(isComment: boolean[], treatBackslashAsEscape: boolean) {
+      let inString: string | null = null;
+      for (let i = 0; i < sql.length; i++) {
+        const c = sql[i] as string;
+        if (inString !== null) {
+          if (c === inString) {
+            if (i + 1 < sql.length && sql[i + 1] === inString) {
+              i++;
+            } else {
+              inString = null;
+            }
+          } else if (c === "\\" && treatBackslashAsEscape && i + 1 < sql.length) {
+            i++;
+          }
+        } else if (c === "$" && _dollarQuoteEnd(sql, i) !== -1) {
+          // PostgreSQL dollar-quoted literal: its body is data, not a comment.
+          // Skip it wholesale so a `--`/`/* *\/` inside `$$...$$` isn't stripped
+          // (which would delete a following `;` and hide a statement).
+          i = _dollarQuoteEnd(sql, i) - 1;
+        } else {
+          if (c === "[" || _isExecCommentStart(sql, i)) {
+            throw new Error("Ambiguous or unrecognized SQL construct");
+          }
+          if (c === "'" || c === '"' || c === "`") {
+            inString = c;
+          } else if (c === "-" && i + 1 < sql.length && sql[i + 1] === "-") {
+            if (i + 2 < sql.length && !/[\s\x00-\x1F]/.test(sql[i + 2] as string)) {
+              throw new Error("Ambiguous or unrecognized SQL construct");
+            }
+            const start = i;
+            while (i < sql.length && sql[i] !== "\n" && sql[i] !== "\r") { i++; }
+            for (let k = start; k < i; k++) isComment[k] = true;
+            i--; // so outer loop processes the newline or carriage return
+          } else if (c === "/" && i + 1 < sql.length && sql[i + 1] === "*") {
+            const start = i;
+            i += 2;
+            while (i < sql.length) {
+              if (sql[i] === "/" && i + 1 < sql.length && sql[i + 1] === "*") {
+                throw new Error("Ambiguous or unrecognized SQL construct");
+              }
+              if (sql[i] === "*" && i + 1 < sql.length && sql[i + 1] === "/") {
+                i++;
+                break;
+              }
+              i++;
+            }
+            for (let k = start; k <= i && k < sql.length; k++) isComment[k] = true;
+          }
+        }
+      }
+    }
+
+    scan(isComment1, false);
+    scan(isComment2, true);
+
+    let out = "";
+    let wasComment = false;
+    for (let i = 0; i < sql.length; i++) {
+      if (isComment1[i] !== isComment2[i]) {
+        throw new Error("Ambiguous SQL comment boundaries");
+      }
+      if (!isComment1[i]) {
+        if (wasComment) {
+          out += " ";
+          wasComment = false;
+        }
+        out += sql[i];
+      } else {
+        wasComment = true;
+      }
+    }
+    return out.trim();
   }
 
   /** Determine the OperationType of a raw SQL string. */
@@ -260,9 +445,63 @@ export class Policy {
   // ------------------------------------------------------------------
 
   /** Return true if the SELECT appears to lack a bounding clause. */
+  static _maskStringLiterals(sql: string): string {
+    const isString = new Array<boolean>(sql.length).fill(false);
+
+    function scan(isStr: boolean[], treatBackslashAsEscape: boolean) {
+      let inString: string | null = null;
+      for (let i = 0; i < sql.length; i++) {
+        const c = sql[i] as string;
+        if (inString !== null) {
+          if (c === inString) {
+            if (i + 1 < sql.length && sql[i + 1] === inString) {
+              isStr[i] = true;
+              isStr[i + 1] = true;
+              i++;
+            } else {
+              inString = null;
+            }
+          } else if (c === "\\" && treatBackslashAsEscape && i + 1 < sql.length) {
+            isStr[i] = true;
+            isStr[i + 1] = true;
+            i++;
+          } else {
+            isStr[i] = true;
+          }
+        } else if (c === "$" && _dollarQuoteEnd(sql, i) !== -1) {
+          const end = _dollarQuoteEnd(sql, i);
+          const start = i;
+          let tagLen = 0;
+          while (start + tagLen < sql.length && sql[start + tagLen] !== "$") tagLen++;
+          if (start + tagLen < sql.length && sql[start + tagLen] === "$") tagLen++;
+          for (let k = start + tagLen; k < end - tagLen; k++) isStr[k] = true;
+          i = end - 1;
+        } else {
+          if (c === "'" || c === '"' || c === "`") {
+            inString = c;
+          }
+        }
+      }
+    }
+
+    scan(isString, false);
+
+    let out = "";
+    for (let i = 0; i < sql.length; i++) {
+      if (isString[i]) {
+        out += " ";
+      } else {
+        out += sql[i];
+      }
+    }
+    return out;
+  }
+
+  /** Return true if the SELECT appears to lack a bounding clause. */
   static _isUnboundedSelect(sql: string): boolean {
     if (!_UNBOUNDED_RE.test(sql)) return false;
-    return !_BOUNDED_KEYWORDS_RE.test(sql);
+    const masked = Policy._maskStringLiterals(sql);
+    return !_BOUNDED_KEYWORDS_RE.test(sql) || !_BOUNDED_KEYWORDS_RE.test(masked);
   }
 
   // ------------------------------------------------------------------
@@ -467,15 +706,18 @@ export class Policy {
    *
    * G-DB-AUDIT: emits a `grant_added` event with the grant type and TTL.
    *
-   * Lifetime scope: grants are in-process only. Expiry is measured with
-   * `performance.now()`, which is reset on every Node process start, so
-   * a new CLI invocation always begins with no active grants — even if
-   * a previous run added one seconds ago. Suitable for the CLI's
-   * single-invocation model; not suitable as a cross-process gate.
+   * Lifetime scope: depends on the injected `GrantStore`. With the default
+   * `MemoryGrantStore`, grants live only for the current process. With a
+   * `FileGrantStore`, they persist to disk and are visible to later CLI
+   * invocations. Expiry is recorded as a wall-clock epoch timestamp
+   * (`Date.now()`), which is required for cross-process comparison — a
+   * process-relative clock (`performance.now()`) would be meaningless once
+   * serialized and read by a different process.
    */
   addGrant(grantType: string, ttlSeconds: number = 300): void {
-    // performance.now() is process-relative; see JSDoc for lifetime scope.
-    this._grants.set(grantType, performance.now() + ttlSeconds * 1000);
+    // Date.now() is wall-clock epoch ms so the expiry survives serialization
+    // and is comparable across processes; see JSDoc for lifetime scope.
+    this._grants.set(grantType, Date.now() + ttlSeconds * 1000);
     logEvent({
       event_type: "grant_added",
       details: { grant_type: grantType, ttl_seconds: ttlSeconds },
@@ -492,7 +734,7 @@ export class Policy {
   isGrantActive(grantType: string): boolean {
     const expiry = this._grants.get(grantType);
     if (expiry === undefined) return false;
-    if (performance.now() < expiry) return true;
+    if (Date.now() < expiry) return true;
     if (!this._expired_logged.has(grantType)) {
       this._expired_logged.add(grantType);
       logEvent({
@@ -512,13 +754,11 @@ export class Policy {
  * low-level primitive (5-minute default, used for short-lived operations
  * like test scaffolding and administrative confirmations).
  *
- * Lifetime scope: grants live in memory only. Because `addGrant` uses
- * `performance.now()` — a process-relative monotonic clock — a grant
- * written in one CLI invocation does NOT carry into the next one, even
- * if `grant_duration_hours=8`. The "8 hour" default means "up to 8
- * wall-clock hours within a single long-running session," not "8
- * wall-clock hours across reboots." Persisting grants to disk is out
- * of scope for v2.
+ * Lifetime scope: depends on the `GrantStore` injected into `policy`.
+ * `addGrant` records a wall-clock epoch expiry (`Date.now()`), so with a
+ * `FileGrantStore` a grant written in one CLI invocation carries into the
+ * next for up to `grant_duration_hours`. With the default `MemoryGrantStore`
+ * the grant lives only for the current process.
  */
 export function grantFromEnv(
   policy: Policy,
