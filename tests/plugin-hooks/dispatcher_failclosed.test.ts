@@ -1,0 +1,186 @@
+import { describe, it, expect, afterEach } from "vitest";
+import { spawn } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import {
+  effectiveEnforcement,
+  applyGatesManifest,
+} from "../../plugin-hooks/dispatcher.mjs";
+
+const DISPATCHER = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "..",
+  "plugin-hooks",
+  "dispatcher.mjs",
+);
+
+// ── unit: effectiveEnforcement ──
+describe("effectiveEnforcement", () => {
+  const orig = process.env.NARAI_GATE_ENFORCEMENT;
+  afterEach(() => {
+    if (orig === undefined) delete process.env.NARAI_GATE_ENFORCEMENT;
+    else process.env.NARAI_GATE_ENFORCEMENT = orig;
+  });
+
+  it("defaults to fail_open with no env and no manifest field", () => {
+    delete process.env.NARAI_GATE_ENFORCEMENT;
+    expect(effectiveEnforcement(undefined)).toBe("fail_open");
+  });
+
+  it("is fail_closed when env is fail_closed", () => {
+    process.env.NARAI_GATE_ENFORCEMENT = "fail_closed";
+    expect(effectiveEnforcement(undefined)).toBe("fail_closed");
+  });
+
+  it("is fail_closed when the manifest field is fail_closed", () => {
+    delete process.env.NARAI_GATE_ENFORCEMENT;
+    expect(effectiveEnforcement("fail_closed")).toBe("fail_closed");
+  });
+
+  it("ignores an unrecognized env value (stays fail_open)", () => {
+    process.env.NARAI_GATE_ENFORCEMENT = "nope";
+    expect(effectiveEnforcement(undefined)).toBe("fail_open");
+  });
+});
+
+// ── unit: applyGatesManifest regex-compile failure ──
+describe("applyGatesManifest — uncompilable pattern", () => {
+  const orig = process.env.NARAI_GATE_ENFORCEMENT;
+  afterEach(() => {
+    if (orig === undefined) delete process.env.NARAI_GATE_ENFORCEMENT;
+    else process.env.NARAI_GATE_ENFORCEMENT = orig;
+  });
+
+  const badManifest = {
+    enforcement: "fail_closed",
+    rules: [{ name: "bad", decision: "deny", pattern: "([unclosed" }],
+  };
+
+  it("denies on an uncompilable pattern under fail_closed (via manifest field)", () => {
+    delete process.env.NARAI_GATE_ENFORCEMENT;
+    const decisions: { decision: string; reason: string }[] = [];
+    applyGatesManifest(badManifest, "test", "echo hi", new Set(), decisions);
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0].decision).toBe("deny");
+  });
+
+  it("skips (no decision) on an uncompilable pattern under fail_open", () => {
+    delete process.env.NARAI_GATE_ENFORCEMENT;
+    const decisions: { decision: string; reason: string }[] = [];
+    const openManifest = { rules: badManifest.rules };
+    applyGatesManifest(openManifest, "test", "echo hi", new Set(), decisions);
+    expect(decisions).toHaveLength(0);
+  });
+});
+
+// ── integration: subprocess ──
+interface Result { stdout: string; stderr: string; exitCode: number }
+
+function runPreToolUse(opts: {
+  pluginRoot: string;
+  enforcement?: string;
+  stdin: string;
+}): Promise<Result> {
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), "fc-data-"));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "fc-home-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "fc-cwd-"));
+  const env: Record<string, string> = {
+    ...process.env,
+    CLAUDE_PLUGIN_ROOT: opts.pluginRoot,
+    CLAUDE_PLUGIN_DATA: data,
+    HOME: home,
+  };
+  if (opts.enforcement !== undefined) env.NARAI_GATE_ENFORCEMENT = opts.enforcement;
+  else delete env.NARAI_GATE_ENFORCEMENT;
+  return new Promise((resolve, reject) => {
+    const proc = spawn("node", [DISPATCHER, "pre-tool-use"], {
+      env,
+      cwd,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "", stderr = "";
+    proc.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
+    proc.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
+    proc.on("close", (code) => resolve({ stdout, stderr, exitCode: code ?? -1 }));
+    proc.on("error", reject);
+    proc.stdin.write(opts.stdin);
+    proc.stdin.end();
+  });
+}
+
+function makeRoot(files: Record<string, string>): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "fc-root-"));
+  fs.writeFileSync(
+    path.join(root, "plugin-config.json"),
+    JSON.stringify({ name: "test-plugin" }),
+  );
+  for (const [rel, content] of Object.entries(files)) {
+    const full = path.join(root, rel);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, content);
+  }
+  return root;
+}
+
+const BASH = (command: string) =>
+  JSON.stringify({ tool_name: "Bash", tool_input: { command } });
+
+describe("dispatcher gates — fail-closed (subprocess)", () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const r of roots) fs.rmSync(r, { recursive: true, force: true });
+    roots.length = 0;
+  });
+
+  it("denies a malformed gates.json under fail_closed", async () => {
+    const root = makeRoot({ "gates.json": "{ this is not json" });
+    roots.push(root);
+    const res = await runPreToolUse({
+      pluginRoot: root,
+      enforcement: "fail_closed",
+      stdin: BASH("echo hi"),
+    });
+    const out = JSON.parse(res.stdout);
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+  });
+
+  it("allows (no output) a malformed gates.json under default fail_open", async () => {
+    const root = makeRoot({ "gates.json": "{ this is not json" });
+    roots.push(root);
+    const res = await runPreToolUse({ pluginRoot: root, stdin: BASH("echo hi") });
+    expect(res.stdout.trim()).toBe("");
+  });
+
+  it("denies an uncompilable rule when the manifest declares fail_closed", async () => {
+    const root = makeRoot({
+      "gates.json": JSON.stringify({
+        enforcement: "fail_closed",
+        rules: [{ name: "bad", decision: "deny", pattern: "([unclosed" }],
+      }),
+    });
+    roots.push(root);
+    const res = await runPreToolUse({ pluginRoot: root, stdin: BASH("echo hi") });
+    const out = JSON.parse(res.stdout);
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+  });
+
+  it("does not over-deny: a valid non-matching manifest under fail_closed allows", async () => {
+    const root = makeRoot({
+      "gates.json": JSON.stringify({
+        enforcement: "fail_closed",
+        rules: [{ name: "psql", decision: "deny", pattern: "psql" }],
+      }),
+    });
+    roots.push(root);
+    const res = await runPreToolUse({
+      pluginRoot: root,
+      enforcement: "fail_closed",
+      stdin: BASH("echo hi"),
+    });
+    expect(res.stdout.trim()).toBe("");
+  });
+});

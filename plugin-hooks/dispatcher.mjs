@@ -260,6 +260,12 @@ async function onPreToolUse(cfg) {
       process.stderr.write(
         `dispatcher: plugin-root gate scan failed (${err.message})\n`,
       );
+      if (effectiveEnforcement(undefined) === "fail_closed") {
+        decisions.push({
+          decision: "deny",
+          reason: `fail-closed enforcement: gates manifest at ${pluginGatesFile} could not be parsed`,
+        });
+      }
     }
   }
 
@@ -289,6 +295,12 @@ async function onPreToolUse(cfg) {
         process.stderr.write(
           `dispatcher: gate scan failed for ${gatesFile} (${err.message})\n`,
         );
+        if (effectiveEnforcement(undefined) === "fail_closed") {
+          decisions.push({
+            decision: "deny",
+            reason: `fail-closed enforcement: gates manifest at ${gatesFile} could not be parsed`,
+          });
+        }
       }
     }
   }
@@ -420,11 +432,29 @@ async function ensureBootstrap(pluginRoot, pluginData) {
 }
 
 /**
+ * Resolve the effective enforcement posture from the global
+ * NARAI_GATE_ENFORCEMENT env var and an optional manifest-level field.
+ * Strictest wins: fail-closed if either requests it, else fail-open.
+ */
+export function effectiveEnforcement(manifestEnforcement) {
+  const env = process.env.NARAI_GATE_ENFORCEMENT;
+  if (env === "fail_closed" || manifestEnforcement === "fail_closed") {
+    return "fail_closed";
+  }
+  return "fail_open";
+}
+
+/**
  * Apply a parsed gates.json manifest to a command. Rules with invalid
  * shape, disabled names, or uncompilable patterns are skipped. Anchored
  * patterns match per-segment so chaining (`echo ok; psql ...`) can't bypass.
+ *
+ * Under fail-closed enforcement (env var or the manifest's `enforcement`
+ * field), a rule whose pattern will not compile becomes a hard deny instead
+ * of being silently skipped — we cannot prove the command is safe.
  */
-function applyGatesManifest(manifest, source, command, disabled, decisions) {
+export function applyGatesManifest(manifest, source, command, disabled, decisions) {
+  const enforcement = effectiveEnforcement(manifest.enforcement);
   for (const rule of manifest.rules ?? []) {
     if (
       !["deny", "ask", "allow"].includes(rule.decision) ||
@@ -432,7 +462,15 @@ function applyGatesManifest(manifest, source, command, disabled, decisions) {
     ) continue;
     if (typeof rule.name === "string" && disabled.has(rule.name)) continue;
     let re;
-    try { re = new RegExp(rule.pattern); } catch { continue; }
+    try { re = new RegExp(rule.pattern); } catch {
+      if (enforcement === "fail_closed") {
+        decisions.push({
+          decision: "deny",
+          reason: `fail-closed enforcement: ${source} gate rule '${rule.name ?? "rule"}' has an invalid pattern`,
+        });
+      }
+      continue;
+    }
     for (const segment of splitCompound(command)) {
       if (re.test(segment)) {
         decisions.push({
