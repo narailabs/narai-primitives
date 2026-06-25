@@ -124,34 +124,137 @@ export function classifySqlKeywords(sql: string): OperationType {
   return OperationType.ADMIN;
 }
 
+function _dollarQuoteEnd(sql: string, startIdx: number): number {
+  // A `$` preceded by an identifier character is part of that identifier, not
+  // the start of a PostgreSQL dollar quote. Include SQL Server identifier-prefix
+  // chars `#` (temp tables) and `@` (variables) so payloads like `#$tag$` are not
+  // mistaken for a dollar quote that swallows a later `; DROP ...` into a single
+  // READ classification.
+  if (startIdx > 0) {
+    let precedingChar = sql[startIdx - 1] as string;
+    if (
+      startIdx >= 2 &&
+      /[\uDC00-\uDFFF]/.test(precedingChar) &&
+      /[\uD800-\uDBFF]/.test(sql[startIdx - 2] as string)
+    ) {
+      precedingChar = (sql[startIdx - 2] as string) + precedingChar;
+    }
+    if (/^[\p{L}\p{Nd}_$#@]$/u.test(precedingChar)) {
+      return -1;
+    }
+  }
+
+  let tag = "";
+  for (let i = startIdx + 1; i < sql.length; i++) {
+    if (sql[i] === "$") {
+      tag = sql.substring(startIdx, i + 1);
+      break;
+    }
+    if (!/^[\p{L}\p{Nd}_]$/u.test(sql[i] as string)) {
+      return -1;
+    }
+  }
+
+  if (tag === "") {
+    return -1;
+  }
+
+  const endIdx = sql.indexOf(tag, startIdx + tag.length);
+  if (endIdx === -1) {
+    return -1;
+  }
+
+  return endIdx + tag.length;
+}
+
+function _isExecCommentStart(sql: string, i: number): boolean {
+  if (sql[i] !== "/") return false;
+  if (i + 2 >= sql.length) return false;
+  if (sql[i + 1] !== "*") return false;
+  for (let j = i + 2; j < sql.length; j++) {
+    const c = sql[j] as string;
+    if (c === "!") return true;
+    if (!/^[A-Za-z]$/.test(c)) return false;
+  }
+  return false;
+}
+
+function _boundarySemicolons(sql: string, treatBackslashAsEscape: boolean): Set<number> {
+  const boundaries = new Set<number>();
+  let inString: string | null = null; // Either null, "'", '"', or '`'
+
+  for (let i = 0; i < sql.length; i++) {
+    const c = sql[i];
+
+    if (inString !== null) {
+      if (c === inString) {
+        if (i + 1 < sql.length && sql[i + 1] === inString) {
+          i++; // skip escaped quote e.g. ''
+        } else {
+          inString = null;
+        }
+      } else if (c === "\\" && treatBackslashAsEscape && i + 1 < sql.length) {
+        i++; // skip escaped char like \'
+      }
+    } else {
+      if (c === "[" || _isExecCommentStart(sql, i)) {
+        throw new Error("Ambiguous or unrecognized SQL construct");
+      }
+      if (c === "'" || c === '"' || c === "`") {
+        inString = c;
+      } else if (c === "$") {
+        const dEnd = _dollarQuoteEnd(sql, i);
+        if (dEnd !== -1) {
+          i = dEnd - 1; // Advance loop to end of dollar quote
+        }
+      } else if (c === ";") {
+        boundaries.add(i);
+      }
+    }
+  }
+  return boundaries;
+}
+
 /**
- * Split SQL on statement-terminating semicolons, respecting single- and double-
- * quoted string literals. Comments are stripped first, so line and block
- * comments cannot hide a semicolon.
+ * Split SQL on statement-terminating semicolons, respecting single-, double-,
+ * and backtick-quoted string literals/identifiers. Comments are stripped first,
+ * so line and block comments cannot hide a semicolon.
  *
  * Returns trimmed, non-empty statements. An input with a single trailing
- * semicolon returns one statement. Edge cases: `''` escaped quotes inside a
- * single-quoted literal work by accident of toggle semantics (exit + re-enter
- * with nothing in between). NOT handled: PostgreSQL dollar-quoted strings
- * (`$tag$...$tag$`) and backtick-quoted identifiers — tolerably over-split
- * rather than under-split, which is the right bias for a safety gate.
+ * semicolon returns one statement. Handles SQL-standard `''` escaped quotes
+ * inside a literal.
+ *
+ * Dialect-aware escaping is handled by scanning with both backslash-as-literal
+ * and backslash-as-escape semantics. If the two modes disagree on statement
+ * boundaries, the function fails closed and throws an error.
  */
 function _splitStatements(sql: string): string[] {
   const cleaned = Policy._stripComments(sql);
-  const out: string[] = [];
-  let start = 0;
-  let inSingle = false;
-  let inDouble = false;
-  for (let i = 0; i < cleaned.length; i++) {
-    const c = cleaned[i];
-    if (c === "'" && !inDouble) inSingle = !inSingle;
-    else if (c === '"' && !inSingle) inDouble = !inDouble;
-    else if (c === ";" && !inSingle && !inDouble) {
-      const s = cleaned.slice(start, i).trim();
-      if (s) out.push(s);
-      start = i + 1;
+
+  const b1 = _boundarySemicolons(cleaned, false);
+  const b2 = _boundarySemicolons(cleaned, true);
+
+  if (b1.size !== b2.size) {
+    throw new Error("Ambiguous SQL statement boundaries");
+  }
+  const b1Array = Array.from(b1).sort((a, b) => a - b);
+  const b2Array = Array.from(b2).sort((a, b) => a - b);
+  for (let i = 0; i < b1Array.length; i++) {
+    if (b1Array[i] !== b2Array[i]) {
+      throw new Error("Ambiguous SQL statement boundaries");
     }
   }
+
+  const boundaries = b1Array;
+
+  const out: string[] = [];
+  let start = 0;
+  for (const b of boundaries) {
+    const s = cleaned.slice(start, b).trim();
+    if (s) out.push(s);
+    start = b + 1;
+  }
+
   const tail = cleaned.slice(start).trim();
   if (tail) out.push(tail);
   return out;
@@ -177,11 +280,6 @@ export function classifyStatements(sql: string): OperationType[] {
   }
   return stmts.map((s) => classifySqlKeywords(s));
 }
-
-// Regex to strip SQL line comments (-- ...) and block comments (/* ... */)
-const _LINE_COMMENT_RE = /--[^\n]*/g;
-// Python uses re.DOTALL so `.` matches newlines; in JS use the `s` flag.
-const _BLOCK_COMMENT_RE = /\/\*.*?\*\//gs;
 
 
 /**
@@ -248,11 +346,93 @@ export class Policy {
   // SQL classification
   // ------------------------------------------------------------------
 
-  /** Remove SQL comments from the statement. */
+  /**
+   * Strip SQL line comments (`-- ...`) and block comments (`/* ... *\/`).
+   * Skips string literals to prevent malicious strings from accidentally
+   * terminating a comment early or being parsed as a comment boundary.
+   * Used before keyword classification to prevent a comment like
+   * `/* DROP TABLE *\/ SELECT 1` from triggering a false positive.
+   *
+   * This uses dual-mode logic for backslash escapes (treating `\` as literal
+   * vs treating `\` as escape). If the two modes disagree on what constitutes
+   * a comment, it fails closed and throws an error.
+   */
   static _stripComments(sql: string): string {
-    let s = sql.replace(_BLOCK_COMMENT_RE, "");
-    s = s.replace(_LINE_COMMENT_RE, "");
-    return s.trim();
+    const isComment1 = new Array<boolean>(sql.length).fill(false);
+    const isComment2 = new Array<boolean>(sql.length).fill(false);
+
+    function scan(isComment: boolean[], treatBackslashAsEscape: boolean) {
+      let inString: string | null = null;
+      for (let i = 0; i < sql.length; i++) {
+        const c = sql[i] as string;
+        if (inString !== null) {
+          if (c === inString) {
+            if (i + 1 < sql.length && sql[i + 1] === inString) {
+              i++;
+            } else {
+              inString = null;
+            }
+          } else if (c === "\\" && treatBackslashAsEscape && i + 1 < sql.length) {
+            i++;
+          }
+        } else if (c === "$" && _dollarQuoteEnd(sql, i) !== -1) {
+          // PostgreSQL dollar-quoted literal: its body is data, not a comment.
+          // Skip it wholesale so a `--`/`/* *\/` inside `$$...$$` isn't stripped
+          // (which would delete a following `;` and hide a statement).
+          i = _dollarQuoteEnd(sql, i) - 1;
+        } else {
+          if (c === "[" || _isExecCommentStart(sql, i)) {
+            throw new Error("Ambiguous or unrecognized SQL construct");
+          }
+          if (c === "'" || c === '"' || c === "`") {
+            inString = c;
+          } else if (c === "-" && i + 1 < sql.length && sql[i + 1] === "-") {
+            if (i + 2 < sql.length && !/[\s\x00-\x1F]/.test(sql[i + 2] as string)) {
+              throw new Error("Ambiguous or unrecognized SQL construct");
+            }
+            const start = i;
+            while (i < sql.length && sql[i] !== "\n" && sql[i] !== "\r") { i++; }
+            for (let k = start; k < i; k++) isComment[k] = true;
+            i--; // so outer loop processes the newline or carriage return
+          } else if (c === "/" && i + 1 < sql.length && sql[i + 1] === "*") {
+            const start = i;
+            i += 2;
+            while (i < sql.length) {
+              if (sql[i] === "/" && i + 1 < sql.length && sql[i + 1] === "*") {
+                throw new Error("Ambiguous or unrecognized SQL construct");
+              }
+              if (sql[i] === "*" && i + 1 < sql.length && sql[i + 1] === "/") {
+                i++;
+                break;
+              }
+              i++;
+            }
+            for (let k = start; k <= i && k < sql.length; k++) isComment[k] = true;
+          }
+        }
+      }
+    }
+
+    scan(isComment1, false);
+    scan(isComment2, true);
+
+    let out = "";
+    let wasComment = false;
+    for (let i = 0; i < sql.length; i++) {
+      if (isComment1[i] !== isComment2[i]) {
+        throw new Error("Ambiguous SQL comment boundaries");
+      }
+      if (!isComment1[i]) {
+        if (wasComment) {
+          out += " ";
+          wasComment = false;
+        }
+        out += sql[i];
+      } else {
+        wasComment = true;
+      }
+    }
+    return out.trim();
   }
 
   /** Determine the OperationType of a raw SQL string. */
@@ -265,9 +445,63 @@ export class Policy {
   // ------------------------------------------------------------------
 
   /** Return true if the SELECT appears to lack a bounding clause. */
+  static _maskStringLiterals(sql: string): string {
+    const isString = new Array<boolean>(sql.length).fill(false);
+
+    function scan(isStr: boolean[], treatBackslashAsEscape: boolean) {
+      let inString: string | null = null;
+      for (let i = 0; i < sql.length; i++) {
+        const c = sql[i] as string;
+        if (inString !== null) {
+          if (c === inString) {
+            if (i + 1 < sql.length && sql[i + 1] === inString) {
+              isStr[i] = true;
+              isStr[i + 1] = true;
+              i++;
+            } else {
+              inString = null;
+            }
+          } else if (c === "\\" && treatBackslashAsEscape && i + 1 < sql.length) {
+            isStr[i] = true;
+            isStr[i + 1] = true;
+            i++;
+          } else {
+            isStr[i] = true;
+          }
+        } else if (c === "$" && _dollarQuoteEnd(sql, i) !== -1) {
+          const end = _dollarQuoteEnd(sql, i);
+          const start = i;
+          let tagLen = 0;
+          while (start + tagLen < sql.length && sql[start + tagLen] !== "$") tagLen++;
+          if (start + tagLen < sql.length && sql[start + tagLen] === "$") tagLen++;
+          for (let k = start + tagLen; k < end - tagLen; k++) isStr[k] = true;
+          i = end - 1;
+        } else {
+          if (c === "'" || c === '"' || c === "`") {
+            inString = c;
+          }
+        }
+      }
+    }
+
+    scan(isString, false);
+
+    let out = "";
+    for (let i = 0; i < sql.length; i++) {
+      if (isString[i]) {
+        out += " ";
+      } else {
+        out += sql[i];
+      }
+    }
+    return out;
+  }
+
+  /** Return true if the SELECT appears to lack a bounding clause. */
   static _isUnboundedSelect(sql: string): boolean {
     if (!_UNBOUNDED_RE.test(sql)) return false;
-    return !_BOUNDED_KEYWORDS_RE.test(sql);
+    const masked = Policy._maskStringLiterals(sql);
+    return !_BOUNDED_KEYWORDS_RE.test(sql) || !_BOUNDED_KEYWORDS_RE.test(masked);
   }
 
   // ------------------------------------------------------------------
