@@ -410,12 +410,25 @@ export class Policy {
     scan(isComment2, true);
 
     let out = "";
+    let inCommentRun = false;
     for (let i = 0; i < sql.length; i++) {
       if (isComment1[i] !== isComment2[i]) {
         throw new Error("Ambiguous SQL comment boundaries");
       }
-      if (!isComment1[i]) {
+      if (isComment1[i]) {
+        // SQL engines treat a comment as whitespace, so collapse each
+        // comment run to a single space rather than deleting it. Deleting
+        // fuses the tokens it separated — `SELECT password/**/FROM users`
+        // would become `SELECT passwordFROM users`, hiding `\bFROM` from
+        // the unbounded-read heuristic while the driver still executes the
+        // original unbounded SELECT.
+        if (!inCommentRun) {
+          out += " ";
+          inCommentRun = true;
+        }
+      } else {
         out += sql[i];
+        inCommentRun = false;
       }
     }
     return out.trim();

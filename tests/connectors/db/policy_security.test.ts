@@ -57,6 +57,22 @@ describe("SQL policy parser security", () => {
     expect(Policy._isUnboundedSelect(sql)).toBe(true);
   });
 
+  it("treats a comment as a token separator when stripping", () => {
+    // Attack: a block comment used as inter-token whitespace. SQL engines
+    // treat comments as whitespace, so `SELECT password/**/FROM users` runs
+    // as an unbounded `SELECT password FROM users`. A stripper that deletes
+    // the comment outright yields `SELECT passwordFROM users`, so `\bFROM`
+    // never matches and the unbounded-read escalation is skipped while the
+    // driver still executes the original query.
+    expect(Policy._stripComments("SELECT password/**/FROM users")).toBe(
+      "SELECT password FROM users",
+    );
+    expect(Policy._isUnboundedSelect("SELECT password/**/FROM users")).toBe(true);
+
+    // Line comment as a separator before a newline behaves the same way.
+    expect(Policy._isUnboundedSelect("SELECT a -- c\nFROM users")).toBe(true);
+  });
+
   it("throws error for ambiguous dialect-specific escapes", () => {
     // Escape `\'` is ambiguous between MySQL and SQLite
     const sql2 = "SELECT 1 '\\''; DROP TABLE users;";
