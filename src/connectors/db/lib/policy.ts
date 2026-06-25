@@ -21,11 +21,11 @@
  * method without going through the SQL keyword path. Policy.checkQuery
  * accepts an optional driver and dispatches accordingly.
  */
-import { performance } from "node:perf_hooks";
 import type { PolicyDecision } from "narai-primitives/config";
 import type { DatabaseDriver } from "./drivers/base.js";
 import { logEvent, scrubSqlSecrets } from "./audit.js";
 import { DEFAULT_POLICY, type PolicyRules } from "./plugin_config.js";
+import { MemoryGrantStore, type GrantStore } from "./grant-store.js";
 
 /**
  * Possible outcomes of a db-internal policy check (wire format = lowercase
@@ -219,7 +219,11 @@ export class Policy {
   private readonly _approval_mode: ApprovalMode;
   private readonly _rules: PolicyRules;
   private _session_approved: boolean;
-  private readonly _grants: Map<string, number>; // grant_type -> expiry (ms, performance.now())
+  // grant_type -> expiry (wall-clock epoch ms). Backed by an injectable
+  // store so grants can persist across the connector's short-lived
+  // subprocess invocations (FileGrantStore) or stay in-process (default
+  // MemoryGrantStore).
+  private readonly _grants: GrantStore;
   // G-DB-AUDIT: grant_types that have already had a `grant_expired` event
   // emitted (de-dupes spam from repeated isGrantActive polling).
   private readonly _expired_logged: Set<string>;
@@ -227,6 +231,7 @@ export class Policy {
   constructor(
     approvalMode: string = "auto",
     rules: PolicyRules = DEFAULT_POLICY,
+    grantStore: GrantStore = new MemoryGrantStore(),
   ) {
     if (!_VALID_APPROVAL_MODES.has(approvalMode as ApprovalMode)) {
       // Match Python repr(): single-quoted string.
@@ -235,7 +240,7 @@ export class Policy {
     this._approval_mode = approvalMode as ApprovalMode;
     this._rules = rules;
     this._session_approved = false;
-    this._grants = new Map();
+    this._grants = grantStore;
     this._expired_logged = new Set();
   }
 
@@ -467,15 +472,18 @@ export class Policy {
    *
    * G-DB-AUDIT: emits a `grant_added` event with the grant type and TTL.
    *
-   * Lifetime scope: grants are in-process only. Expiry is measured with
-   * `performance.now()`, which is reset on every Node process start, so
-   * a new CLI invocation always begins with no active grants — even if
-   * a previous run added one seconds ago. Suitable for the CLI's
-   * single-invocation model; not suitable as a cross-process gate.
+   * Lifetime scope: depends on the injected `GrantStore`. With the default
+   * `MemoryGrantStore`, grants live only for the current process. With a
+   * `FileGrantStore`, they persist to disk and are visible to later CLI
+   * invocations. Expiry is recorded as a wall-clock epoch timestamp
+   * (`Date.now()`), which is required for cross-process comparison — a
+   * process-relative clock (`performance.now()`) would be meaningless once
+   * serialized and read by a different process.
    */
   addGrant(grantType: string, ttlSeconds: number = 300): void {
-    // performance.now() is process-relative; see JSDoc for lifetime scope.
-    this._grants.set(grantType, performance.now() + ttlSeconds * 1000);
+    // Date.now() is wall-clock epoch ms so the expiry survives serialization
+    // and is comparable across processes; see JSDoc for lifetime scope.
+    this._grants.set(grantType, Date.now() + ttlSeconds * 1000);
     logEvent({
       event_type: "grant_added",
       details: { grant_type: grantType, ttl_seconds: ttlSeconds },
@@ -492,7 +500,7 @@ export class Policy {
   isGrantActive(grantType: string): boolean {
     const expiry = this._grants.get(grantType);
     if (expiry === undefined) return false;
-    if (performance.now() < expiry) return true;
+    if (Date.now() < expiry) return true;
     if (!this._expired_logged.has(grantType)) {
       this._expired_logged.add(grantType);
       logEvent({
@@ -512,13 +520,11 @@ export class Policy {
  * low-level primitive (5-minute default, used for short-lived operations
  * like test scaffolding and administrative confirmations).
  *
- * Lifetime scope: grants live in memory only. Because `addGrant` uses
- * `performance.now()` — a process-relative monotonic clock — a grant
- * written in one CLI invocation does NOT carry into the next one, even
- * if `grant_duration_hours=8`. The "8 hour" default means "up to 8
- * wall-clock hours within a single long-running session," not "8
- * wall-clock hours across reboots." Persisting grants to disk is out
- * of scope for v2.
+ * Lifetime scope: depends on the `GrantStore` injected into `policy`.
+ * `addGrant` records a wall-clock epoch expiry (`Date.now()`), so with a
+ * `FileGrantStore` a grant written in one CLI invocation carries into the
+ * next for up to `grant_duration_hours`. With the default `MemoryGrantStore`
+ * the grant lives only for the current process.
  */
 export function grantFromEnv(
   policy: Policy,
