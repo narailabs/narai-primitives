@@ -170,6 +170,15 @@ interface DynamoQueryEnvelope {
 
 const READ_ONLY_OPS = new Set(["get", "query", "scan", "sample"]);
 
+/**
+ * Concurrency cap for the chunked `DescribeTable` fan-out in `getSchemaAsync`.
+ * Sized to roughly match the per-account `DescribeTable` TPS the AWS SDK
+ * tolerates with its default `maxAttempts: 3` retry; values much above this
+ * tend to hit `ProvisionedThroughputExceededException` on cold caches.
+ * Tune here if a deployment needs a different balance.
+ */
+const DESCRIBE_TABLE_CONCURRENCY = 10;
+
 // ---------------------------------------------------------------------------
 // Driver
 // ---------------------------------------------------------------------------
@@ -432,12 +441,31 @@ export class DynamoDriver extends DatabaseDriver {
             )
           : null;
 
+      const filteredNames = names.filter(
+        (name) => filterRe === null || filterRe.test(name),
+      );
+
+      // Fan out DescribeTable in bounded-concurrency chunks. Promise.all per
+      // chunk preserves table ordering in `out`; chunk size is capped by
+      // DESCRIBE_TABLE_CONCURRENCY to stay within AWS per-account TPS. Errors
+      // bubble to the outer try/catch to keep the prior all-or-nothing
+      // semantics — a partial schema would be silently misleading.
+      const descResults: Array<{ name: string; desc: DescribeTableOutput }> = [];
+      for (let i = 0; i < filteredNames.length; i += DESCRIBE_TABLE_CONCURRENCY) {
+        const chunk = filteredNames.slice(i, i + DESCRIBE_TABLE_CONCURRENCY);
+        const chunkResults = await Promise.all(
+          chunk.map(async (name) => {
+            const desc = (await client.send(
+              new module.DescribeTableCommand({ TableName: name }),
+            )) as DescribeTableOutput;
+            return { name, desc };
+          }),
+        );
+        descResults.push(...chunkResults);
+      }
+
       const out: Table[] = [];
-      for (const name of names) {
-        if (filterRe !== null && !filterRe.test(name)) continue;
-        const desc = (await client.send(
-          new module.DescribeTableCommand({ TableName: name }),
-        )) as DescribeTableOutput;
+      for (const { name, desc } of descResults) {
         const table = desc.Table;
         if (table === undefined) continue;
 
