@@ -10,8 +10,11 @@
  *     so every consumer (the per-connector hooks AND the hub's unified hook)
  *     evaluates the same way.
  *
- * Best-effort, not a security boundary. The engine fails open on parse
- * errors; callers are expected to handle missing/invalid manifests gracefully.
+ * Best-effort by default: the engine fails open on parse errors, so the
+ * default posture is not a security boundary. An opt-in fail-closed mode
+ * (the NARAI_GATE_ENFORCEMENT env var / a manifest `enforcement` field,
+ * applied by the PreToolUse dispatcher) turns parse and compile failures
+ * into hard denies. Callers still handle missing/invalid manifests.
  */
 
 import * as fs from "node:fs";
@@ -41,6 +44,13 @@ export interface GuardrailManifest {
   /** Source connector name; surfaces in deny messages. */
   name: string;
   rules: GuardrailRule[];
+  /**
+   * Optional opt-in enforcement posture for evaluating this manifest. When
+   * "fail_closed", failures to evaluate a rule become hard denies. Defaults
+   * to fail-open (best-effort) when absent. Applied by the PreToolUse
+   * dispatcher together with the NARAI_GATE_ENFORCEMENT env var.
+   */
+  enforcement?: "fail_open" | "fail_closed";
 }
 
 export interface BlockMatch {
@@ -90,7 +100,20 @@ function validateManifest(value: unknown, filePath: string): GuardrailManifest {
     }
     return r as GuardrailRule;
   });
-  return { version: 1, name: obj["name"] as string, rules };
+  const manifest: GuardrailManifest = {
+    version: 1,
+    name: obj["name"] as string,
+    rules,
+  };
+  if (obj["enforcement"] !== undefined) {
+    if (obj["enforcement"] !== "fail_open" && obj["enforcement"] !== "fail_closed") {
+      throw new Error(
+        `Guardrail manifest at ${filePath}: 'enforcement' must be "fail_open" or "fail_closed".`,
+      );
+    }
+    manifest.enforcement = obj["enforcement"];
+  }
+  return manifest;
 }
 
 /**

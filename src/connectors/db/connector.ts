@@ -43,6 +43,10 @@ const queryParams = z.object({
   approval_mode: z.string().optional(),
   max_rows: z.coerce.number().int().positive().default(1000),
   timeout_ms: z.coerce.number().int().positive().default(30000),
+  // Explicit per-run approval for grant_required: issues a read grant for the
+  // configured window so subsequent reads are allowed without re-prompting.
+  // Absent/false leaves the gate intact (default behavior unchanged).
+  approve_grant: z.coerce.boolean().optional(),
 });
 
 const schemaParams = z.object({
