@@ -121,5 +121,12 @@ describe("SQL policy parser security", () => {
     // Test Unicode identifiers
     const sql4 = "SELECT 1 AS é$tag$; DROP TABLE users; SELECT 2 AS é$tag$";
     expect(classifyStatements(sql4)).toEqual(["read", "admin", "read"]);
+
+    // Supplementary-plane identifier letter (`𐐀` is a UTF-16 surrogate pair):
+    // indexing a single code unit would see only the low surrogate and miss
+    // the `\p{L}` match, mistaking `$tag$` for a dollar quote that swallows the
+    // DROP into one READ. The preceding code point must be tested whole.
+    const sql5 = "SELECT 1 AS 𐐀$tag$; DROP TABLE users; SELECT 2 AS 𐐀$tag$";
+    expect(classifyStatements(sql5)).toEqual(["read", "admin", "read"]);
   });
 });

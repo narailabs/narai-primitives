@@ -124,13 +124,32 @@ export function classifySqlKeywords(sql: string): OperationType {
   return OperationType.ADMIN;
 }
 
+// Return the full Unicode code point immediately before `idx` as a string,
+// combining a UTF-16 surrogate pair so a supplementary-plane character (e.g.
+// `𐐀`, stored as two code units) is tested as one code point rather than as a
+// lone low surrogate. Returns null when there is no preceding character.
+function _precedingCodePoint(sql: string, idx: number): string | null {
+  if (idx <= 0) return null;
+  const prev = sql.charCodeAt(idx - 1);
+  if (prev >= 0xdc00 && prev <= 0xdfff && idx >= 2) {
+    const hi = sql.charCodeAt(idx - 2);
+    if (hi >= 0xd800 && hi <= 0xdbff) {
+      return sql.slice(idx - 2, idx);
+    }
+  }
+  return sql[idx - 1] as string;
+}
+
 function _dollarQuoteEnd(sql: string, startIdx: number): number {
   // A `$` preceded by an identifier character is part of that identifier, not
   // the start of a PostgreSQL dollar quote. Include SQL Server identifier-prefix
   // chars `#` (temp tables) and `@` (variables) so payloads like `#$tag$` are not
   // mistaken for a dollar quote that swallows a later `; DROP ...` into a single
-  // READ classification.
-  if (startIdx > 0 && /^[\p{L}\p{Nd}_$#@]$/u.test(sql[startIdx - 1] as string)) {
+  // READ classification. Test the full preceding code point so a supplementary-
+  // plane identifier letter (`𐐀$tag$`) is recognized — indexing a single UTF-16
+  // unit would see only the low surrogate and miss the `\p{L}` match.
+  const prevCp = _precedingCodePoint(sql, startIdx);
+  if (prevCp !== null && /^[\p{L}\p{Nd}_$#@]$/u.test(prevCp)) {
     return -1;
   }
 
