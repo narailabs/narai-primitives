@@ -221,21 +221,30 @@ async function onPreToolUse(cfg) {
     if (fs.existsSync(guardrailsPath)) {
       try {
         const toolkit = await loadToolkit();
-        if (toolkit) {
+        if (toolkit && typeof toolkit.findBlockingRule === "function") {
           const { findBlockingRule, defaultDenyMessage, loadGuardrailManifest } = toolkit;
-          if (typeof findBlockingRule === "function") {
-            const manifest = loadGuardrailManifest(guardrailsPath);
-            const match = findBlockingRule(command, [manifest]);
-            if (match) {
-              decisions.push({
-                decision: "deny",
-                reason: defaultDenyMessage(match),
-              });
-            }
+          const manifest = loadGuardrailManifest(guardrailsPath);
+          const match = findBlockingRule(command, [manifest]);
+          if (match) {
+            decisions.push({
+              decision: "deny",
+              reason: defaultDenyMessage(match),
+            });
           }
+        } else if (effectiveEnforcement(undefined) === "fail_closed") {
+          decisions.push({
+            decision: "deny",
+            reason: "fail-closed enforcement: db guardrail engine is unavailable",
+          });
         }
       } catch (err) {
         process.stderr.write(`dispatcher: db-guard failed (${err.message})\n`);
+        if (effectiveEnforcement(undefined) === "fail_closed") {
+          decisions.push({
+            decision: "deny",
+            reason: `fail-closed enforcement: db guardrail manifest could not be evaluated (${err.message})`,
+          });
+        }
       }
     }
   }

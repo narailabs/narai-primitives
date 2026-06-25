@@ -184,3 +184,41 @@ describe("dispatcher gates — fail-closed (subprocess)", () => {
     expect(res.stdout.trim()).toBe("");
   });
 });
+
+function makeDbRoot(guardrailsContent: string): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "fc-dbroot-"));
+  fs.writeFileSync(
+    path.join(root, "plugin-config.json"),
+    JSON.stringify({ name: "db", kind: "db" }),
+  );
+  fs.mkdirSync(path.join(root, "hooks"), { recursive: true });
+  fs.writeFileSync(path.join(root, "hooks", "guardrails.json"), guardrailsContent);
+  return root;
+}
+
+describe("dispatcher db-guard — fail-closed (subprocess)", () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const r of roots) fs.rmSync(r, { recursive: true, force: true });
+    roots.length = 0;
+  });
+
+  it("denies when guardrails.json will not load under fail_closed", async () => {
+    const root = makeDbRoot("{ not valid json");
+    roots.push(root);
+    const res = await runPreToolUse({
+      pluginRoot: root,
+      enforcement: "fail_closed",
+      stdin: BASH("psql mydb"),
+    });
+    const out = JSON.parse(res.stdout);
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+  });
+
+  it("allows (no output) a broken guardrails.json under default fail_open", async () => {
+    const root = makeDbRoot("{ not valid json");
+    roots.push(root);
+    const res = await runPreToolUse({ pluginRoot: root, stdin: BASH("psql mydb") });
+    expect(res.stdout.trim()).toBe("");
+  });
+});
