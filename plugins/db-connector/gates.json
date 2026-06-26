@@ -19,7 +19,15 @@
       "name": "jdbc_url",
       "decision": "deny",
       "reason": "A JDBC connection URL bypasses the connector. Route DB access through the sanctioned connector instead.",
-      "pattern": "[jJ][dD][bB][cC]:(postgresql|mysql|mariadb|sqlserver|oracle|sqlite|mongodb)://"
+      "pattern": "[jJ][dD][bB][cC]:(postgresql|mysql|mariadb|sqlserver|oracle|sqlite|mongodb)://",
+      "applies_to": ["Bash", "Write", "Edit"]
+    },
+    {
+      "name": "db_uri_credentials",
+      "decision": "deny",
+      "reason": "A database URI with embedded credentials is a credential/target leak. Route DB access through the sanctioned connector instead.",
+      "pattern": "(postgres(ql)?|mysql|mariadb|mongodb(\\+srv)?|mssql|sqlserver|oracle):\\/\\/[^:@\\/\\s]+:[^@\\/\\s]+@",
+      "applies_to": ["Bash", "Write", "Edit"]
     },
     {
       "name": "node_db_client_construct",
