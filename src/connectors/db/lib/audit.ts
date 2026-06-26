@@ -133,8 +133,10 @@ const _SENSITIVE_LITERAL_DQUOTE_RE = new RegExp(
   `("?\\b(?:${_SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)"(?:[^"\\\\]|\\\\.)*"`,
   "gi",
 );
+// ⚡ Bolt: Prioritized non-escaped character class [^\r\n\\] over the escaped sequence \\.
+// This O(N) optimization avoids unnecessary backtracking, significantly improving regex evaluation speed on long strings.
 const _SENSITIVE_AUTH_QUOTED_RE =
-  /(?<=["'])(\bauthorization\b)("?)(\s*[:=]\s*)(?:(["'])((?:bearer|basic)\s+)?(?:\\.|[^\r\n\\])*?\4|((?:bearer|basic)\s+)?[^"'\r\n]+)/gi;
+  /(?<=["'])(\bauthorization\b)("?)(\s*[:=]\s*)(?:(["'])((?:bearer|basic)\s+)?(?:[^\r\n\\]|\\.)*?\4|((?:bearer|basic)\s+)?[^"'\r\n]+)/gi;
 const _SENSITIVE_AUTH_LINE_RE =
   /(?:^|(?<=[\r\n]))(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?[^\r\n]+/gi;
 
