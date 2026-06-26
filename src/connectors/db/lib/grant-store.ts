@@ -164,3 +164,16 @@ export function shouldIssueReadGrant(
 ): boolean {
   return approvalMode === "grant_required" && approveGrant === true;
 }
+
+/**
+ * Whether to issue a session grant for `confirm_once` mode. As with reads,
+ * the explicit approval flag IS the human approval; absent it, nothing is
+ * seeded and the first read still escalates. The session grant lets a later
+ * (fresh-process) read proceed without re-prompting until it expires.
+ */
+export function shouldIssueSessionGrant(
+  approvalMode: string,
+  approveGrant: boolean,
+): boolean {
+  return approvalMode === "confirm_once" && approveGrant === true;
+}

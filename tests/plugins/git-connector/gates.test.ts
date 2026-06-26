@@ -6,10 +6,11 @@
  * without spawning a subprocess. Complements the end-to-end smoke tests
  * in `smoke.test.ts`.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { expandPattern } from "../../../plugin-hooks/dispatcher.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const GATES_PATH = path.resolve(
@@ -60,7 +61,7 @@ function classify(
     if (disabled.has(rule.name)) continue;
     let re: RegExp;
     try {
-      re = new RegExp(rule.pattern);
+      re = new RegExp(expandPattern(rule.pattern));
     } catch {
       continue;
     }
@@ -101,18 +102,64 @@ describe("gates.json — push_main (deny)", () => {
   });
 });
 
-describe("gates.json — force_push (ask)", () => {
+describe("gates.json — force_push (deny) vs force-with-lease (ask)", () => {
   it.each([
     "git push --force",
     "git push -f origin feature",
-    "git push --force-with-lease",
-    "git push --force-with-lease origin feature",
-  ])("asks on %s", (cmd) => {
-    expect(classify(cmd)).toEqual({ name: "force_push", decision: "ask" });
+    "git push --force origin feature",
+  ])("denies bare force %s", (cmd) => {
+    expect(classify(cmd)).toEqual({ name: "force_push", decision: "deny" });
   });
 
-  it("force-push to main still denies (deny > ask)", () => {
+  it.each([
+    "git push --force-with-lease",
+    "git push --force-with-lease origin feature",
+  ])("asks on lease-guarded force %s", (cmd) => {
+    expect(classify(cmd)).toEqual({ name: "force_with_lease", decision: "ask" });
+  });
+
+  it("force-push to a protected branch still denies", () => {
     expect(classify("git push --force origin main")?.decision).toBe("deny");
+  });
+});
+
+describe("gates.json — mirror_push (deny)", () => {
+  it.each([
+    "git push --mirror",
+    "git push --mirror origin",
+  ])("denies %s", (cmd) => {
+    expect(classify(cmd)).toEqual({ name: "mirror_push", decision: "deny" });
+  });
+});
+
+describe("gates.json — configurable protected branches", () => {
+  const orig = process.env.NARAI_GIT_PROTECTED_BRANCHES;
+  afterEach(() => {
+    if (orig === undefined) delete process.env.NARAI_GIT_PROTECTED_BRANCHES;
+    else process.env.NARAI_GIT_PROTECTED_BRANCHES = orig;
+  });
+
+  it("denies main/master by default", () => {
+    delete process.env.NARAI_GIT_PROTECTED_BRANCHES;
+    expect(classify("git push origin main")?.name).toBe("push_main");
+    expect(classify("git push origin master")?.name).toBe("push_main");
+  });
+
+  it("denies an operator-configured protected branch", () => {
+    process.env.NARAI_GIT_PROTECTED_BRANCHES = "release,prod";
+    expect(classify("git push origin release")?.name).toBe("push_main");
+    expect(classify("git push origin prod")?.name).toBe("push_main");
+  });
+
+  it("does not deny an unprotected branch even with extras configured", () => {
+    process.env.NARAI_GIT_PROTECTED_BRANCHES = "release";
+    expect(classify("git push origin my-feature")?.name).toBe("push");
+  });
+});
+
+describe("gates.json — enforcement posture", () => {
+  it("declares fail_closed", () => {
+    expect(manifest.enforcement).toBe("fail_closed");
   });
 });
 

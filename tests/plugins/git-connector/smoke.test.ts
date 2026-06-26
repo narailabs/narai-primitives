@@ -77,7 +77,7 @@ describe("smoke: deny path", () => {
     expect(r.exitCode).toBe(0);
     const d = parseDecision(r.stdout);
     expect(d!.permissionDecision).toBe("deny");
-    expect(d!.permissionDecisionReason).toMatch(/main\/master/i);
+    expect(d!.permissionDecisionReason).toMatch(/protected branch/i);
   });
 });
 
@@ -91,10 +91,21 @@ describe("smoke: ask path", () => {
     expect(parseDecision(r.stdout)!.permissionDecision).toBe("ask");
   });
 
-  it("asks on force push to a feature branch", async () => {
+  it("denies bare force push to a feature branch", async () => {
     const r = await runHook({
       tool_name: "Bash",
       tool_input: { command: "git push --force origin feature" },
+      hook_event_name: "PreToolUse",
+    });
+    const d = parseDecision(r.stdout);
+    expect(d!.permissionDecision).toBe("deny");
+    expect(d!.permissionDecisionReason).toMatch(/force/i);
+  });
+
+  it("asks on lease-guarded force push to a feature branch", async () => {
+    const r = await runHook({
+      tool_name: "Bash",
+      tool_input: { command: "git push --force-with-lease origin feature" },
       hook_event_name: "PreToolUse",
     });
     const d = parseDecision(r.stdout);
@@ -205,7 +216,7 @@ describe("smoke: compound commands", () => {
       hook_event_name: "PreToolUse",
     });
     const d = parseDecision(r.stdout);
-    expect(d!.permissionDecision).toBe("ask");
+    expect(d!.permissionDecision).toBe("deny");
     expect(d!.permissionDecisionReason).toMatch(/force/i);
   });
 });

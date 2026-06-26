@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "name": "db-strict-bare",
+  "enforcement": "fail_closed",
+  "rules": [
+    {
+      "name": "raw_dml_bare",
+      "decision": "deny",
+      "reason": "A bare leading DML/DDL statement bypasses the connector. Route data/schema changes through the sanctioned connector instead.",
+      "pattern": "^\\s*([iI][nN][sS][eE][rR][tT]\\s+[iI][nN][tT][oO]|[uU][pP][dD][aA][tT][eE]\\s+\\S+\\s+[sS][eE][tT]\\b|[dD][eE][lL][eE][tT][eE]\\s+[fF][rR][oO][mM]|[dD][rR][oO][pP]\\s+[tT][aA][bB][lL][eE]|[tT][rR][uU][nN][cC][aA][tT][eE]\\s+([tT][aA][bB][lL][eE]\\s+)?)"
+    }
+  ]
+}

@@ -71,6 +71,10 @@ connector specifically — overriding a server target and policy per-repo, and t
 admin/privilege ceiling that an overlay cannot bypass — see
 [`docs/db-layered-config.md`](docs/db-layered-config.md).
 
+External-write gating for the API connectors (asking or denying state-changing
+HTTP before it runs) is operator-configurable via per-connector `gates.json`
+manifests. See [`docs/external-write-gating.md`](docs/external-write-gating.md).
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Contributors touching `src/toolkit/agent_resolver.ts`, `src/hub/index.ts`, `src/credentials/`, or `src/connectors/db/` should also read [`docs/architecture-invariants.md`](docs/architecture-invariants.md).

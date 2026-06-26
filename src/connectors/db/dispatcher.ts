@@ -36,6 +36,7 @@ import {
   FileGrantStore,
   grantStorePathFor,
   shouldIssueReadGrant,
+  shouldIssueSessionGrant,
   type GrantStore,
 } from "./lib/grant-store.js";
 import { SQLiteDriver } from "./lib/drivers/sqlite.js";
@@ -663,22 +664,29 @@ async function runOnEnv(
   // they agree within this run. Other modes keep the default in-process
   // store (behavior unchanged).
   let grantStore: GrantStore | undefined;
-  if (approvalMode === "grant_required" || grantDurationHours !== undefined) {
+  if (
+    approvalMode === "grant_required" ||
+    approvalMode === "confirm_once" ||
+    grantDurationHours !== undefined
+  ) {
     grantStore = new FileGrantStore(grantStorePathFor(serverName));
   }
 
-  // Issuance: an explicit `approve_grant` on this run is the human approval
-  // authorizing reads against this target for the window. Record the grant
-  // BEFORE the gate so the approved read is permitted to run and subsequent
-  // reads within the window need no re-prompt. Without the flag nothing is
-  // seeded, so the gate stands by default. Only `read` is ever granted.
+  // Issuance: an explicit `approve_grant` on this run is the human approval.
+  // Record the grant BEFORE the gate so the approved read is permitted to run
+  // and subsequent reads need no re-prompt. Without the flag nothing is
+  // seeded, so the gate stands by default. grant_required issues a `read`
+  // grant for its window; confirm_once issues a `session` grant so the
+  // approve-once decision carries across short-lived invocations. Neither
+  // ever grants admin/privilege.
   if (action === "query" && grantStore !== undefined) {
     const q = v as QueryParamsValidated;
+    const ttlSeconds =
+      grantDurationHours !== undefined ? grantDurationHours * 3600 : 300;
     if (shouldIssueReadGrant(approvalMode, q.approve_grant === true)) {
-      const ttlSeconds =
-        grantDurationHours !== undefined ? grantDurationHours * 3600 : 300;
-      const issuer = new Policy(approvalMode, rules, grantStore);
-      issuer.addGrant("read", ttlSeconds);
+      new Policy(approvalMode, rules, grantStore).addGrant("read", ttlSeconds);
+    } else if (shouldIssueSessionGrant(approvalMode, q.approve_grant === true)) {
+      new Policy(approvalMode, rules, grantStore).addGrant("session", ttlSeconds);
     }
   }
 
