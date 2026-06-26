@@ -222,3 +222,75 @@ describe("dispatcher db-guard — fail-closed (subprocess)", () => {
     expect(res.stdout.trim()).toBe("");
   });
 });
+
+describe("dispatcher — fail-closed on unparseable input (FIX 1a)", () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const r of roots) fs.rmSync(r, { recursive: true, force: true });
+    roots.length = 0;
+  });
+
+  it("denies non-JSON stdin under fail_closed", async () => {
+    const root = makeRoot({});
+    roots.push(root);
+    const res = await runPreToolUse({
+      pluginRoot: root,
+      enforcement: "fail_closed",
+      stdin: "this is not json {",
+    });
+    const out = JSON.parse(res.stdout);
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+  });
+
+  it("allows (no output) non-JSON stdin under default fail_open", async () => {
+    const root = makeRoot({});
+    roots.push(root);
+    const res = await runPreToolUse({ pluginRoot: root, stdin: "this is not json {" });
+    expect(res.stdout.trim()).toBe("");
+  });
+
+  it("still allows a valid-but-unmatched command under fail_closed", async () => {
+    const root = makeRoot({
+      "gates.json": JSON.stringify({
+        rules: [{ name: "psql", decision: "deny", pattern: "psql" }],
+      }),
+    });
+    roots.push(root);
+    const res = await runPreToolUse({
+      pluginRoot: root,
+      enforcement: "fail_closed",
+      stdin: BASH("echo hello world"),
+    });
+    expect(res.stdout.trim()).toBe("");
+  });
+});
+
+describe("dispatcher db-guard — honors manifest enforcement field (FIX 1b)", () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const r of roots) fs.rmSync(r, { recursive: true, force: true });
+    roots.length = 0;
+  });
+
+  // Valid JSON (so `enforcement` is readable) but an invalid manifest shape
+  // (version 2) so loadGuardrailManifest throws — exercising the engine-throw
+  // path while the manifest's own fail_closed field is available.
+  it("denies via the manifest enforcement field with NO env var set", async () => {
+    const root = makeDbRoot(
+      JSON.stringify({ version: 2, name: "x", enforcement: "fail_closed", rules: [] }),
+    );
+    roots.push(root);
+    const res = await runPreToolUse({ pluginRoot: root, stdin: BASH("psql mydb") });
+    const out = JSON.parse(res.stdout);
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+  });
+
+  it("allows (no output) the same manifest shape when it declares fail_open", async () => {
+    const root = makeDbRoot(
+      JSON.stringify({ version: 2, name: "x", enforcement: "fail_open", rules: [] }),
+    );
+    roots.push(root);
+    const res = await runPreToolUse({ pluginRoot: root, stdin: BASH("psql mydb") });
+    expect(res.stdout.trim()).toBe("");
+  });
+});

@@ -228,6 +228,17 @@ async function onPreToolUse(cfg) {
   try {
     payload = JSON.parse(stdin);
   } catch {
+    // Unparseable tool input: under fail-closed, deny rather than fall open.
+    // Env-only here (there is no manifest to read an enforcement field from).
+    if (effectiveEnforcement(undefined) === "fail_closed") {
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: "fail-closed: unparseable tool input/command",
+        },
+      }));
+    }
     return;
   }
   // Derive the tool being gated and the text to scan. Bash scans the
@@ -261,6 +272,17 @@ async function onPreToolUse(cfg) {
       "guardrails.json",
     );
     if (fs.existsSync(guardrailsPath)) {
+      // Cheap pre-read of the manifest's own `enforcement` field so the
+      // engine-unavailable and engine-throw paths below can honor a
+      // `fail_closed` declared by the manifest, not only the env var. If the
+      // file itself will not parse, this stays undefined (env-only), matching
+      // the documented "a fully corrupt manifest needs the env var" rule.
+      let dbEnforcement;
+      try {
+        dbEnforcement = JSON.parse(fs.readFileSync(guardrailsPath, "utf-8")).enforcement;
+      } catch {
+        dbEnforcement = undefined;
+      }
       try {
         const toolkit = await loadToolkit();
         if (toolkit && typeof toolkit.findBlockingRule === "function") {
@@ -273,7 +295,7 @@ async function onPreToolUse(cfg) {
               reason: defaultDenyMessage(match),
             });
           }
-        } else if (effectiveEnforcement(undefined) === "fail_closed") {
+        } else if (effectiveEnforcement(dbEnforcement) === "fail_closed") {
           decisions.push({
             decision: "deny",
             reason: "fail-closed enforcement: db guardrail engine is unavailable",
@@ -281,7 +303,7 @@ async function onPreToolUse(cfg) {
         }
       } catch (err) {
         process.stderr.write(`dispatcher: db-guard failed (${err.message})\n`);
-        if (effectiveEnforcement(undefined) === "fail_closed") {
+        if (effectiveEnforcement(dbEnforcement) === "fail_closed") {
           decisions.push({
             decision: "deny",
             reason: `fail-closed enforcement: db guardrail manifest could not be evaluated (${err.message})`,
@@ -529,8 +551,21 @@ export function applyGatesManifest(manifest, source, text, disabled, decisions, 
   const enforcement = effectiveEnforcement(manifest.enforcement);
   // Bash commands are split on chaining operators so anchored rules apply
   // per-segment. File content (Write/Edit) is matched as a single unit so
-  // characters like `;` or `|` inside the file do not fragment it.
-  const segments = scanTool === "Bash" ? splitCompound(text) : [text];
+  // characters like `;` or `|` inside the file do not fragment it. If the
+  // splitter throws on pathological input, fail closed denies rather than
+  // silently skipping the command.
+  let segments;
+  try {
+    segments = scanTool === "Bash" ? splitCompound(text) : [text];
+  } catch {
+    if (enforcement === "fail_closed") {
+      decisions.push({
+        decision: "deny",
+        reason: `fail-closed enforcement: ${source} could not tokenize the command`,
+      });
+    }
+    return;
+  }
   for (const rule of manifest.rules ?? []) {
     if (
       !["deny", "ask", "allow"].includes(rule.decision) ||
