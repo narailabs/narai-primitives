@@ -665,7 +665,9 @@ export class Policy {
     }
 
     if (mode === "confirm_once") {
-      if (this._session_approved) {
+      // In-process approval OR a persisted session grant (issued on a prior
+      // approval and durable across short-lived invocations) allows the read.
+      if (this._session_approved || this.isGrantActive("session")) {
         return { decision: "allow", reason: "session approved" };
       }
       return {
