@@ -1,18 +1,31 @@
 {
   "version": 1,
   "name": "git",
+  "enforcement": "fail_closed",
   "rules": [
     {
       "name": "push_main",
       "decision": "deny",
-      "reason": "Pushing to main/master is denied by policy. Open a PR instead.",
-      "pattern": "^git\\s+push\\b.*\\b(main|master)\\b"
+      "reason": "Pushing to a protected branch is denied by policy. Open a PR instead.",
+      "pattern": "^git\\s+push\\b.*\\b__PROTECTED_BRANCHES__\\b"
     },
     {
       "name": "force_push",
+      "decision": "deny",
+      "reason": "Force push rewrites remote history and is denied. Use --force-with-lease if a force is truly required.",
+      "pattern": "^git\\s+push\\b.*\\s(--force(?!-with-lease)\\b|-f\\b)"
+    },
+    {
+      "name": "force_with_lease",
       "decision": "ask",
-      "reason": "Force push rewrites remote history. Confirm before proceeding.",
-      "pattern": "^git\\s+push\\b.*\\s(--force\\b|--force-with-lease\\b|-f\\b)"
+      "reason": "Lease-guarded force push rewrites remote history. Confirm before proceeding.",
+      "pattern": "^git\\s+push\\b.*\\s--force-with-lease\\b"
+    },
+    {
+      "name": "mirror_push",
+      "decision": "deny",
+      "reason": "git push --mirror overwrites all remote refs and is denied.",
+      "pattern": "^git\\s+push\\b.*\\s--mirror\\b"
     },
     {
       "name": "delete_branch_remote",

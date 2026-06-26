@@ -539,6 +539,26 @@ export function effectiveEnforcement(manifestEnforcement) {
 }
 
 /**
+ * Expand the `__PROTECTED_BRANCHES__` token in a gate pattern into a
+ * regex-escaped alternation of the default protected branches (main, master)
+ * plus any names in the NARAI_GIT_PROTECTED_BRANCHES env var (comma-separated).
+ * Operator-provided names are regex-escaped, so this cannot inject regex.
+ * Patterns without the token are returned unchanged (backward compatible).
+ */
+export function expandPattern(pattern) {
+  if (typeof pattern !== "string" || !pattern.includes("__PROTECTED_BRANCHES__")) {
+    return pattern;
+  }
+  const extra = (process.env.NARAI_GIT_PROTECTED_BRANCHES ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const branches = ["main", "master", ...extra];
+  const escaped = branches.map((b) => b.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  return pattern.replace(/__PROTECTED_BRANCHES__/g, `(?:${escaped.join("|")})`);
+}
+
+/**
  * Apply a parsed gates.json manifest to a command. Rules with invalid
  * shape, disabled names, or uncompilable patterns are skipped. Anchored
  * patterns match per-segment so chaining (`echo ok; psql ...`) can't bypass.
@@ -578,7 +598,7 @@ export function applyGatesManifest(manifest, source, text, disabled, decisions, 
     const appliesTo = Array.isArray(rule.applies_to) ? rule.applies_to : ["Bash"];
     if (!appliesTo.includes(scanTool)) continue;
     let re;
-    try { re = new RegExp(rule.pattern); } catch {
+    try { re = new RegExp(expandPattern(rule.pattern)); } catch {
       if (enforcement === "fail_closed") {
         decisions.push({
           decision: "deny",
