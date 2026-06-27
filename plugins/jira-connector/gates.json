@@ -3,10 +3,12 @@
   "name": "jira",
   "rules": [
     {
-      "name": "jira_state_changing_http",
+      "name": "jira_external_write",
+      "type": "external_write",
       "decision": "ask",
-      "reason": "This looks like a state-changing HTTP request (POST/PUT/DELETE/PATCH) to a Jira/Atlassian host. Confirm before mutating remote issue data. This is a conservative example preset; customize the host and verbs in your own gates.json.",
-      "pattern": "\\b(curl|http|https|wget)\\b.*(\\s-X\\s+(POST|PUT|DELETE|PATCH)\\b|\\s--request\\s+(POST|PUT|DELETE|PATCH)\\b).*\\b(atlassian\\.net|jira)\\b|\\b(curl|http|https|wget)\\b.*\\b(atlassian\\.net|jira)\\b.*(\\s-X\\s+(POST|PUT|DELETE|PATCH)\\b|\\s--request\\s+(POST|PUT|DELETE|PATCH)\\b)"
+      "reason": "State-changing HTTP request (POST/PUT/DELETE/PATCH) to an Atlassian Cloud host. Confirm before mutating remote issue data. This is a conservative example preset; add your own host(s) to allowed_hosts in ~/.connectors/connectors/jira/gates.json.",
+      "methods": ["POST", "PUT", "DELETE", "PATCH"],
+      "allowed_hosts": ["atlassian.net"]
     }
   ]
 }

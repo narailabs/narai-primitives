@@ -9,10 +9,12 @@
       "pattern": "^glab\\s+mr\\s+create\\b(?!.*\\s-?-draft\\b)|\\bcurl\\b(?!.*\\bdraft\\b).*(\\s-X\\s+POST\\b|\\s--request\\s+POST\\b).*\\bmerge_requests\\b|\\bcurl\\b(?!.*\\bdraft\\b).*\\bmerge_requests\\b.*(\\s-X\\s+POST\\b|\\s--request\\s+POST\\b)"
     },
     {
-      "name": "gitlab_state_changing_http",
+      "name": "gitlab_external_write",
+      "type": "external_write",
       "decision": "ask",
-      "reason": "This looks like a state-changing HTTP request (POST/PUT/DELETE/PATCH) to a GitLab host. Confirm before mutating remote data. This is a conservative example preset; customize the host and verbs in your own gates.json.",
-      "pattern": "\\b(curl|http|https|wget)\\b.*(\\s-X\\s+(POST|PUT|DELETE|PATCH)\\b|\\s--request\\s+(POST|PUT|DELETE|PATCH)\\b).*\\bgitlab\\b|\\b(curl|http|https|wget)\\b.*\\bgitlab\\b.*(\\s-X\\s+(POST|PUT|DELETE|PATCH)\\b|\\s--request\\s+(POST|PUT|DELETE|PATCH)\\b)"
+      "reason": "State-changing HTTP request (POST/PUT/DELETE/PATCH) to a GitLab host. Confirm before mutating remote data. This is a conservative example preset; set allowed_hosts to your GitLab host (gitlab.com or your self-hosted domain) in ~/.connectors/connectors/gitlab/gates.json.",
+      "methods": ["POST", "PUT", "DELETE", "PATCH"],
+      "allowed_hosts": ["gitlab.com"]
     }
   ]
 }

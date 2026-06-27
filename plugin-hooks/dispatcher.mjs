@@ -559,14 +559,89 @@ export function expandPattern(pattern) {
   return pattern.replace(/__PROTECTED_BRANCHES__/g, `(?:${escaped.join("|")})`);
 }
 
+function escapeRe(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Turn a literal string into a case-insensitive regex fragment via character
+// classes. Used for verbs and hostnames so the matcher needs no global `i`
+// flag (which would wrongly conflate curl's case-sensitive `-X` method flag
+// with `-x`, the proxy flag).
+function ciFragment(s) {
+  return s.replace(/[a-zA-Z]/g, (c) => `[${c.toLowerCase()}${c.toUpperCase()}]`);
+}
+
+/**
+ * Build a predicate `(segment) => boolean` for an `external_write` gate rule.
+ * It fires when a state-changing HTTP request targets an allowlisted host, or
+ * a configured write CLI subcommand appears. The host is matched at a real URL
+ * host boundary — immediately after `scheme://` (and optional `userinfo@`),
+ * consuming whole dotted labels and ending at a host delimiter — so an
+ * allowlisted host cannot be spoofed via path, query, userinfo, subdomain
+ * suffix (`atlassian.net.evil.com`) or label prefix (`evil-atlassian.net`).
+ * Verbs cover curl `-X`/`--request`, wget `--method`, and HTTPie's positional
+ * `http[s] VERB <url>` form. Throws on a malformed rule shape (so the caller
+ * can fail closed).
+ */
+export function buildExternalWriteMatcher(rule) {
+  const methods = rule.methods;
+  const hosts = rule.allowed_hosts;
+  const writeCli = rule.write_cli;
+  if (
+    !Array.isArray(methods) || methods.length === 0 ||
+    !methods.every((m) => typeof m === "string" && m.length > 0)
+  ) {
+    throw new Error("external_write: 'methods' must be a non-empty string array");
+  }
+  if (
+    !Array.isArray(hosts) ||
+    !hosts.every((h) => typeof h === "string" && h.length > 0)
+  ) {
+    throw new Error("external_write: 'allowed_hosts' must be a string array");
+  }
+  if (
+    writeCli !== undefined &&
+    (!Array.isArray(writeCli) ||
+      !writeCli.every((c) => typeof c === "string" && c.length > 0))
+  ) {
+    throw new Error("external_write: 'write_cli' must be a string array of subcommands");
+  }
+  const VERB = `(?:${methods.map((m) => ciFragment(escapeRe(m))).join("|")})`;
+  const HOST = `(?:${hosts.map((h) => ciFragment(escapeRe(h))).join("|")})`;
+  const BOUND = `(?=[:/?#\\s'"]|$)`;
+  const SUB = `(?:[A-Za-z0-9\\-]+\\.)*`;
+  const USER = `(?:[^/?#\\s@'"]*@)?`;
+  const SCHEME = `[A-Za-z][A-Za-z0-9+.\\-]*:\\/\\/`;
+  // A URL whose host is allowlisted (anchored to scheme:// + optional userinfo).
+  const urlHostRe = new RegExp(`${SCHEME}${USER}${SUB}${HOST}${BOUND}`);
+  // curl `-X`/`--request` (case-sensitive flag) or wget `--method`, then a verb.
+  const verbFlagRe = new RegExp(
+    `(?:^|\\s)(?:-X\\s*|--request[\\s=]+|--method[\\s=]+)${VERB}\\b`,
+  );
+  // HTTPie positional form at the start of the segment: `http[s] VERB <url>`.
+  const httpieRe = new RegExp(
+    `^\\s*https?\\s+${VERB}\\s+(?:${SCHEME})?${USER}${SUB}${HOST}${BOUND}`,
+  );
+  const cliRes = (writeCli ?? []).map(
+    (c) => new RegExp(`\\b${c.trim().split(/\s+/).map(escapeRe).join("\\s+")}\\b`),
+  );
+  return (segment) => {
+    if (verbFlagRe.test(segment) && urlHostRe.test(segment)) return true;
+    if (httpieRe.test(segment)) return true;
+    for (const r of cliRes) if (r.test(segment)) return true;
+    return false;
+  };
+}
+
 /**
  * Apply a parsed gates.json manifest to a command. Rules with invalid
  * shape, disabled names, or uncompilable patterns are skipped. Anchored
  * patterns match per-segment so chaining (`echo ok; psql ...`) can't bypass.
  *
  * Under fail-closed enforcement (env var or the manifest's `enforcement`
- * field), a rule whose pattern will not compile becomes a hard deny instead
- * of being silently skipped — we cannot prove the command is safe.
+ * field), a rule whose pattern will not compile (or whose external_write
+ * shape is malformed) becomes a hard deny instead of being silently skipped
+ * — we cannot prove the command is safe.
  */
 export function applyGatesManifest(manifest, source, text, disabled, decisions, scanTool = "Bash") {
   const enforcement = effectiveEnforcement(manifest.enforcement);
@@ -588,28 +663,46 @@ export function applyGatesManifest(manifest, source, text, disabled, decisions, 
     return;
   }
   for (const rule of manifest.rules ?? []) {
-    if (
-      !["deny", "ask", "allow"].includes(rule.decision) ||
-      typeof rule.pattern !== "string"
-    ) continue;
+    if (!["deny", "ask", "allow"].includes(rule.decision)) continue;
     if (typeof rule.name === "string" && disabled.has(rule.name)) continue;
     // A rule applies to a tool only if listed in `applies_to`. Default is
     // Bash-only, so every existing rule keeps its current behavior and is
     // skipped on Write/Edit unless it explicitly opts in.
     const appliesTo = Array.isArray(rule.applies_to) ? rule.applies_to : ["Bash"];
     if (!appliesTo.includes(scanTool)) continue;
-    let re;
-    try { re = new RegExp(expandPattern(rule.pattern)); } catch {
-      if (enforcement === "fail_closed") {
-        decisions.push({
-          decision: "deny",
-          reason: `fail-closed enforcement: ${source} gate rule '${rule.name ?? "rule"}' has an invalid pattern`,
-        });
+
+    // A rule is either a declarative `external_write` (host-allowlist) rule or
+    // a `pattern` (regex) rule. Both reduce to a `(segment) => boolean` matcher.
+    let matchFn;
+    if (rule.type === "external_write") {
+      try {
+        matchFn = buildExternalWriteMatcher(rule);
+      } catch {
+        if (enforcement === "fail_closed") {
+          decisions.push({
+            decision: "deny",
+            reason: `fail-closed enforcement: ${source} external-write rule '${rule.name ?? "rule"}' is malformed`,
+          });
+        }
+        continue;
       }
-      continue;
+    } else {
+      if (typeof rule.pattern !== "string") continue;
+      let re;
+      try { re = new RegExp(expandPattern(rule.pattern)); } catch {
+        if (enforcement === "fail_closed") {
+          decisions.push({
+            decision: "deny",
+            reason: `fail-closed enforcement: ${source} gate rule '${rule.name ?? "rule"}' has an invalid pattern`,
+          });
+        }
+        continue;
+      }
+      matchFn = (segment) => re.test(segment);
     }
+
     for (const segment of segments) {
-      if (re.test(segment)) {
+      if (matchFn(segment)) {
         decisions.push({
           decision: rule.decision,
           reason: rule.reason ?? `${source} gate: ${rule.name ?? "rule"}`,
