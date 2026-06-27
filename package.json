@@ -124,6 +124,11 @@
     "marklassian": "^1.2.1",
     "zod": "^3.23.0"
   },
+  "overrides": {
+    "@anthropic-ai/claude-agent-sdk": {
+      "zod": "$zod"
+    }
+  },
   "optionalDependencies": {
     "@aws-sdk/client-cloudwatch": "^3.1030.0",
     "@aws-sdk/client-dynamodb": "^3.1030.0",

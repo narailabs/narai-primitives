@@ -229,8 +229,9 @@ async function onPreToolUse(cfg) {
     payload = JSON.parse(stdin);
   } catch {
     // Unparseable tool input: under fail-closed, deny rather than fall open.
-    // Env-only here (there is no manifest to read an enforcement field from).
-    if (effectiveEnforcement(undefined) === "fail_closed") {
+    // No manifest to read here, so the posture comes from the env var or the
+    // plugin-config default (cfg.enforcement).
+    if (effectiveEnforcement(cfg.enforcement) === "fail_closed") {
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
@@ -333,7 +334,7 @@ async function onPreToolUse(cfg) {
       process.stderr.write(
         `dispatcher: plugin-root gate scan failed (${err.message})\n`,
       );
-      if (effectiveEnforcement(undefined) === "fail_closed") {
+      if (effectiveEnforcement(cfg.enforcement) === "fail_closed") {
         decisions.push({
           decision: "deny",
           reason: `fail-closed enforcement: gates manifest at ${pluginGatesFile} could not be parsed`,
@@ -368,7 +369,7 @@ async function onPreToolUse(cfg) {
         process.stderr.write(
           `dispatcher: gate scan failed for ${gatesFile} (${err.message})\n`,
         );
-        if (effectiveEnforcement(undefined) === "fail_closed") {
+        if (effectiveEnforcement(cfg.enforcement) === "fail_closed") {
           decisions.push({
             decision: "deny",
             reason: `fail-closed enforcement: gates manifest at ${gatesFile} could not be parsed`,
@@ -558,14 +559,124 @@ export function expandPattern(pattern) {
   return pattern.replace(/__PROTECTED_BRANCHES__/g, `(?:${escaped.join("|")})`);
 }
 
+function escapeRe(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Turn a literal string into a case-insensitive regex fragment via character
+// classes. Used for verbs and hostnames so the matcher needs no global `i`
+// flag (which would wrongly conflate curl's case-sensitive `-X` method flag
+// with `-x`, the proxy flag).
+function ciFragment(s) {
+  return s.replace(/[a-zA-Z]/g, (c) => `[${c.toLowerCase()}${c.toUpperCase()}]`);
+}
+
+/**
+ * Build a predicate `(segment) => boolean` for an `external_write` gate rule.
+ * It fires when a state-changing HTTP request targets an allowlisted host, or
+ * a configured write CLI subcommand appears. The host is matched at a real URL
+ * host boundary — immediately after `scheme://` (and optional `userinfo@`),
+ * consuming whole dotted labels and ending at a host delimiter — so an
+ * allowlisted host cannot be spoofed via path, query, userinfo, subdomain
+ * suffix (`atlassian.net.evil.com`) or label prefix (`evil-atlassian.net`).
+ * Verbs cover curl `-X`/`--request`, wget `--method`, and HTTPie's positional
+ * `http[s] VERB <url>` form. Throws on a malformed rule shape (so the caller
+ * can fail closed).
+ */
+export function buildExternalWriteMatcher(rule) {
+  const methods = rule.methods;
+  const hosts = rule.allowed_hosts;
+  const writeCli = rule.write_cli;
+  if (
+    !Array.isArray(methods) || methods.length === 0 ||
+    !methods.every((m) => typeof m === "string" && m.length > 0)
+  ) {
+    throw new Error("external_write: 'methods' must be a non-empty string array");
+  }
+  if (
+    !Array.isArray(hosts) ||
+    !hosts.every((h) => typeof h === "string" && h.length > 0)
+  ) {
+    throw new Error("external_write: 'allowed_hosts' must be a string array");
+  }
+  if (
+    writeCli !== undefined &&
+    (!Array.isArray(writeCli) ||
+      !writeCli.every((c) => typeof c === "string" && c.length > 0))
+  ) {
+    throw new Error("external_write: 'write_cli' must be a string array of subcommands");
+  }
+  const methodSet = new Set(methods.map((m) => String(m).toUpperCase()));
+  const VERB = `(?:${methods.map((m) => ciFragment(escapeRe(m))).join("|")})`;
+  const HOST = `(?:${hosts.map((h) => ciFragment(escapeRe(h))).join("|")})`;
+  // Host matched at a real URL host position: at a token start, or after an
+  // optional `scheme:/[/]` and optional `userinfo@`. curl accepts a missing
+  // scheme (defaults to http) and a single slash; the LAST `@` delimits
+  // userinfo. Whole dotted labels are consumed and a trailing FQDN dot is
+  // tolerated, so an allowlisted host cannot be spoofed via path, query,
+  // userinfo, a subdomain suffix (`atlassian.net.evil.com`), or a label prefix
+  // (`evil-atlassian.net`).
+  const TOKEN = `(?:^|[\\s'"=])`;
+  const SCHEME = `(?:[A-Za-z][A-Za-z0-9+.\\-]*:\\/{1,2})?`;
+  const USER = `(?:[^/?#\\s'"]*@)?`;
+  const SUB = `(?:[A-Za-z0-9\\-]+\\.)*`;
+  const HOSTPART = `${SUB}${HOST}\\.?(?=[:/?#\\s'"]|$)`;
+  const urlHostRe = new RegExp(`${TOKEN}${SCHEME}${USER}${HOSTPART}`);
+  // Command names are matched case-insensitively (a case-insensitive
+  // filesystem resolves `CURL`/`HTTP` to the real binary). The verb and data
+  // flags below stay case-sensitive on purpose, so `-X` is not confused with
+  // `-x` (proxy), nor `-d` with `-D` (dump-header), etc.
+  const curlWgetRe = /\b(?:curl|wget)\b/i;
+  // Explicit verb: curl `-X`/`--request`, wget `--method`. `-X` stays
+  // case-sensitive so it is not confused with `-x` (curl's proxy flag); the
+  // separator tolerates `=` (`-X=POST`) and a line-continuation backslash.
+  const verbFlagRe = new RegExp(
+    `(?:^|\\s)(?:-X[\\s=\\\\]*|--request[\\s=]+|--method[\\s=]+)${VERB}\\b`,
+  );
+  // curl/wget flags that imply a method even without an explicit verb.
+  const postFlagRe =
+    /(?:^|\s)(?:-d|-F|--data(?:-raw|-binary|-urlencode|-ascii)?|--form|--form-string|--json|--post-data|--post-file)\b/;
+  const putFlagRe = /(?:^|\s)(?:-T|--upload-file)\b/;
+  // HTTPie: a positional verb (optionally after flags), or an implicit POST
+  // when a request carries a body data item (`key=value`, `key:=json`,
+  // `key@file`, but not `key==query`).
+  const httpieVerbRe = new RegExp(
+    `^\\s*https?\\s+(?:-{1,2}\\S+\\s+)*${VERB}\\s+${SCHEME}${USER}${HOSTPART}`,
+    "i",
+  );
+  const httpieCmdRe = /^\s*https?\s/i;
+  const httpieItemRe = /(?:^|\s)[A-Za-z_][A-Za-z0-9_.\-]*(?::=|=(?!=)|@)/;
+  const cliRes = (writeCli ?? []).map(
+    (c) => new RegExp(`\\b${c.trim().split(/\s+/).map(escapeRe).join("\\s+")}\\b`),
+  );
+  return (segment) => {
+    if (urlHostRe.test(segment)) {
+      if (curlWgetRe.test(segment)) {
+        if (verbFlagRe.test(segment)) return true;
+        if (methodSet.has("POST") && postFlagRe.test(segment)) return true;
+        if (methodSet.has("PUT") && putFlagRe.test(segment)) return true;
+      }
+      if (
+        methodSet.has("POST") &&
+        httpieCmdRe.test(segment) &&
+        httpieItemRe.test(segment)
+      ) return true;
+    }
+    if (httpieVerbRe.test(segment)) return true;
+    for (const r of cliRes) if (r.test(segment)) return true;
+    return false;
+  };
+}
+
 /**
  * Apply a parsed gates.json manifest to a command. Rules with invalid
  * shape, disabled names, or uncompilable patterns are skipped. Anchored
  * patterns match per-segment so chaining (`echo ok; psql ...`) can't bypass.
  *
  * Under fail-closed enforcement (env var or the manifest's `enforcement`
- * field), a rule whose pattern will not compile becomes a hard deny instead
- * of being silently skipped — we cannot prove the command is safe.
+ * field), a rule whose pattern will not compile (or whose external_write
+ * shape is malformed) becomes a hard deny instead of being silently skipped
+ * — we cannot prove the command is safe.
  */
 export function applyGatesManifest(manifest, source, text, disabled, decisions, scanTool = "Bash") {
   const enforcement = effectiveEnforcement(manifest.enforcement);
@@ -587,28 +698,46 @@ export function applyGatesManifest(manifest, source, text, disabled, decisions, 
     return;
   }
   for (const rule of manifest.rules ?? []) {
-    if (
-      !["deny", "ask", "allow"].includes(rule.decision) ||
-      typeof rule.pattern !== "string"
-    ) continue;
+    if (!["deny", "ask", "allow"].includes(rule.decision)) continue;
     if (typeof rule.name === "string" && disabled.has(rule.name)) continue;
     // A rule applies to a tool only if listed in `applies_to`. Default is
     // Bash-only, so every existing rule keeps its current behavior and is
     // skipped on Write/Edit unless it explicitly opts in.
     const appliesTo = Array.isArray(rule.applies_to) ? rule.applies_to : ["Bash"];
     if (!appliesTo.includes(scanTool)) continue;
-    let re;
-    try { re = new RegExp(expandPattern(rule.pattern)); } catch {
-      if (enforcement === "fail_closed") {
-        decisions.push({
-          decision: "deny",
-          reason: `fail-closed enforcement: ${source} gate rule '${rule.name ?? "rule"}' has an invalid pattern`,
-        });
+
+    // A rule is either a declarative `external_write` (host-allowlist) rule or
+    // a `pattern` (regex) rule. Both reduce to a `(segment) => boolean` matcher.
+    let matchFn;
+    if (rule.type === "external_write") {
+      try {
+        matchFn = buildExternalWriteMatcher(rule);
+      } catch {
+        if (enforcement === "fail_closed") {
+          decisions.push({
+            decision: "deny",
+            reason: `fail-closed enforcement: ${source} external-write rule '${rule.name ?? "rule"}' is malformed`,
+          });
+        }
+        continue;
       }
-      continue;
+    } else {
+      if (typeof rule.pattern !== "string") continue;
+      let re;
+      try { re = new RegExp(expandPattern(rule.pattern)); } catch {
+        if (enforcement === "fail_closed") {
+          decisions.push({
+            decision: "deny",
+            reason: `fail-closed enforcement: ${source} gate rule '${rule.name ?? "rule"}' has an invalid pattern`,
+          });
+        }
+        continue;
+      }
+      matchFn = (segment) => re.test(segment);
     }
+
     for (const segment of segments) {
-      if (re.test(segment)) {
+      if (matchFn(segment)) {
         decisions.push({
           decision: rule.decision,
           reason: rule.reason ?? `${source} gate: ${rule.name ?? "rule"}`,

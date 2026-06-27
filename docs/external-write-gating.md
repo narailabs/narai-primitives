@@ -48,6 +48,45 @@ is:
   matches.
 - `applies_to` defaults to `["Bash"]`.
 
+### The `external_write` rule type (recommended for HTTP write-gating)
+
+Gating external writes by hand-writing a host regex is error-prone: a bare
+host substring such as `gitlab` over-matches attacker subdomains
+(`gitlab.evil.com`), paths (`/gitlab-mirror`), and label prefixes
+(`my-gitlab.evil.com`). Prefer the declarative `external_write` type, which
+parses the request and matches the **registrable host** at a real URL host
+boundary:
+
+```json
+{
+  "name": "jira_external_write",
+  "type": "external_write",
+  "decision": "ask",
+  "reason": "Shown to the operator when the rule fires.",
+  "methods": ["POST", "PUT", "DELETE", "PATCH"],
+  "allowed_hosts": ["atlassian.net"],
+  "write_cli": ["glab mr create"],
+  "applies_to": ["Bash"]
+}
+```
+
+- `methods` — the HTTP verbs that count as state-changing. The rule fires only
+  when one of these verbs is present, via `curl -X`/`--request`, `wget
+  --method`, or HTTPie's positional `http[s] VERB <url>` form. Verbs are matched
+  case-insensitively (`-X post` is caught), but curl's `-X` flag itself is
+  matched case-sensitively so it is not confused with `-x` (the proxy flag).
+- `allowed_hosts` — hostnames to gate. A host matches when it equals an entry or
+  is a dotted subdomain of one (`acme.atlassian.net` matches `atlassian.net`).
+  The host must appear as the real URL host — immediately after `scheme://` and
+  any `user:pass@` — so it cannot be spoofed via a path, query string, userinfo,
+  a suffix (`atlassian.net.evil.com`), or a label prefix
+  (`evil-atlassian.net`). A `GET` (or any verb not in `methods`) does not fire.
+- `write_cli` — optional list of write subcommands (e.g. `glab mr create`) that
+  should fire the rule regardless of host.
+- `pattern` is omitted for `external_write` rules; `decision`, `reason`,
+  `applies_to`, name-based disabling, and strictest-wins all behave as for
+  `pattern` rules.
+
 ## Shipped example presets
 
 The `jira` and `gitlab` connectors ship a `gates.json` as a starting point.
@@ -56,35 +95,61 @@ because each connector performs writes through its own CLI or raw HTTP client
 rather than a single canonical path. Treat them as examples to adapt, not as a
 complete policy.
 
-- **jira** (`plugins/jira-connector/gates.json`): asks before a state-changing
-  HTTP request (an `-X POST|PUT|DELETE|PATCH` or `--request ...` via `curl` /
-  `http` / `https` / `wget`) to a host containing `atlassian.net` or `jira`. A
-  plain `GET` to the same host does not match.
+- **jira** (`plugins/jira-connector/gates.json`): an `external_write` rule that
+  asks before a state-changing request (`POST`/`PUT`/`DELETE`/`PATCH`) to
+  `atlassian.net` or any of its subdomains. A plain `GET`, or a request to a
+  different host, does not match.
 - **gitlab** (`plugins/gitlab-connector/gates.json`): denies a merge-request
   create that lacks a draft marker (`glab mr create` without `--draft`/`-draft`,
-  or a `curl` `POST` to `merge_requests` with no draft indicator) and asks on
-  other state-changing HTTP to a host containing `gitlab`. A `GET` does not
-  match.
+  or a `curl` `POST` to `merge_requests` with no draft indicator), and an
+  `external_write` rule that asks on other state-changing requests to
+  `gitlab.com`. A `GET` does not match.
 
 ## Customizing
 
 To adapt a preset, copy it to `~/.connectors/connectors/<slug>/gates.json` and
 edit:
 
-- **Host**: replace the host token (e.g. `atlassian\\.net`, `gitlab`) with the
-  domain your team uses.
-- **Verbs**: add or remove HTTP verbs in the verb group, or tighten the rule to
-  specific API paths.
-- **Decision**: change `ask` to `deny` once you are confident a pattern should
+- **Host**: add your team's domain(s) to `allowed_hosts` (for a self-hosted
+  GitLab, set `allowed_hosts` to your GitLab domain). No regex required.
+- **Verbs**: add or remove HTTP verbs in `methods`.
+- **Decision**: change `ask` to `deny` once you are confident a request should
   always be blocked, or to `allow` to silence a noisy rule.
 
 ### Known limitations
 
-- The example HTTP rules key on an explicit `-X` / `--request` verb flag, so a
-  client that takes the verb as a positional argument (for example, HTTPie's
-  `https POST <url>` shorthand) is not matched by the shipped pattern. Extend
-  the pattern if your team uses that form.
-- The gitlab draft-absence check uses a negative lookahead scoped to a single
-  command segment; it cannot reason across piped or chained segments.
-- Because patterns are line-oriented regexes over the raw command string, they
-  are best-effort heuristics, not a sandbox. Keep server-side controls in place.
+Gating operates on the **literal command string**, so anything that hides the
+host or verb behind a layer of indirection cannot be matched. These rules are
+best-effort heuristics, not a sandbox — keep server-side controls in place. In
+particular, the following evade matching by design:
+
+- **Indirection**: the target supplied through a shell variable
+  (`URL=https://x.atlassian.net; curl -d a "$URL"`), a command substitution
+  (`curl -X POST "https://$(echo atlassian.net)/x"`), or a value read from a
+  file. The literal command never contains the resolved host.
+- **Obfuscation**: a request assembled from an encoded payload
+  (`echo <base64> | base64 -d | sh`) or built up programmatically.
+- **Exotic wrappers**: a client invoked through `xargs`, `command`, or a
+  non-standard alias the segmenter does not strip.
+- **Bundled short-flag clusters**: a curl data/upload flag buried inside a
+  short-flag cluster (`curl -sd ...` instead of `curl -s -d ...`). These cannot
+  be matched without false-positives on attached flag arguments (for example
+  `curl -odraft.json` is a download, not a POST), so the common separate-flag
+  forms are matched and the bundled form is treated as obfuscation.
+
+What the `external_write` type *does* handle robustly: explicit verbs
+(`curl -X`/`--request`, `wget --method`), method-implying flags
+(`curl -d`/`--data*`/`-F`/`--form`/`-T`/`--upload-file`/`--json`, `wget
+--post-data`/`--post-file`), HTTPie positional and implicit-POST forms,
+scheme-less and single-slash URLs, and host-spoofing via path, query, userinfo,
+subdomain suffix, label prefix, or trailing FQDN dot.
+
+Other notes:
+
+- An allowlisted host used only as a **proxy** (e.g. `curl -X POST -x
+  https://atlassian.net:8080 https://other.example/...`) still fires the rule,
+  because the allowlisted host does appear in the request. This is a
+  conservative over-`ask`, never an under-deny.
+- The gitlab draft-absence check (a `pattern` rule) uses a negative lookahead
+  scoped to a single command segment; it cannot reason across piped or chained
+  segments.
