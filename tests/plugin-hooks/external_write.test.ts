@@ -53,6 +53,72 @@ describe("external_write — host+verb matching", () => {
   it("matches case-insensitively on the host", () => {
     expect(m("curl -X POST https://X.ATLASSIAN.NET/x")).toBe(true);
   });
+
+  // ── regressions for bypasses found by adversarial review ──
+  it.each([
+    // host-spoofing forms that reach a real atlassian.net host
+    "curl -X POST https://atlassian.net./api", // trailing-dot FQDN
+    "curl -X POST https://foo.atlassian.net./api", // trailing-dot subdomain
+    "curl -X POST atlassian.net/api", // scheme-less (curl defaults to http)
+    "curl -X POST atlassian.net", // scheme-less bare host
+    "curl -X POST https://a@b@atlassian.net/api", // multiple userinfo @, last wins
+    "curl -X POST https:/atlassian.net/api", // single-slash scheme
+    "curl -X \\\nPOST https://atlassian.net/x", // line continuation
+    // method-implying flags without an explicit -X
+    "curl -d '{\"summary\":\"x\"}' https://x.atlassian.net/rest/api/2/issue",
+    "curl --data 'a=b' https://x.atlassian.net/x",
+    "curl --data-raw '{}' https://acme.atlassian.net/x",
+    "curl --data-binary @body.json https://acme.atlassian.net/x",
+    "curl --data-urlencode 'a=b' https://acme.atlassian.net/x",
+    "curl -F 'file=@a.png' https://acme.atlassian.net/secure/attachment",
+    "curl --form 'file=@a.png' https://acme.atlassian.net/x",
+    "curl --json '{\"a\":1}' https://acme.atlassian.net/rest/api/2/issue",
+    "curl -T ./local.json https://acme.atlassian.net/x/upload", // PUT
+    "curl --upload-file ./x https://acme.atlassian.net/x", // PUT
+    "wget --post-data 'a=b' https://x.atlassian.net/x",
+    "wget --post-file=body https://x.atlassian.net/x",
+    "curl -X=POST https://x.atlassian.net/x",
+    "curl -H 'X-HTTP-Method-Override: DELETE' https://x.atlassian.net/x -d a",
+    // HTTPie forms
+    "http --form POST https://x.atlassian.net/x", // flags before verb
+    "http https://x.atlassian.net/rest/api/2/issue a=b", // implicit POST via body item
+  ])("closes bypass: %s", (cmd) => {
+    expect(m(cmd)).toBe(true);
+  });
+
+  // false-positive guards: method-implying flags only count for curl/wget,
+  // and HTTPie query params (==) / no-item GETs must not look like writes.
+  it.each([
+    "grep -d skip atlassian.net", // grep -d (--directories), not an HTTP write
+    "cat atlassian.net", // a file named like the host
+    "http https://x.atlassian.net/x?a=b", // HTTPie GET with a URL query string
+    "http https://x.atlassian.net/x q==v", // HTTPie query item (==), not a body
+    "http https://x.atlassian.net/x", // HTTPie GET, no data items
+  ])("does not false-fire on %s", (cmd) => {
+    expect(m(cmd)).toBe(false);
+  });
+
+  // Command names resolve case-insensitively on case-insensitive filesystems.
+  it.each([
+    "CURL -X POST https://atlassian.net/api",
+    "Curl -d a=b https://atlassian.net/x",
+    "WGET --post-data a=b https://x.atlassian.net/x",
+    "HTTP POST atlassian.net/x",
+  ])("fires on case-variant command name %s", (cmd) => {
+    expect(m(cmd)).toBe(true);
+  });
+
+  // Documented best-effort limitation: combined short-flag clusters that bury
+  // the data/upload flag (e.g. -sd) cannot be regex-matched without false
+  // positives on attached arguments (e.g. `-odraft.json`). These are deliberate
+  // obfuscation, in the same category as shell-variable / command-substitution
+  // indirection, and are documented as known gaps rather than matched.
+  it.each([
+    "curl -sd a=b https://x.atlassian.net/x",
+    "curl -giT x https://x.atlassian.net/x",
+  ])("does not catch obfuscated short-flag cluster %s (documented limitation)", (cmd) => {
+    expect(m(cmd)).toBe(false);
+  });
 });
 
 describe("external_write — write_cli", () => {

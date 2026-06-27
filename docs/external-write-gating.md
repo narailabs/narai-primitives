@@ -118,10 +118,34 @@ edit:
 
 ### Known limitations
 
-- Gating operates on the literal command string. A target supplied indirectly
-  (a shell variable such as `curl -X POST "$URL"`, or a value read from a file)
-  is not resolved, so the host cannot be matched. Keep server-side controls in
-  place — these rules are best-effort heuristics, not a sandbox.
+Gating operates on the **literal command string**, so anything that hides the
+host or verb behind a layer of indirection cannot be matched. These rules are
+best-effort heuristics, not a sandbox — keep server-side controls in place. In
+particular, the following evade matching by design:
+
+- **Indirection**: the target supplied through a shell variable
+  (`URL=https://x.atlassian.net; curl -d a "$URL"`), a command substitution
+  (`curl -X POST "https://$(echo atlassian.net)/x"`), or a value read from a
+  file. The literal command never contains the resolved host.
+- **Obfuscation**: a request assembled from an encoded payload
+  (`echo <base64> | base64 -d | sh`) or built up programmatically.
+- **Exotic wrappers**: a client invoked through `xargs`, `command`, or a
+  non-standard alias the segmenter does not strip.
+- **Bundled short-flag clusters**: a curl data/upload flag buried inside a
+  short-flag cluster (`curl -sd ...` instead of `curl -s -d ...`). These cannot
+  be matched without false-positives on attached flag arguments (for example
+  `curl -odraft.json` is a download, not a POST), so the common separate-flag
+  forms are matched and the bundled form is treated as obfuscation.
+
+What the `external_write` type *does* handle robustly: explicit verbs
+(`curl -X`/`--request`, `wget --method`), method-implying flags
+(`curl -d`/`--data*`/`-F`/`--form`/`-T`/`--upload-file`/`--json`, `wget
+--post-data`/`--post-file`), HTTPie positional and implicit-POST forms,
+scheme-less and single-slash URLs, and host-spoofing via path, query, userinfo,
+subdomain suffix, label prefix, or trailing FQDN dot.
+
+Other notes:
+
 - An allowlisted host used only as a **proxy** (e.g. `curl -X POST -x
   https://atlassian.net:8080 https://other.example/...`) still fires the rule,
   because the allowlisted host does appear in the request. This is a

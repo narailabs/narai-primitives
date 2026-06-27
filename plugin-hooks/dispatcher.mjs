@@ -606,28 +606,63 @@ export function buildExternalWriteMatcher(rule) {
   ) {
     throw new Error("external_write: 'write_cli' must be a string array of subcommands");
   }
+  const methodSet = new Set(methods.map((m) => String(m).toUpperCase()));
   const VERB = `(?:${methods.map((m) => ciFragment(escapeRe(m))).join("|")})`;
   const HOST = `(?:${hosts.map((h) => ciFragment(escapeRe(h))).join("|")})`;
-  const BOUND = `(?=[:/?#\\s'"]|$)`;
+  // Host matched at a real URL host position: at a token start, or after an
+  // optional `scheme:/[/]` and optional `userinfo@`. curl accepts a missing
+  // scheme (defaults to http) and a single slash; the LAST `@` delimits
+  // userinfo. Whole dotted labels are consumed and a trailing FQDN dot is
+  // tolerated, so an allowlisted host cannot be spoofed via path, query,
+  // userinfo, a subdomain suffix (`atlassian.net.evil.com`), or a label prefix
+  // (`evil-atlassian.net`).
+  const TOKEN = `(?:^|[\\s'"=])`;
+  const SCHEME = `(?:[A-Za-z][A-Za-z0-9+.\\-]*:\\/{1,2})?`;
+  const USER = `(?:[^/?#\\s'"]*@)?`;
   const SUB = `(?:[A-Za-z0-9\\-]+\\.)*`;
-  const USER = `(?:[^/?#\\s@'"]*@)?`;
-  const SCHEME = `[A-Za-z][A-Za-z0-9+.\\-]*:\\/\\/`;
-  // A URL whose host is allowlisted (anchored to scheme:// + optional userinfo).
-  const urlHostRe = new RegExp(`${SCHEME}${USER}${SUB}${HOST}${BOUND}`);
-  // curl `-X`/`--request` (case-sensitive flag) or wget `--method`, then a verb.
+  const HOSTPART = `${SUB}${HOST}\\.?(?=[:/?#\\s'"]|$)`;
+  const urlHostRe = new RegExp(`${TOKEN}${SCHEME}${USER}${HOSTPART}`);
+  // Command names are matched case-insensitively (a case-insensitive
+  // filesystem resolves `CURL`/`HTTP` to the real binary). The verb and data
+  // flags below stay case-sensitive on purpose, so `-X` is not confused with
+  // `-x` (proxy), nor `-d` with `-D` (dump-header), etc.
+  const curlWgetRe = /\b(?:curl|wget)\b/i;
+  // Explicit verb: curl `-X`/`--request`, wget `--method`. `-X` stays
+  // case-sensitive so it is not confused with `-x` (curl's proxy flag); the
+  // separator tolerates `=` (`-X=POST`) and a line-continuation backslash.
   const verbFlagRe = new RegExp(
-    `(?:^|\\s)(?:-X\\s*|--request[\\s=]+|--method[\\s=]+)${VERB}\\b`,
+    `(?:^|\\s)(?:-X[\\s=\\\\]*|--request[\\s=]+|--method[\\s=]+)${VERB}\\b`,
   );
-  // HTTPie positional form at the start of the segment: `http[s] VERB <url>`.
-  const httpieRe = new RegExp(
-    `^\\s*https?\\s+${VERB}\\s+(?:${SCHEME})?${USER}${SUB}${HOST}${BOUND}`,
+  // curl/wget flags that imply a method even without an explicit verb.
+  const postFlagRe =
+    /(?:^|\s)(?:-d|-F|--data(?:-raw|-binary|-urlencode|-ascii)?|--form|--form-string|--json|--post-data|--post-file)\b/;
+  const putFlagRe = /(?:^|\s)(?:-T|--upload-file)\b/;
+  // HTTPie: a positional verb (optionally after flags), or an implicit POST
+  // when a request carries a body data item (`key=value`, `key:=json`,
+  // `key@file`, but not `key==query`).
+  const httpieVerbRe = new RegExp(
+    `^\\s*https?\\s+(?:-{1,2}\\S+\\s+)*${VERB}\\s+${SCHEME}${USER}${HOSTPART}`,
+    "i",
   );
+  const httpieCmdRe = /^\s*https?\s/i;
+  const httpieItemRe = /(?:^|\s)[A-Za-z_][A-Za-z0-9_.\-]*(?::=|=(?!=)|@)/;
   const cliRes = (writeCli ?? []).map(
     (c) => new RegExp(`\\b${c.trim().split(/\s+/).map(escapeRe).join("\\s+")}\\b`),
   );
   return (segment) => {
-    if (verbFlagRe.test(segment) && urlHostRe.test(segment)) return true;
-    if (httpieRe.test(segment)) return true;
+    if (urlHostRe.test(segment)) {
+      if (curlWgetRe.test(segment)) {
+        if (verbFlagRe.test(segment)) return true;
+        if (methodSet.has("POST") && postFlagRe.test(segment)) return true;
+        if (methodSet.has("PUT") && putFlagRe.test(segment)) return true;
+      }
+      if (
+        methodSet.has("POST") &&
+        httpieCmdRe.test(segment) &&
+        httpieItemRe.test(segment)
+      ) return true;
+    }
+    if (httpieVerbRe.test(segment)) return true;
     for (const r of cliRes) if (r.test(segment)) return true;
     return false;
   };
