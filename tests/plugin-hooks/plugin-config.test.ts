@@ -44,4 +44,26 @@ describe("parsePluginConfig", () => {
   it("rejects malformed JSON", () => {
     expect(() => parsePluginConfig("not json")).toThrow();
   });
+
+  it("round-trips a valid enforcement posture", () => {
+    expect(
+      parsePluginConfig(JSON.stringify({ name: "x", enforcement: "fail_closed" }))
+        .enforcement,
+    ).toBe("fail_closed");
+    expect(
+      parsePluginConfig(JSON.stringify({ name: "x", enforcement: "fail_open" }))
+        .enforcement,
+    ).toBe("fail_open");
+  });
+
+  it("omits enforcement when absent", () => {
+    expect(parsePluginConfig(JSON.stringify({ name: "x" })).enforcement)
+      .toBeUndefined();
+  });
+
+  it("rejects an invalid enforcement value", () => {
+    expect(() =>
+      parsePluginConfig(JSON.stringify({ name: "x", enforcement: "nope" })),
+    ).toThrow(/enforcement/);
+  });
 });

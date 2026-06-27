@@ -294,3 +294,122 @@ describe("dispatcher db-guard — honors manifest enforcement field (FIX 1b)", (
     expect(res.stdout.trim()).toBe("");
   });
 });
+
+describe("dispatcher — config-declared enforcement default (ITEM 2)", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+    dirs.length = 0;
+  });
+
+  // Full control over plugin-config enforcement, the plugin-root gates.json,
+  // a user/cwd gates.json, the env var, and stdin — so all three "no manifest
+  // available" sites can be driven with NO NARAI_GATE_ENFORCEMENT set.
+  function run(opts: {
+    enforcement?: "fail_open" | "fail_closed";
+    pluginGates?: string;
+    userGates?: string;
+    env?: boolean;
+    stdin: string;
+  }): Promise<Result> {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "cfg-root-"));
+    const data = fs.mkdtempSync(path.join(os.tmpdir(), "cfg-data-"));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "cfg-home-"));
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cfg-cwd-"));
+    dirs.push(root, data, home, cwd);
+    const cfg: Record<string, string> = { name: "test-plugin" };
+    if (opts.enforcement !== undefined) cfg.enforcement = opts.enforcement;
+    fs.writeFileSync(path.join(root, "plugin-config.json"), JSON.stringify(cfg));
+    if (opts.pluginGates !== undefined) {
+      fs.writeFileSync(path.join(root, "gates.json"), opts.pluginGates);
+    }
+    if (opts.userGates !== undefined) {
+      const gd = path.join(home, ".connectors", "connectors", "x");
+      fs.mkdirSync(gd, { recursive: true });
+      fs.writeFileSync(path.join(gd, "gates.json"), opts.userGates);
+    }
+    const env: Record<string, string> = {
+      ...process.env,
+      CLAUDE_PLUGIN_ROOT: root,
+      CLAUDE_PLUGIN_DATA: data,
+      HOME: home,
+    };
+    if (opts.env) env.NARAI_GATE_ENFORCEMENT = "fail_closed";
+    else delete env.NARAI_GATE_ENFORCEMENT;
+    return new Promise((resolve, reject) => {
+      const proc = spawn("node", [DISPATCHER, "pre-tool-use"], {
+        env, cwd, stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stdout = "", stderr = "";
+      proc.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
+      proc.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
+      proc.on("close", (code) => resolve({ stdout, stderr, exitCode: code ?? -1 }));
+      proc.on("error", reject);
+      proc.stdin.write(opts.stdin);
+      proc.stdin.end();
+    });
+  }
+
+  const deny = (res: Result) =>
+    JSON.parse(res.stdout).hookSpecificOutput.permissionDecision;
+
+  // ── with config default fail_closed and NO env var: all three sites deny ──
+  it("site 1 (unparseable stdin) denies via config default, no env var", async () => {
+    const res = await run({ enforcement: "fail_closed", stdin: "not json {" });
+    expect(deny(res)).toBe("deny");
+  });
+
+  it("site 2 (malformed plugin-root gates.json) denies via config default", async () => {
+    const res = await run({
+      enforcement: "fail_closed",
+      pluginGates: "{ broken",
+      stdin: BASH("echo hi"),
+    });
+    expect(deny(res)).toBe("deny");
+  });
+
+  it("site 3 (malformed user/cwd gates.json) denies via config default", async () => {
+    const res = await run({
+      enforcement: "fail_closed",
+      userGates: "{ broken",
+      stdin: BASH("echo hi"),
+    });
+    expect(deny(res)).toBe("deny");
+  });
+
+  // ── with no config default and no env var: all three still allow ──
+  it("site 1 allows with neither env nor config default", async () => {
+    const res = await run({ stdin: "not json {" });
+    expect(res.stdout.trim()).toBe("");
+  });
+
+  it("site 2 allows with neither env nor config default", async () => {
+    const res = await run({ pluginGates: "{ broken", stdin: BASH("echo hi") });
+    expect(res.stdout.trim()).toBe("");
+  });
+
+  it("site 3 allows with neither env nor config default", async () => {
+    const res = await run({ userGates: "{ broken", stdin: BASH("echo hi") });
+    expect(res.stdout.trim()).toBe("");
+  });
+
+  // ── config fail_open does not weaken; env var still forces fail-closed ──
+  it("config fail_open keeps default (malformed gates allowed)", async () => {
+    const res = await run({
+      enforcement: "fail_open",
+      pluginGates: "{ broken",
+      stdin: BASH("echo hi"),
+    });
+    expect(res.stdout.trim()).toBe("");
+  });
+
+  it("env var forces fail-closed even when config says fail_open", async () => {
+    const res = await run({
+      enforcement: "fail_open",
+      env: true,
+      pluginGates: "{ broken",
+      stdin: BASH("echo hi"),
+    });
+    expect(deny(res)).toBe("deny");
+  });
+});

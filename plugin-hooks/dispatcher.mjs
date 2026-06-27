@@ -229,8 +229,9 @@ async function onPreToolUse(cfg) {
     payload = JSON.parse(stdin);
   } catch {
     // Unparseable tool input: under fail-closed, deny rather than fall open.
-    // Env-only here (there is no manifest to read an enforcement field from).
-    if (effectiveEnforcement(undefined) === "fail_closed") {
+    // No manifest to read here, so the posture comes from the env var or the
+    // plugin-config default (cfg.enforcement).
+    if (effectiveEnforcement(cfg.enforcement) === "fail_closed") {
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
@@ -333,7 +334,7 @@ async function onPreToolUse(cfg) {
       process.stderr.write(
         `dispatcher: plugin-root gate scan failed (${err.message})\n`,
       );
-      if (effectiveEnforcement(undefined) === "fail_closed") {
+      if (effectiveEnforcement(cfg.enforcement) === "fail_closed") {
         decisions.push({
           decision: "deny",
           reason: `fail-closed enforcement: gates manifest at ${pluginGatesFile} could not be parsed`,
@@ -368,7 +369,7 @@ async function onPreToolUse(cfg) {
         process.stderr.write(
           `dispatcher: gate scan failed for ${gatesFile} (${err.message})\n`,
         );
-        if (effectiveEnforcement(undefined) === "fail_closed") {
+        if (effectiveEnforcement(cfg.enforcement) === "fail_closed") {
           decisions.push({
             decision: "deny",
             reason: `fail-closed enforcement: gates manifest at ${gatesFile} could not be parsed`,
