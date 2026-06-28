@@ -29,6 +29,8 @@ describe("external_write — host+verb matching", () => {
     "https POST atlassian.net/rest/api", // HTTPie positional, scheme-less host
     "https PUT https://atlassian.net/x", // HTTPie with explicit scheme
     "FOO=bar curl -X POST https://atlassian.net/x", // env prefix
+    "curl -X POST 'atlassian.net/x'", // quoted scheme-less host (single quotes)
+    "curl -X POST \"atlassian.net/api\"", // quoted scheme-less host (double quotes)
   ])("fires on %s", (cmd) => {
     expect(m(cmd)).toBe(true);
   });

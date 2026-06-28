@@ -188,6 +188,18 @@ describe("findBlockingRule — container/remote-exec unwrap", () => {
     expect(m?.blockedToken).toBe("mysql");
   });
 
+  it("skips space-form value flags (--network, --detach-keys) to find the inner client", () => {
+    expect(
+      findBlockingRule("docker run --rm --network host postgres psql", [DB_MANIFEST])?.blockedToken,
+    ).toBe("psql");
+    expect(
+      findBlockingRule("docker run --network host img psql", [DB_MANIFEST])?.blockedToken,
+    ).toBe("psql");
+    expect(
+      findBlockingRule("docker exec --detach-keys q mydb psql", [DB_MANIFEST])?.blockedToken,
+    ).toBe("psql");
+  });
+
   it("blocks via podman and nerdctl exec", () => {
     expect(findBlockingRule("podman exec c1 psql", [DB_MANIFEST])?.blockedToken).toBe("psql");
     expect(findBlockingRule("nerdctl exec c1 mongosh", [DB_MANIFEST])?.blockedToken).toBe(

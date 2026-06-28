@@ -630,16 +630,16 @@ export function buildExternalWriteMatcher(rule) {
   // userinfo, a subdomain suffix (`atlassian.net.evil.com`), or a label prefix
   // (`evil-atlassian.net`).
   const SCHEME = `(?:[A-Za-z][A-Za-z0-9+.\\-]*:\\/{1,2})?`;
-  const SCHEME_REQ = `(?:[A-Za-z][A-Za-z0-9+.\\-]*:\\/{1,2})`;
   const USER = `(?:[^/?#\\s'"]*@)?`;
   const SUB = `(?:[A-Za-z0-9\\-]+\\.)*`;
   const HOSTPART = `${SUB}${HOST}\\.?(?=[:/?#\\s'"]|$)`;
-  // Two anchors. Unquoted (line/whitespace start): scheme is optional, so curl's
-  // scheme-less default (`curl -X POST atlassian.net/api`) still matches. Quoted
-  // (`'`/`"`): a scheme is REQUIRED, so a bare allowlisted host inside a quoted
-  // query value or data arg (`"...?ref=atlassian.net"`, `"u=atlassian.net"`) no
-  // longer reads as the request host. `=` is no longer a host-start delimiter.
-  const ANCHOR = `(?:(?:^|\\s)${SCHEME}|['"]${SCHEME_REQ})`;
+  // The host must start at a line/whitespace start or immediately after a quote
+  // (with an optional scheme; curl accepts a scheme-less host, including quoted
+  // `'atlassian.net/x'`). `=` is deliberately NOT a host-start delimiter, so a
+  // bare allowlisted host appearing after `key=` in a query value or `-d` body
+  // (`...?ref=atlassian.net`, `-d 'u=atlassian.net'`) does not read as the
+  // request host — the quote there precedes `key`, not the host.
+  const ANCHOR = `(?:^|[\\s'"])${SCHEME}`;
   const urlHostRe = new RegExp(`${ANCHOR}${USER}${HOSTPART}`);
   // Command names are matched case-insensitively (a case-insensitive
   // filesystem resolves `CURL`/`HTTP` to the real binary). The verb and data

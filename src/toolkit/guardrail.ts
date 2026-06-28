@@ -66,10 +66,37 @@ const SHELLS = new Set<string>(["bash", "sh", "zsh", "ksh", "dash"]);
 
 const CONTAINER_RUNTIMES = new Set<string>(["docker", "podman", "nerdctl"]);
 
-// docker/podman/nerdctl exec|run flags that consume a following argument.
+// docker/podman/nerdctl exec|run flags that consume a following argument in
+// their space-separated form (`--flag value`). The `--flag=value` form is
+// handled separately (a single self-contained token). This list is the common,
+// realistic set; an exotic value flag in space form not listed here can still
+// shift the parser by one token (it then fails open, never closed) — best
+// effort, consistent with this module's default posture.
 const CONTAINER_FLAGS_WITH_ARG = new Set<string>([
-  "-u", "--user", "-e", "--env", "-w", "--workdir", "-v", "--volume",
-  "--env-file", "--name", "--entrypoint", "-l", "--label", "-p", "--publish",
+  // identity / mounts / env / workdir / labels
+  "-u", "--user", "-e", "--env", "--env-file", "-w", "--workdir",
+  "-v", "--volume", "--volume-driver", "--volumes-from", "--mount", "--tmpfs",
+  "--name", "--entrypoint", "-l", "--label", "--label-file", "--annotation",
+  "-p", "--publish", "--expose", "-a", "--attach", "--cidfile", "--link",
+  // network / dns / host
+  "--network", "--net", "--network-alias", "-h", "--hostname", "--domainname",
+  "--add-host", "--ip", "--ip6", "--mac-address",
+  "--dns", "--dns-option", "--dns-search",
+  // resources
+  "-m", "--memory", "--memory-reservation", "--memory-swap", "--kernel-memory",
+  "--cpus", "-c", "--cpu-shares", "--cpu-period", "--cpu-quota",
+  "--cpuset-cpus", "--cpuset-mems", "--pids-limit", "--blkio-weight",
+  "--shm-size", "--ulimit", "--gpus", "--device",
+  // namespaces / security
+  "--pid", "--ipc", "--uts", "--userns", "--cgroupns", "--cgroup-parent",
+  "--group-add", "--security-opt", "--sysctl", "--cap-add", "--cap-drop",
+  // lifecycle / runtime / exec
+  "--detach-keys", "--restart", "--stop-signal", "--stop-timeout",
+  "--pull", "--platform", "--runtime", "--isolation",
+  // logging / health
+  "--log-driver", "--log-opt",
+  "--health-cmd", "--health-interval", "--health-retries",
+  "--health-timeout", "--health-start-period",
 ]);
 
 /**
