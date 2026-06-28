@@ -148,6 +148,23 @@ describe("Policy with injected FileGrantStore", () => {
 });
 
 describe("grantStorePathFor", () => {
+  // Redirect ~/.config by overriding HOME so the path helpers resolve under a
+  // throwaway home, isolated from the real one and from the legacy dir.
+  let homeDir: string;
+  let origHome: string | undefined;
+
+  beforeEach(() => {
+    homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "db-grant-home-"));
+    origHome = process.env["HOME"];
+    process.env["HOME"] = homeDir;
+  });
+
+  afterEach(() => {
+    if (origHome === undefined) delete process.env["HOME"];
+    else process.env["HOME"] = origHome;
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  });
+
   it("keys distinct servers to distinct files (no cross-target leakage)", () => {
     expect(grantStorePathFor("staging")).not.toBe(grantStorePathFor("prod"));
   });
@@ -159,7 +176,29 @@ describe("grantStorePathFor", () => {
     const base = path.basename(p);
     expect(base).not.toContain(path.sep);
     expect(base).not.toContain("/");
-    expect(path.dirname(p).endsWith(path.join("wiki_db", "grants"))).toBe(true);
+    expect(
+      path.dirname(p).endsWith(path.join("narai", "db", "grants")),
+    ).toBe(true);
+  });
+
+  it("uses the neutral default dir when no legacy dir exists", () => {
+    const p = grantStorePathFor("prod");
+    expect(p.endsWith(path.join("narai", "db", "grants", "prod.json"))).toBe(
+      true,
+    );
+  });
+
+  it("falls back to the legacy dir when ~/.config/wiki_db exists", () => {
+    fs.mkdirSync(path.join(homeDir, ".config", "wiki_db"), {
+      recursive: true,
+    });
+    const p = grantStorePathFor("prod");
+    expect(p.endsWith(path.join("wiki_db", "grants", "prod.json"))).toBe(true);
+  });
+
+  it("honors an explicit base dir override", () => {
+    const p = grantStorePathFor("prod", "/custom/base");
+    expect(p).toBe(path.join("/custom/base", "grants", "prod.json"));
   });
 });
 
