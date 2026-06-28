@@ -46,8 +46,76 @@ interface PgPool {
   connect(): Promise<PgClient>;
   end(): Promise<void>;
 }
+
+/**
+ * Shape of node-pg's per-Pool `types` option: an object exposing
+ * `getTypeParser(oid, format)`. node-pg delegates any OID we do not
+ * override to its built-in `pg-types`, so a partial map is safe.
+ */
+interface TypeParsers {
+  getTypeParser(oid: number, format?: string): (v: string) => unknown;
+}
+
 interface PgModule {
   Pool: new (config: Record<string, unknown>) => PgPool;
+  types: TypeParsers;
+}
+
+/**
+ * Build a per-Pool node-pg type-parser object from opt-in result-coercion
+ * extras. All extras default to today's behavior; with none present this
+ * returns `undefined` so the pool config stays byte-identical to the
+ * pre-existing path (full backward compatibility).
+ *
+ * Extras (all read from the environment `extras` bag):
+ *  - `bigint_mode`: "string" (default) | "number" | "bigint".
+ *    "number" coerces int8 (OID 20) to a Number only when the value is a
+ *    safe integer; out-of-range values are preserved exactly as
+ *    `{ __bigint__: <text> }` so precision is never silently lost.
+ *    "bigint" returns a native BigInt (in-process consumers only — not
+ *    JSON-serializable).
+ *  - `numeric_mode`: "string" (default) | "number". "number" coerces
+ *    numeric/decimal (OID 1700) to a Number (lossy for high-precision
+ *    decimals — opt-in only).
+ *  - `bytea_encoding`: "buffer" (default) | "hex" | "base64". Reuses the
+ *    default Buffer parser, then `.toString(encoding)`.
+ *
+ * `base` is injected (node-pg's `types` in production, a stub in tests) so
+ * delegation and bytea decoding stay testable without a live database.
+ */
+export function buildTypeParsers(
+  config: Record<string, unknown>,
+  base: TypeParsers,
+): TypeParsers | undefined {
+  const bigintMode = config["bigint_mode"];
+  const numericMode = config["numeric_mode"];
+  const byteaEncoding = config["bytea_encoding"];
+  const overrides: Record<number, (v: string) => unknown> = {};
+
+  if (bigintMode === "number") {
+    overrides[20] = (v) => {
+      const n = Number(v);
+      return Number.isSafeInteger(n) ? n : { __bigint__: v };
+    };
+  } else if (bigintMode === "bigint") {
+    overrides[20] = (v) => BigInt(v);
+  }
+
+  if (numericMode === "number") {
+    overrides[1700] = (v) => Number(v);
+  }
+
+  if (byteaEncoding === "hex" || byteaEncoding === "base64") {
+    overrides[17] = (v) =>
+      (base.getTypeParser(17, "text")(v) as Buffer).toString(byteaEncoding);
+  }
+
+  if (Object.keys(overrides).length === 0) return undefined;
+  return {
+    getTypeParser(oid, format) {
+      return overrides[oid] ?? base.getTypeParser(oid, format ?? "text");
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +204,9 @@ export class PostgresDriver extends DatabaseDriver {
       if (user !== undefined) poolConfig["user"] = user;
       if (password !== undefined) poolConfig["password"] = password;
       if (ssl !== undefined) poolConfig["ssl"] = ssl;
+
+      const parsers = buildTypeParsers(envConfig, pg.types);
+      if (parsers !== undefined) poolConfig["types"] = parsers;
 
       const pool = new pg.Pool(poolConfig);
       this._pool = pool;

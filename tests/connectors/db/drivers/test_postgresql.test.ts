@@ -51,9 +51,18 @@ vi.mock("pg", () => ({
       return p as unknown;
     }
   },
+  // Mirror the real `pg` module shape: it re-exports `pg-types` as `types`.
+  // The driver passes this in as the delegation base for buildTypeParsers.
+  types: {
+    getTypeParser: (_oid: number, _format?: string) => (v: string) => v,
+  },
 }));
 
-import { PostgresDriver } from "../../../../src/connectors/db/lib/drivers/postgresql.js";
+import {
+  PostgresDriver,
+  buildTypeParsers,
+} from "../../../../src/connectors/db/lib/drivers/postgresql.js";
+import pgTypes from "pg-types";
 
 function latestPool(): InstanceType<typeof mocks.MockPool> {
   const p = mocks.instances[mocks.instances.length - 1];
@@ -381,5 +390,91 @@ describe("wiki_db.drivers.postgresql (unit)", () => {
     // Calling again after shutdown is a no-op (the pool ref is cleared).
     await drv.shutdown();
     expect(pool.endSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // Pool-wiring: the type-parser map is only attached to poolConfig when an
+  // opt-in coercion extra is present, so the default path stays byte-identical.
+  it("connect() with bigint_mode=number wires a types object onto the pool", async () => {
+    const drv = new PostgresDriver();
+    await drv.connect({ database: "app", bigint_mode: "number" });
+    const types = latestPool().config["types"];
+    expect(types).toBeDefined();
+    expect(typeof (types as { getTypeParser: unknown }).getTypeParser).toBe(
+      "function",
+    );
+  });
+
+  it("connect() with no coercion extras leaves the pool without a types key", async () => {
+    const drv = new PostgresDriver();
+    await drv.connect({ database: "app" });
+    expect(latestPool().config).not.toHaveProperty("types");
+  });
+});
+
+describe("buildTypeParsers (pure helper)", () => {
+  // Identity stub: returns the raw text untouched for any OID.
+  const base = {
+    getTypeParser: (_oid: number, _format?: string) => (v: string) => v,
+  };
+
+  it("default (no extras) returns undefined — pg default path untouched", () => {
+    expect(buildTypeParsers({}, base)).toBeUndefined();
+  });
+
+  it("bigint_mode=number coerces in-range int8 to a Number", () => {
+    const p = buildTypeParsers({ bigint_mode: "number" }, base)!;
+    expect(p.getTypeParser(20)("42")).toBe(42);
+    expect(typeof p.getTypeParser(20)("42")).toBe("number");
+  });
+
+  it("bigint_mode=number keeps out-of-range int8 exact (no precision loss)", () => {
+    const p = buildTypeParsers({ bigint_mode: "number" }, base)!;
+    expect(p.getTypeParser(20)("9007199254740993")).toEqual({
+      __bigint__: "9007199254740993",
+    });
+  });
+
+  it("bigint_mode=bigint returns a native BigInt", () => {
+    const p = buildTypeParsers({ bigint_mode: "bigint" }, base)!;
+    expect(p.getTypeParser(20)("9007199254740993")).toBe(
+      9007199254740993n,
+    );
+  });
+
+  it("numeric_mode=number coerces numeric (OID 1700) to a Number", () => {
+    const p = buildTypeParsers({ numeric_mode: "number" }, base)!;
+    expect(p.getTypeParser(1700)("1.50")).toBe(1.5);
+  });
+
+  it("delegates unknown OIDs to the base parser", () => {
+    const p = buildTypeParsers({ numeric_mode: "number" }, base)!;
+    expect(p.getTypeParser(25)("hello")).toBe("hello");
+  });
+
+  it("bytea_encoding=hex returns a lowercase hex string", () => {
+    const p = buildTypeParsers(
+      { bytea_encoding: "hex" },
+      pgTypes as unknown as typeof base,
+    )!;
+    expect(p.getTypeParser(17)("\\x48656c6c6f")).toBe("48656c6c6f");
+  });
+
+  it("bytea_encoding=base64 returns a base64 string", () => {
+    const p = buildTypeParsers(
+      { bytea_encoding: "base64" },
+      pgTypes as unknown as typeof base,
+    )!;
+    expect(p.getTypeParser(17)("\\x48656c6c6f")).toBe("SGVsbG8=");
+  });
+
+  it("no bytea_encoding leaves OID 17 delegating to base (default Buffer)", () => {
+    // With only bigint_mode set, OID 17 is not overridden -> delegates.
+    const p = buildTypeParsers(
+      { bigint_mode: "number" },
+      pgTypes as unknown as typeof base,
+    )!;
+    const out = p.getTypeParser(17)("\\x48656c6c6f");
+    expect(Buffer.isBuffer(out)).toBe(true);
+    expect((out as Buffer).toString()).toBe("Hello");
   });
 });
