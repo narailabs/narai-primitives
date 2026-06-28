@@ -16,10 +16,11 @@
  * from the Python port so existing tests pass verbatim.
  */
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 
 import { FileProvider, EnvVarProvider } from "narai-primitives/credentials";
+
+import { configBaseDir, envVarPrefix } from "./naming.js";
 
 /**
  * Default credentials file location — `~/.config/wiki_db/credentials.json`.
@@ -29,7 +30,7 @@ import { FileProvider, EnvVarProvider } from "narai-primitives/credentials";
  * not work in strict-ESM, so we expose `.path` instead.
  */
 export const _DEFAULT_CREDS = {
-  path: path.join(os.homedir(), ".config", "wiki_db", "credentials.json"),
+  path: path.join(configBaseDir(), "credentials.json"),
 };
 
 /** Abstract base class — mirrors Python's ABC + `@abstractmethod`. */
@@ -91,8 +92,20 @@ export class FileCredentialProvider extends CredentialProvider {
  * Delegates to the shared `EnvVarProvider` so the env lookup logic lives
  * in a single place.
  */
+export interface EnvVarCredentialProviderOptions {
+  /** Opt-in override for the env-var prefix (default: resolved at runtime). */
+  prefix?: string;
+}
+
 export class EnvVarCredentialProvider extends CredentialProvider {
-  private readonly _inner = new EnvVarProvider({ prefix: "WIKI_DB_" });
+  private readonly _prefix: string;
+  private readonly _inner: EnvVarProvider;
+
+  constructor(opts: EnvVarCredentialProviderOptions = {}) {
+    super();
+    this._prefix = envVarPrefix(opts.prefix);
+    this._inner = new EnvVarProvider({ prefix: this._prefix });
+  }
 
   override get(env: string): [string, string] {
     const envUpper = env.toUpperCase();
@@ -100,8 +113,8 @@ export class EnvVarCredentialProvider extends CredentialProvider {
     const password = this._inner.getSecretSync(`${envUpper}_PASSWORD`);
     if (user === null || password === null) {
       const missing: string[] = [];
-      if (user === null) missing.push(`WIKI_DB_${envUpper}_USER`);
-      if (password === null) missing.push(`WIKI_DB_${envUpper}_PASSWORD`);
+      if (user === null) missing.push(`${this._prefix}${envUpper}_USER`);
+      if (password === null) missing.push(`${this._prefix}${envUpper}_PASSWORD`);
       const err = new Error(
         `Missing environment variable(s): ${missing.join(", ")}`,
       );

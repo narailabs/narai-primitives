@@ -142,3 +142,70 @@ describe("wiki_db.credentials", () => {
     }
   });
 });
+
+describe("EnvVarCredentialProvider migration-safe prefix", () => {
+  // Snapshot + clear any legacy/neutral prefixed vars so the "no legacy"
+  // branch is deterministic regardless of the ambient environment.
+  let snapshot: Record<string, string | undefined> = {};
+  let restoreEnv: (() => void) | null = null;
+
+  beforeEach(() => {
+    snapshot = {};
+    for (const k of Object.keys(process.env)) {
+      if (k.startsWith("WIKI_DB_") || k.startsWith("NARAI_DB_")) {
+        snapshot[k] = process.env[k];
+        delete process.env[k];
+      }
+    }
+  });
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(snapshot)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    if (restoreEnv) {
+      restoreEnv();
+      restoreEnv = null;
+    }
+  });
+
+  it("reads the neutral NARAI_DB_ prefix when no legacy var is set", () => {
+    restoreEnv = patchEnv({
+      NARAI_DB_DEV_USER: "nu",
+      NARAI_DB_DEV_PASSWORD: "np",
+    });
+    const provider = new EnvVarCredentialProvider();
+    expect(provider.get("dev")).toEqual(["nu", "np"]);
+  });
+
+  it("falls back to the legacy WIKI_DB_ prefix when a legacy var is present", () => {
+    restoreEnv = patchEnv({
+      WIKI_DB_DEV_USER: "lu",
+      WIKI_DB_DEV_PASSWORD: "lp",
+    });
+    const provider = new EnvVarCredentialProvider();
+    expect(provider.get("dev")).toEqual(["lu", "lp"]);
+  });
+
+  it("honors an explicit prefix override", () => {
+    restoreEnv = patchEnv({
+      MYAPP_DEV_USER: "ou",
+      MYAPP_DEV_PASSWORD: "op",
+    });
+    const provider = new EnvVarCredentialProvider({ prefix: "MYAPP_" });
+    expect(provider.get("dev")).toEqual(["ou", "op"]);
+  });
+
+  it("names the resolved (neutral) prefix in the missing-var error", () => {
+    const provider = new EnvVarCredentialProvider();
+    try {
+      provider.get("dev");
+      throw new Error("expected EnvironmentVariableMissingError to be thrown");
+    } catch (e) {
+      expect((e as Error).name).toBe("EnvironmentVariableMissingError");
+      expect((e as Error).message).toContain("NARAI_DB_DEV_USER");
+      expect((e as Error).message).not.toContain("WIKI_DB_");
+    }
+  });
+});

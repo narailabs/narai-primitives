@@ -21,8 +21,9 @@
  * `grant_required`.
  */
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
+
+import { configBaseDir } from "./naming.js";
 
 /**
  * Storage contract for grant expiries. Keys are grant types (only `"read"`
@@ -138,9 +139,9 @@ export class FileGrantStore implements GrantStore {
  * `staging` must not unlock `prod`. The alias is sanitized to a filesystem-
  * safe token so arbitrary server names cannot escape the grants directory.
  */
-export function grantStorePathFor(serverName: string): string {
+export function grantStorePathFor(serverName: string, baseDir?: string): string {
   const safe = serverName.replace(/[^A-Za-z0-9_.-]/g, "_") || "_";
-  return path.join(os.homedir(), ".config", "wiki_db", "grants", `${safe}.json`);
+  return path.join(configBaseDir(baseDir), "grants", `${safe}.json`);
 }
 
 /**

@@ -109,7 +109,8 @@ export async function executeQuery(
     if (raw.status === "error") {
       return {
         status: "error",
-        error: `${raw.error_code ?? "SQL_ERROR"}: ${raw.error ?? "unknown driver error"}`,
+        error_code: raw.error_code ?? "SQL_ERROR",
+        error: raw.error ?? "unknown driver error",
         execution_time_ms: _elapsedMs(start),
       };
     }
@@ -127,6 +128,7 @@ export async function executeQuery(
   } catch (exc) {
     return {
       status: "error",
+      error_code: "SQL_ERROR",
       error: (exc as Error).message,
       execution_time_ms: _elapsedMs(start),
     };

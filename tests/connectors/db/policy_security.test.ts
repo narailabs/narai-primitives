@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyStatements, Policy } from "../../../src/connectors/db/lib/policy.js";
+import { classifyStatements, Decision, Policy } from "../../../src/connectors/db/lib/policy.js";
 
 describe("SQL policy parser security", () => {
   it("safely handles comments masquerading as strings", () => {
@@ -72,6 +72,42 @@ describe("SQL policy parser security", () => {
 
     const sql3 = "SELECT 1 /*M!100000 UNION SELECT password FROM users */;";
     expect(() => classifyStatements(sql3)).toThrow(/Ambiguous or unrecognized SQL construct/);
+  });
+
+  it("preserves the bracket defense for the sqlserver dialect", () => {
+    // The SQL Server bracket-identifier bypass must still be rejected when the
+    // configured dialect is sqlserver.
+    const sql = "SELECT 1 AS [--]; DROP TABLE users;";
+    expect(() => classifyStatements(sql, "sqlserver")).toThrow(
+      /Ambiguous or unrecognized SQL construct/,
+    );
+  });
+
+  it("allows legitimate Postgres array brackets when dialect is postgres", () => {
+    expect(classifyStatements("SELECT ARRAY[1,2,3]", "postgres")).toEqual([
+      "read",
+    ]);
+    expect(classifyStatements("SELECT '{1}'::int[]", "postgres")).toEqual([
+      "read",
+    ]);
+  });
+
+  it("allows array brackets for mysql/sqlite/oracle dialects too", () => {
+    expect(classifyStatements("SELECT ARRAY[1,2,3]", "mysql")).toEqual(["read"]);
+    expect(classifyStatements("SELECT ARRAY[1,2,3]", "sqlite")).toEqual(["read"]);
+    expect(classifyStatements("SELECT ARRAY[1,2,3]", "oracle")).toEqual(["read"]);
+  });
+
+  it("still rejects executable comments regardless of dialect", () => {
+    expect(() => classifyStatements("SELECT 1 /*!50000 */", "postgres")).toThrow(
+      /Ambiguous or unrecognized SQL construct/,
+    );
+  });
+
+  it("end-to-end: postgres dialect allows a bounded ARRAY read", () => {
+    const p = new Policy("auto", undefined, undefined, "postgres");
+    const r = p.checkQuery("SELECT ARRAY[1,2,3] FROM t WHERE id=1");
+    expect(r.decision).toBe(Decision.ALLOW);
   });
 
   it("throws error for SQL Server nested block comments", () => {

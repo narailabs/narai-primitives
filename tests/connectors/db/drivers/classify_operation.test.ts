@@ -69,6 +69,30 @@ describe("DatabaseDriver.classifyOperation — G-DB-1", () => {
         });
       });
     }
+
+    // Issue #1: bracket handling is dialect-aware. Postgres/MySQL/SQLite/Oracle
+    // treat `[` as ordinary SQL (e.g. ARRAY[...] / int[]), while SQL Server
+    // still rejects it as an ambiguous bracket-quoted identifier.
+    it("postgres allows ARRAY[...] reads", () => {
+      expect(new PostgresDriver().classifyOperation("SELECT ARRAY[1,2,3]")).toBe(
+        OperationType.READ,
+      );
+    });
+    it("mysql allows ARRAY[...] reads", () => {
+      expect(new MysqlDriver().classifyOperation("SELECT ARRAY[1,2,3]")).toBe(
+        OperationType.READ,
+      );
+    });
+    it("sqlite allows ARRAY[...] reads", () => {
+      expect(new SQLiteDriver().classifyOperation("SELECT ARRAY[1,2,3]")).toBe(
+        OperationType.READ,
+      );
+    });
+    it("sqlserver still rejects bracket-quoted identifiers", () => {
+      expect(() =>
+        new SqlServerDriver().classifyOperation("SELECT 1 AS [--]"),
+      ).toThrow(/Ambiguous or unrecognized SQL construct/);
+    });
   });
 
   describe("MongoDriver — envelope form", () => {
