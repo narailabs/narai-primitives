@@ -64,6 +64,14 @@ export interface BlockMatch {
 
 const SHELLS = new Set<string>(["bash", "sh", "zsh", "ksh", "dash"]);
 
+const CONTAINER_RUNTIMES = new Set<string>(["docker", "podman", "nerdctl"]);
+
+// docker/podman/nerdctl exec|run flags that consume a following argument.
+const CONTAINER_FLAGS_WITH_ARG = new Set<string>([
+  "-u", "--user", "-e", "--env", "-w", "--workdir", "-v", "--volume",
+  "--env-file", "--name", "--entrypoint", "-l", "--label", "-p", "--publish",
+]);
+
 /**
  * Read a guardrail manifest JSON file from disk and validate its shape.
  * Throws on parse/validation errors; the caller is responsible for fail-open
@@ -143,22 +151,37 @@ export function findBlockingRule(
       continue;
     }
 
-    // Two-token prefix match (e.g., "aws dynamodb").
+    // Recurse into container / remote-exec wrappers (docker/podman/nerdctl
+    // exec|run, kubectl exec … -- cmd). Strip the wrapper + its own flags +
+    // the container/image/pod name, then re-scan the inner command head.
+    const innerExec = unwrapContainerExec(tokens);
+    if (innerExec !== null) {
+      const inner = findBlockingRule(innerExec, manifests, depth + 1);
+      if (inner !== null) return inner;
+      continue;
+    }
+
+    // Two-token prefix match (e.g., "aws dynamodb"). Matched case-insensitively
+    // so an uppercase variant (which resolves to the real binary on a
+    // case-insensitive filesystem) cannot slip past; the original case is kept
+    // in blockedToken for the deny message.
     if (tokens.length >= 2) {
       const twoToken = `${head} ${tokens[1] ?? ""}`;
+      const twoTokenLc = twoToken.toLowerCase();
       for (const m of manifests) {
         for (const r of m.rules) {
-          if (r.block_two_token_command?.includes(twoToken)) {
+          if (r.block_two_token_command?.some((e) => e.toLowerCase() === twoTokenLc)) {
             return { manifest: m, rule: r, blockedToken: twoToken, command };
           }
         }
       }
     }
 
-    // First-token basename match.
+    // First-token basename match (case-insensitive; see note above).
+    const headLc = head.toLowerCase();
     for (const m of manifests) {
       for (const r of m.rules) {
-        if (r.block_first_token_basename?.includes(head)) {
+        if (r.block_first_token_basename?.some((e) => e.toLowerCase() === headLc)) {
           return { manifest: m, rule: r, blockedToken: head, command };
         }
       }
@@ -232,4 +255,34 @@ function unwrapShellDashC(tokens: readonly string[]): string | null {
   let inner = tokens.slice(ci + 1).join(" ").trim();
   inner = inner.replace(/^(['"])([\s\S]*)\1$/, "$2");
   return inner;
+}
+
+function unwrapContainerExec(tokens: readonly string[]): string | null {
+  const head = basename(tokens[0] ?? "").toLowerCase();
+  const sub = (tokens[1] ?? "").toLowerCase();
+
+  // kubectl exec [flags] <pod> [-c container] -- cmd args...
+  if (head === "kubectl" && sub === "exec") {
+    const sep = tokens.indexOf("--");
+    if (sep === -1 || sep + 1 >= tokens.length) return null;
+    return tokens.slice(sep + 1).join(" ").trim();
+  }
+
+  // docker / podman / nerdctl  exec|run  [flags] <container|image> cmd args...
+  if (!CONTAINER_RUNTIMES.has(head)) return null;
+  if (sub !== "exec" && sub !== "run") return null;
+
+  let i = 2;
+  // Skip the wrapper's own flags. Flags that take a separate arg consume the
+  // next token; `--key=value` and bare boolean flags (-i, -t, -d, …) do not.
+  while (i < tokens.length) {
+    const t = tokens[i] ?? "";
+    if (!t.startsWith("-")) break;             // reached container/image name
+    if (t.includes("=")) { i += 1; continue; } // --env=FOO=bar form
+    if (CONTAINER_FLAGS_WITH_ARG.has(t)) { i += 2; continue; }
+    i += 1;                                     // boolean flag (-i, -t, -d, …)
+  }
+  // tokens[i] is the container/image name; the inner command starts after it.
+  if (i + 1 >= tokens.length) return null;
+  return tokens.slice(i + 1).join(" ").trim();
 }
