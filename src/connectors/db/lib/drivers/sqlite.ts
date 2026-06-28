@@ -176,7 +176,7 @@ export class SQLiteDriver extends DatabaseDriver {
   }
 
   override classifyOperation(query: string): OperationType {
-    return classifySqlKeywords(query);
+    return classifySqlKeywords(query, "sqlite");
   }
 }
 

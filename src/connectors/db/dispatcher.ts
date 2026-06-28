@@ -29,7 +29,9 @@ import { loadResolvedConfig } from "narai-primitives/config";
 import {
   Policy,
   classifyStatements,
+  normalizeDialect,
   type OperationType,
+  type SqlDialect,
 } from "./lib/policy.js";
 import { executeQuery, type QueryableDriver } from "./lib/query.js";
 import {
@@ -215,10 +217,11 @@ export function _preCheckPolicy(
   approvalMode: string,
   rules: PolicyRules,
   grantStore?: GrantStore,
+  dialect: SqlDialect = "generic",
 ): { response: FetchResult; exitCode: number } | null {
   let ops: OperationType[];
   try {
-    ops = classifyStatements(sql);
+    ops = classifyStatements(sql, dialect);
   } catch {
     ops = ["admin"];
   }
@@ -239,8 +242,8 @@ export function _preCheckPolicy(
   try {
     policy =
       grantStore !== undefined
-        ? new Policy(approvalMode, rules, grantStore)
-        : new Policy(approvalMode, rules);
+        ? new Policy(approvalMode, rules, grantStore, dialect)
+        : new Policy(approvalMode, rules, undefined, dialect);
   } catch (e) {
     return {
       response: {
@@ -514,7 +517,7 @@ async function runQueryOnSqlite(v: QueryParamsValidated): Promise<FetchResult> {
   const driver = new SQLiteDriver();
   const conn = driver.connect({ database: v.sqlite_path! });
   try {
-    const policy = new Policy(v.approval_mode ?? "auto", DEFAULT_POLICY);
+    const policy = new Policy(v.approval_mode ?? "auto", DEFAULT_POLICY, undefined, "sqlite");
     const queryable = adaptDriver(driver, conn);
     return await executeQuery(queryable, v.sql, policy, {
       max_rows: v.max_rows,
@@ -563,6 +566,7 @@ async function runOnEnv(
   let approvalMode: string;
   let rules: PolicyRules;
   let grantDurationHours: number | undefined;
+  let driverName: string | undefined;
 
   try {
     if (pluginCfg !== null) {
@@ -630,6 +634,7 @@ async function runOnEnv(
         qv.approval_mode ?? env.approval_mode.replace(/-/g, "_");
       rules = env.policy ?? DEFAULT_POLICY;
       grantDurationHours = env.grant_duration_hours;
+      driverName = env.driver;
     } else {
       if (v.server === undefined) {
         return {
@@ -646,6 +651,7 @@ async function runOnEnv(
       approvalMode = qv.approval_mode ?? resolved.approval_mode;
       rules = DEFAULT_POLICY;
       grantDurationHours = resolved.grant_duration_hours;
+      driverName = resolved.driver;
     }
   } catch (e) {
     clearEnvironments();
@@ -690,12 +696,17 @@ async function runOnEnv(
     }
   }
 
+  // Map the configured driver to a SQL dialect so the policy splitter/
+  // classifier can disambiguate dialect-specific constructs (e.g. Postgres
+  // `ARRAY[...]`). Unknown drivers fall back to the safe `"generic"` posture.
+  const dialect = normalizeDialect(driverName);
+
   // Pre-connect policy gate: short-circuit deny/escalate/present_only
   // before we load any driver or open any connection. This is the
   // load-bearing invariant documented in CLAUDE.md and the plugin spec.
   if (action === "query") {
     const q = v as QueryParamsValidated;
-    const short = _preCheckPolicy(q.sql, approvalMode, rules, grantStore);
+    const short = _preCheckPolicy(q.sql, approvalMode, rules, grantStore, dialect);
     if (short !== null) {
       clearEnvironments();
       return short.response;
@@ -731,8 +742,8 @@ async function runOnEnv(
     // use the default in-process store.
     const policy =
       grantStore !== undefined
-        ? new Policy(approvalMode, rules, grantStore)
-        : new Policy(approvalMode, rules);
+        ? new Policy(approvalMode, rules, grantStore, dialect)
+        : new Policy(approvalMode, rules, undefined, dialect);
     const queryable = adaptDriver(conn.driver, conn.native);
     return await executeQuery(queryable, qv.sql, policy, {
       max_rows: qv.max_rows,

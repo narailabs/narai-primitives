@@ -354,7 +354,7 @@ export class PostgresDriver extends DatabaseDriver {
   }
 
   override classifyOperation(query: string): OperationType {
-    return classifySqlKeywords(query);
+    return classifySqlKeywords(query, "postgres");
   }
 
   async closeAsync(conn: unknown): Promise<void> {

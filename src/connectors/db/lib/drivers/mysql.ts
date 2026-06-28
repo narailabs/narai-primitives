@@ -330,7 +330,7 @@ export class MysqlDriver extends DatabaseDriver {
   }
 
   override classifyOperation(query: string): OperationType {
-    return classifySqlKeywords(query);
+    return classifySqlKeywords(query, "mysql");
   }
 
   async closeAsync(conn: unknown): Promise<void> {

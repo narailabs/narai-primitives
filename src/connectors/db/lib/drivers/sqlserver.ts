@@ -390,7 +390,7 @@ export class SqlServerDriver extends DatabaseDriver {
   }
 
   override classifyOperation(query: string): OperationType {
-    return classifySqlKeywords(query);
+    return classifySqlKeywords(query, "sqlserver");
   }
 
   async closeAsync(_conn: unknown): Promise<void> {

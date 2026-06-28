@@ -444,7 +444,7 @@ export class OracleDriver extends DatabaseDriver {
   }
 
   override classifyOperation(query: string): OperationType {
-    return classifySqlKeywords(query);
+    return classifySqlKeywords(query, "oracle");
   }
 
   async closeAsync(conn: unknown): Promise<void> {
