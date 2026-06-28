@@ -66,20 +66,27 @@ const pgMocks = vi.hoisted(() => {
   return { MockPool, instances };
 });
 
-vi.mock("pg", () => ({
-  default: {
+vi.mock("pg", () => {
+  const types = {
+    getTypeParser: (_oid: number, _format?: string) => (v: string) => v,
+  };
+  return {
+    default: {
+      Pool: function (config: Record<string, unknown>) {
+        const p = new pgMocks.MockPool(config);
+        pgMocks.instances.push(p);
+        return p;
+      },
+      types,
+    },
     Pool: function (config: Record<string, unknown>) {
       const p = new pgMocks.MockPool(config);
       pgMocks.instances.push(p);
       return p;
     },
-  },
-  Pool: function (config: Record<string, unknown>) {
-    const p = new pgMocks.MockPool(config);
-    pgMocks.instances.push(p);
-    return p;
-  },
-}));
+    types,
+  };
+});
 
 const mssqlMocks = vi.hoisted(() => {
   class MockConnectionPool {
