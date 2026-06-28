@@ -563,6 +563,19 @@ function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// Resolve optional case/flag controls for a pattern rule. Returns
+// { flags } on success or { error: true } for an unknown flag (the caller
+// fails closed). Backward compatible: a rule with neither field -> "".
+// `g` and `y` are deliberately disallowed: the compiled regex is reused
+// across every command segment, and a sticky/global flag carries `lastIndex`
+// between `.test()` calls, so it would intermittently miss and fail open.
+function resolveRuleFlags(rule) {
+  let flags = typeof rule.flags === "string" ? rule.flags : "";
+  if (flags && !/^[imsu]*$/.test(flags)) return { error: true };
+  if (rule.ignore_case === true && !flags.includes("i")) flags += "i";
+  return { flags };
+}
+
 // Turn a literal string into a case-insensitive regex fragment via character
 // classes. Used for verbs and hostnames so the matcher needs no global `i`
 // flag (which would wrongly conflate curl's case-sensitive `-X` method flag
@@ -723,8 +736,18 @@ export function applyGatesManifest(manifest, source, text, disabled, decisions, 
       }
     } else {
       if (typeof rule.pattern !== "string") continue;
+      const fr = resolveRuleFlags(rule);
+      if (fr.error) {
+        if (enforcement === "fail_closed") {
+          decisions.push({
+            decision: "deny",
+            reason: `fail-closed enforcement: ${source} gate rule '${rule.name ?? "rule"}' has unknown regex flags`,
+          });
+        }
+        continue;
+      }
       let re;
-      try { re = new RegExp(expandPattern(rule.pattern)); } catch {
+      try { re = new RegExp(expandPattern(rule.pattern), fr.flags); } catch {
         if (enforcement === "fail_closed") {
           decisions.push({
             decision: "deny",

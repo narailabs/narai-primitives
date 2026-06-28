@@ -40,9 +40,17 @@ is:
 
 - `decision` is one of `deny`, `ask`, or `allow`. When several rules match the
   same command, the strictest decision wins (`deny` > `ask` > `allow`).
-- `pattern` is compiled with `new RegExp(pattern)` with **no flags**. There is
-  no inline case-insensitivity, so write case explicitly using character
-  classes (e.g. `[Pp][Oo][Ss][Tt]`) when you need it.
+- `pattern` is compiled with `new RegExp(pattern, flags)`. By default no flags
+  are applied (a rule with neither field below compiles exactly as before, so
+  character classes like `[Pp][Oo][Ss][Tt]` keep working). For
+  case-insensitivity, set `ignore_case: true` (folds in the `i` flag) instead of
+  hand-writing character classes.
+- `flags` (optional) is a string of regex flags drawn from `imsu` only (`i`
+  case-insensitive, `s` dotall, `m` multiline, `u` unicode). The `g` and `y`
+  flags are rejected: the compiled regex is reused across command segments, and
+  a global/sticky flag carries `lastIndex` between matches and would
+  intermittently miss. Under `fail_closed`, an unknown flag is a hard deny;
+  under `fail_open` the rule is skipped.
 - For `Bash`, the command is split into segments on `&&`, `||`, `;`, and `|`,
   and each segment is matched independently, so a rule fires if any segment
   matches.
