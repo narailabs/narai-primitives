@@ -311,7 +311,7 @@ describe("TestExecuteQueryAsyncPath", () => {
     expect(result["truncated"]).toBe(true);
   });
 
-  it("maps executeReadAsync error result to status=error with error_code", async () => {
+  it("propagates driver error_code structurally (not flattened into error)", async () => {
     const { driver } = _makeAsyncDriver({
       result: {
         status: "error",
@@ -322,16 +322,17 @@ describe("TestExecuteQueryAsyncPath", () => {
     });
     const result = await executeQuery(driver, "SELECT 1", _autoPolicy());
     expect(result["status"]).toBe("error");
-    expect(result["error"] as string).toContain("SQL_ERROR");
-    expect(result["error"] as string).toContain("relation does not exist");
+    expect(result["error_code"]).toBe("SQL_ERROR");
+    expect(result["error"]).toBe("relation does not exist");
   });
 
-  it("catches thrown promises from executeReadAsync", async () => {
+  it("catches thrown promises from executeReadAsync with a structured SQL_ERROR code", async () => {
     const { driver } = _makeAsyncDriver({
       error: new Error("pool exhausted"),
     });
     const result = await executeQuery(driver, "SELECT 1", _autoPolicy());
     expect(result["status"]).toBe("error");
+    expect(result["error_code"]).toBe("SQL_ERROR");
     expect(result["error"] as string).toContain("pool exhausted");
   });
 

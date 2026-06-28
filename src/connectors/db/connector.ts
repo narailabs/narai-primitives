@@ -188,6 +188,7 @@ function mapDbErrorCode(internal: string): import("narai-primitives/toolkit").Er
   if (upper === "NOT_FOUND") return "NOT_FOUND";
   if (upper === "TIMEOUT") return "TIMEOUT";
   if (upper === "RATE_LIMITED") return "RATE_LIMITED";
+  if (upper === "SQL_ERROR") return "VALIDATION_ERROR";
   if (upper === "SCHEMA_ERROR" || upper.endsWith("_ERROR")) return "CONNECTION_ERROR";
   return "CONNECTION_ERROR";
 }
