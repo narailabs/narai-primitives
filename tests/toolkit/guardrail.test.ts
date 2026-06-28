@@ -169,6 +169,83 @@ describe("findBlockingRule — shell -c recursion", () => {
   });
 });
 
+describe("findBlockingRule — container/remote-exec unwrap", () => {
+  it("blocks psql inside docker exec", () => {
+    const m = findBlockingRule("docker exec mydb psql -U u app", [DB_MANIFEST]);
+    expect(m?.blockedToken).toBe("psql");
+  });
+
+  it("skips docker exec flags with args (-u -e -w)", () => {
+    const m = findBlockingRule(
+      "docker exec -i -t -u postgres -e PGPASSWORD=x -w /tmp mydb psql",
+      [DB_MANIFEST],
+    );
+    expect(m?.blockedToken).toBe("psql");
+  });
+
+  it("handles --env=KEY=VAL form", () => {
+    const m = findBlockingRule("docker exec --env=FOO=bar mydb mysql -u root", [DB_MANIFEST]);
+    expect(m?.blockedToken).toBe("mysql");
+  });
+
+  it("blocks via podman and nerdctl exec", () => {
+    expect(findBlockingRule("podman exec c1 psql", [DB_MANIFEST])?.blockedToken).toBe("psql");
+    expect(findBlockingRule("nerdctl exec c1 mongosh", [DB_MANIFEST])?.blockedToken).toBe(
+      "mongosh",
+    );
+  });
+
+  it("blocks docker run <image> psql", () => {
+    const m = findBlockingRule("docker run --rm postgres:16 psql -V", [DB_MANIFEST]);
+    expect(m?.blockedToken).toBe("psql");
+  });
+
+  it("blocks psql after kubectl exec -- separator", () => {
+    const m = findBlockingRule("kubectl exec mypod -c app -- psql -U u", [DB_MANIFEST]);
+    expect(m?.blockedToken).toBe("psql");
+  });
+
+  it("does not block non-db inner commands", () => {
+    expect(findBlockingRule("docker exec mydb ls -la", [DB_MANIFEST])).toBeNull();
+    expect(findBlockingRule("kubectl exec pod -- echo hi", [DB_MANIFEST])).toBeNull();
+  });
+
+  it("unwraps case-insensitive wrapper heads (DOCKER EXEC)", () => {
+    const m = findBlockingRule("DOCKER EXEC mydb psql", [DB_MANIFEST]);
+    expect(m?.blockedToken).toBe("psql");
+  });
+
+  it("still respects the depth cap (no throw on nested wrappers)", () => {
+    const m = findBlockingRule(
+      "docker exec a docker exec b docker exec c docker exec d psql",
+      [DB_MANIFEST],
+    );
+    expect(m === null || m.blockedToken === "psql").toBe(true);
+  });
+});
+
+describe("findBlockingRule — case-insensitive matching", () => {
+  it("blocks uppercase PSQL", () => {
+    expect(findBlockingRule("PSQL -V", [DB_MANIFEST])?.blockedToken).toBe("PSQL");
+  });
+
+  it("blocks mixed-case MySQL and basename /usr/bin/PSQL", () => {
+    expect(findBlockingRule("MySQL -u root", [DB_MANIFEST])?.blockedToken).toBe("MySQL");
+    expect(findBlockingRule("/usr/bin/PSQL -V", [DB_MANIFEST])?.blockedToken).toBe("PSQL");
+  });
+
+  it("blocks two-token 'AWS DynamoDB' case-insensitively", () => {
+    expect(findBlockingRule("AWS DynamoDB list-tables", [DB_MANIFEST])?.blockedToken).toBe(
+      "AWS DynamoDB",
+    );
+  });
+
+  it("preserves original case in blockedToken for the deny message", () => {
+    const match = findBlockingRule("PSQL -V", [DB_MANIFEST])!;
+    expect(defaultDenyMessage(match)).toContain("PSQL");
+  });
+});
+
 describe("findBlockingRule — two-token command match", () => {
   it("blocks 'aws dynamodb …' but not 'aws s3 …'", () => {
     expect(findBlockingRule("aws dynamodb list-tables", [DB_MANIFEST])?.blockedToken).toBe(
