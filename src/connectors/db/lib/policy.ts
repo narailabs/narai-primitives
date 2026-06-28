@@ -57,6 +57,57 @@ export const OperationType = {
   PRIVILEGE: "privilege" as const,
 } satisfies Record<string, OperationType>;
 
+/**
+ * SQL dialect used to disambiguate constructs that are parsed differently
+ * across engines. `"generic"` is the default safe posture: it keeps the
+ * strictest interpretation (e.g. `[` is treated as an ambiguous SQL Server
+ * bracket-quoted identifier and rejected). Only the dialects where `[` is
+ * ordinary syntax (Postgres array literals/casts, etc.) relax that guard.
+ */
+export type SqlDialect =
+  | "sqlserver"
+  | "postgres"
+  | "mysql"
+  | "sqlite"
+  | "oracle"
+  | "generic";
+
+/**
+ * Normalize a driver/dialect string into a `SqlDialect`. Unknown values fall
+ * back to `"generic"` (the safe posture) so a config can never disable a guard
+ * by choosing an unmapped alias.
+ */
+export function normalizeDialect(driver: string | undefined): SqlDialect {
+  switch ((driver ?? "").toLowerCase()) {
+    case "sqlserver":
+    case "mssql":
+      return "sqlserver";
+    case "postgres":
+    case "postgresql":
+      return "postgres";
+    case "mysql":
+      return "mysql";
+    case "sqlite":
+      return "sqlite";
+    case "oracle":
+    case "oracledb":
+    case "oci":
+      return "oracle";
+    default:
+      return "generic";
+  }
+}
+
+/**
+ * Whether `[` should be treated as an (ambiguous) identifier-quote opener and
+ * rejected. Only SQL Server uses bracket-quoted identifiers; `"generic"`
+ * (unknown driver) also fails closed. For Postgres/MySQL/SQLite/Oracle, `[`
+ * is ordinary syntax (array literals/subscripts) and is allowed.
+ */
+function _bracketsAreIdentifierQuotes(dialect: SqlDialect): boolean {
+  return dialect === "sqlserver" || dialect === "generic";
+}
+
 /** Discriminated union: `formatted_sql` is REQUIRED only when decision === "present_only". */
 export type PolicyResult =
   | { decision: "allow"; reason: string }
@@ -82,7 +133,7 @@ const _DECISION_RANK: Record<Decision, number> = {
 // -----------------------------------------------------------------------
 
 const _READ_KEYWORDS: ReadonlySet<string> = new Set([
-  "SELECT", "EXPLAIN", "SHOW", "DESCRIBE", "DESC", "WITH",
+  "SELECT", "EXPLAIN", "SHOW", "DESCRIBE", "DESC", "WITH", "VALUES", "TABLE",
 ]);
 const _WRITE_KEYWORDS: ReadonlySet<string> = new Set([
   "INSERT", "UPDATE", "REPLACE", "MERGE", "UPSERT",
@@ -107,8 +158,11 @@ const _PRIVILEGE_KEYWORDS: ReadonlySet<string> = new Set([
  * Default-deny: any unknown first-word falls through to `ADMIN` (most
  * restrictive), matching `policy.py`'s safety-floor intent.
  */
-export function classifySqlKeywords(sql: string): OperationType {
-  const cleaned = Policy._stripComments(sql).trim();
+export function classifySqlKeywords(
+  sql: string,
+  dialect: SqlDialect = "generic",
+): OperationType {
+  const cleaned = Policy._stripComments(sql, dialect).trim();
   if (!cleaned) {
     throw new Error("Empty SQL statement");
   }
@@ -119,6 +173,20 @@ export function classifySqlKeywords(sql: string): OperationType {
   if (_ADMIN_KEYWORDS.has(firstWord)) return OperationType.ADMIN;
   if (_DELETE_KEYWORDS.has(firstWord)) return OperationType.DELETE;
   if (_WRITE_KEYWORDS.has(firstWord)) return OperationType.WRITE;
+
+  // A data-modifying CTE leads with WITH but can contain a write/delete/admin
+  // inside its body (e.g. `WITH x AS (DELETE FROM t RETURNING *) SELECT ...`).
+  // Scan the string-masked statement so keywords inside string literals are
+  // ignored, and escalate to the strictest contained op.
+  if (firstWord === "WITH") {
+    const masked = Policy._maskStringLiterals(cleaned).toUpperCase();
+    if (/\b(GRANT|REVOKE)\b/.test(masked)) return OperationType.PRIVILEGE;
+    if (/\b(CREATE|DROP|ALTER|RENAME)\b/.test(masked)) return OperationType.ADMIN;
+    if (/\b(DELETE|TRUNCATE)\b/.test(masked)) return OperationType.DELETE;
+    if (/\b(INSERT|UPDATE|REPLACE|MERGE|UPSERT)\b/.test(masked)) return OperationType.WRITE;
+    return OperationType.READ;
+  }
+
   if (_READ_KEYWORDS.has(firstWord)) return OperationType.READ;
 
   return OperationType.ADMIN;
@@ -179,7 +247,11 @@ function _isExecCommentStart(sql: string, i: number): boolean {
   return false;
 }
 
-function _boundarySemicolons(sql: string, treatBackslashAsEscape: boolean): Set<number> {
+function _boundarySemicolons(
+  sql: string,
+  treatBackslashAsEscape: boolean,
+  dialect: SqlDialect = "generic",
+): Set<number> {
   const boundaries = new Set<number>();
   let inString: string | null = null; // Either null, "'", '"', or '`'
 
@@ -197,7 +269,7 @@ function _boundarySemicolons(sql: string, treatBackslashAsEscape: boolean): Set<
         i++; // skip escaped char like \'
       }
     } else {
-      if (c === "[" || _isExecCommentStart(sql, i)) {
+      if ((c === "[" && _bracketsAreIdentifierQuotes(dialect)) || _isExecCommentStart(sql, i)) {
         throw new Error("Ambiguous or unrecognized SQL construct");
       }
       if (c === "'" || c === '"' || c === "`") {
@@ -228,11 +300,11 @@ function _boundarySemicolons(sql: string, treatBackslashAsEscape: boolean): Set<
  * and backslash-as-escape semantics. If the two modes disagree on statement
  * boundaries, the function fails closed and throws an error.
  */
-function _splitStatements(sql: string): string[] {
-  const cleaned = Policy._stripComments(sql);
+function _splitStatements(sql: string, dialect: SqlDialect = "generic"): string[] {
+  const cleaned = Policy._stripComments(sql, dialect);
 
-  const b1 = _boundarySemicolons(cleaned, false);
-  const b2 = _boundarySemicolons(cleaned, true);
+  const b1 = _boundarySemicolons(cleaned, false, dialect);
+  const b2 = _boundarySemicolons(cleaned, true, dialect);
 
   if (b1.size !== b2.size) {
     throw new Error("Ambiguous SQL statement boundaries");
@@ -273,12 +345,15 @@ function _splitStatements(sql: string): string[] {
  * A compound of all reads classifies as [READ, READ, ...] and the aggregate
  * decision is allow.
  */
-export function classifyStatements(sql: string): OperationType[] {
-  const stmts = _splitStatements(sql);
+export function classifyStatements(
+  sql: string,
+  dialect: SqlDialect = "generic",
+): OperationType[] {
+  const stmts = _splitStatements(sql, dialect);
   if (stmts.length === 0) {
     throw new Error("Empty SQL statement");
   }
-  return stmts.map((s) => classifySqlKeywords(s));
+  return stmts.map((s) => classifySqlKeywords(s, dialect));
 }
 
 
@@ -325,11 +400,15 @@ export class Policy {
   // G-DB-AUDIT: grant_types that have already had a `grant_expired` event
   // emitted (de-dupes spam from repeated isGrantActive polling).
   private readonly _expired_logged: Set<string>;
+  // SQL dialect used to disambiguate constructs like `[` during splitting and
+  // classification. Defaults to the safe `"generic"` posture.
+  private readonly _dialect: SqlDialect;
 
   constructor(
     approvalMode: string = "auto",
     rules: PolicyRules = DEFAULT_POLICY,
     grantStore: GrantStore = new MemoryGrantStore(),
+    dialect: SqlDialect = "generic",
   ) {
     if (!_VALID_APPROVAL_MODES.has(approvalMode as ApprovalMode)) {
       // Match Python repr(): single-quoted string.
@@ -340,6 +419,7 @@ export class Policy {
     this._session_approved = false;
     this._grants = grantStore;
     this._expired_logged = new Set();
+    this._dialect = dialect;
   }
 
   // ------------------------------------------------------------------
@@ -357,7 +437,7 @@ export class Policy {
    * vs treating `\` as escape). If the two modes disagree on what constitutes
    * a comment, it fails closed and throws an error.
    */
-  static _stripComments(sql: string): string {
+  static _stripComments(sql: string, dialect: SqlDialect = "generic"): string {
     const isComment1 = new Array<boolean>(sql.length).fill(false);
     const isComment2 = new Array<boolean>(sql.length).fill(false);
 
@@ -381,7 +461,7 @@ export class Policy {
           // (which would delete a following `;` and hide a statement).
           i = _dollarQuoteEnd(sql, i) - 1;
         } else {
-          if (c === "[" || _isExecCommentStart(sql, i)) {
+          if ((c === "[" && _bracketsAreIdentifierQuotes(dialect)) || _isExecCommentStart(sql, i)) {
             throw new Error("Ambiguous or unrecognized SQL construct");
           }
           if (c === "'" || c === '"' || c === "`") {
@@ -437,7 +517,7 @@ export class Policy {
 
   /** Determine the OperationType of a raw SQL string. */
   classifySql(sql: string): OperationType {
-    return classifySqlKeywords(sql);
+    return classifySqlKeywords(sql, this._dialect);
   }
 
   // ------------------------------------------------------------------
@@ -539,14 +619,14 @@ export class Policy {
     // all-allowed statements stays allowed.
     let classifications: OperationType[];
     try {
-      classifications = classifyStatements(stripped);
+      classifications = classifyStatements(stripped, this._dialect);
     } catch (exc) {
       const reason = (exc as Error).message;
       _emitDeny(reason, null);
       return { decision: "deny", reason };
     }
 
-    const statements = _splitStatements(stripped);
+    const statements = _splitStatements(stripped, this._dialect);
     const perStmt: Array<{ stmt: string; op: OperationType; result: PolicyResult }> = [];
     for (let i = 0; i < statements.length; i++) {
       const stmt = statements[i]!;
@@ -600,15 +680,23 @@ export class Policy {
    */
   private _decideOne(stmt: string, op: OperationType): PolicyResult {
     const rule = this._rules[op];
+    // Issue #9: an unrecognized leading keyword falls through to the ADMIN
+    // safety floor. Keep the strict decision, but tag the reason so the
+    // operator isn't told it was a genuine ADMIN statement.
+    const unrecognizedAdmin =
+      op === OperationType.ADMIN && _isUnrecognizedLeading(stmt, this._dialect);
     if (rule === "deny") {
-      return { decision: "deny", reason: _denyReason(op) };
+      const reason = unrecognizedAdmin ? _unrecognizedReason() : _denyReason(op);
+      return { decision: "deny", reason };
     }
     if (rule === "escalate") {
-      return { decision: "escalate", reason: _escalateReason(op) };
+      const reason = unrecognizedAdmin ? _unrecognizedReason() : _escalateReason(op);
+      return { decision: "escalate", reason };
     }
     if (rule === "present") {
       const formatted = _formatStatement(stmt);
-      return { decision: "present_only", reason: _presentReason(op), formatted_sql: formatted };
+      const reason = unrecognizedAdmin ? _unrecognizedReason() : _presentReason(op);
+      return { decision: "present_only", reason, formatted_sql: formatted };
     }
     // rule === "allow"
     if (op === OperationType.READ) {
@@ -812,6 +900,32 @@ function _denyReason(op: OperationType): string {
 
 function _escalateReason(op: OperationType): string {
   return `${op.toUpperCase()} statements require approval`;
+}
+
+/**
+ * Issue #9: reason for a statement whose leading keyword matched no known
+ * keyword set. It is classified as ADMIN (the most restrictive floor), so the
+ * decision is unchanged, but this message distinguishes it from a genuine
+ * recognized ADMIN statement (e.g. a typo like `SELEKT 1`).
+ */
+function _unrecognizedReason(): string {
+  return "Unrecognized leading keyword -- classified as ADMIN (most restrictive)";
+}
+
+/**
+ * True when the leading keyword of `stmt` is in none of the known keyword
+ * sets — i.e. it reached the ADMIN safety floor via fallthrough rather than a
+ * real ADMIN keyword.
+ */
+function _isUnrecognizedLeading(stmt: string, dialect: SqlDialect): boolean {
+  const w = (Policy._stripComments(stmt, dialect).trim().split(/\s+/)[0] ?? "").toUpperCase();
+  return !(
+    _READ_KEYWORDS.has(w) ||
+    _WRITE_KEYWORDS.has(w) ||
+    _DELETE_KEYWORDS.has(w) ||
+    _ADMIN_KEYWORDS.has(w) ||
+    _PRIVILEGE_KEYWORDS.has(w)
+  );
 }
 
 function _presentReason(op: OperationType): string {

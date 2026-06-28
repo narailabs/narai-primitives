@@ -106,6 +106,14 @@ describe("PolicyRules: ADMIN overrides (safety floor permits escalate/present)",
     );
     expect(result.decision).toBe(Decision.ESCALATE);
   });
+
+  // Issue #9: an unrecognized leading keyword falls through to the ADMIN
+  // safety floor; under admin: deny the reason flags it as unrecognized.
+  it("admin: deny on an unrecognized keyword tags the reason", () => {
+    const result = policy({ admin: "deny" }).checkQuery("SELEKT 1");
+    expect(result.decision).toBe(Decision.DENY);
+    expect(result.reason).toMatch(/Unrecognized leading keyword/i);
+  });
 });
 
 describe("PolicyRules: PRIVILEGE overrides", () => {

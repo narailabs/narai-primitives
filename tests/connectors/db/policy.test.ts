@@ -8,6 +8,7 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  classifySqlKeywords,
   Decision,
   grantFromEnv,
   OperationType,
@@ -125,6 +126,36 @@ describe("TestClassifySQL", () => {
   it("test_classify_cte", () => {
     const sql = "WITH cte AS (SELECT 1) SELECT * FROM cte";
     expect(policyAuto().classifySql(sql)).toBe(OperationType.READ);
+  });
+
+  // Issue #10: standalone VALUES and TABLE are read-only statements.
+  it("test_classify_values", () => {
+    expect(policyAuto().classifySql("VALUES (1),(2)")).toBe(OperationType.READ);
+  });
+
+  it("test_classify_table", () => {
+    expect(policyAuto().classifySql("TABLE users")).toBe(OperationType.READ);
+  });
+
+  // Issue #4: data-modifying CTEs must escalate beyond READ.
+  it("test_classify_cte_delete_escalates_to_delete", () => {
+    const sql = "WITH x AS (DELETE FROM users RETURNING *) SELECT * FROM x";
+    expect(classifySqlKeywords(sql)).toBe(OperationType.DELETE);
+  });
+
+  it("test_classify_cte_update_escalates_to_write", () => {
+    const sql = "WITH x AS (UPDATE t SET a=1 RETURNING *) SELECT * FROM x";
+    expect(classifySqlKeywords(sql)).toBe(OperationType.WRITE);
+  });
+
+  it("test_classify_cte_insert_escalates_to_write", () => {
+    const sql = "WITH x AS (INSERT INTO t VALUES (1) RETURNING *) SELECT * FROM x";
+    expect(classifySqlKeywords(sql)).toBe(OperationType.WRITE);
+  });
+
+  it("test_classify_cte_string_literal_keyword_stays_read", () => {
+    const sql = "WITH x AS (SELECT 'DELETE FROM users') SELECT * FROM x";
+    expect(classifySqlKeywords(sql)).toBe(OperationType.READ);
   });
 });
 
@@ -254,6 +285,40 @@ describe("TestDecisionLogic", () => {
       expect(result.formatted_sql).not.toBeNull();
       expect(result.formatted_sql.toUpperCase()).toContain("DELETE");
     }
+  });
+
+  // Issue #4: a data-modifying CTE must not be auto-approved as a read.
+  it("test_data_modifying_cte_is_not_allowed", () => {
+    const result = policyAuto().checkQuery(
+      "WITH x AS (DELETE FROM users RETURNING *) SELECT * FROM x",
+    );
+    expect(result.decision).toBe(Decision.PRESENT_ONLY);
+  });
+
+  // Issue #10: standalone VALUES / TABLE reads are allowed under auto.
+  it("test_values_constructor_allowed", () => {
+    const result = policyAuto().checkQuery("VALUES (1),(2)");
+    expect(result.decision).toBe(Decision.ALLOW);
+  });
+
+  it("test_table_shorthand_allowed", () => {
+    const result = policyAuto().checkQuery("TABLE users");
+    expect(result.decision).toBe(Decision.ALLOW);
+  });
+
+  // Issue #9: an unrecognized leading keyword is still treated as ADMIN
+  // (safety floor) but the reason makes clear it was unrecognized.
+  it("test_unrecognized_keyword_tagged_in_reason", () => {
+    const result = policyAuto().checkQuery("SELEKT 1");
+    expect(result.decision).toBe(Decision.PRESENT_ONLY);
+    expect(result.reason).toMatch(/Unrecognized leading keyword/i);
+  });
+
+  it("test_genuine_admin_keeps_original_reason", () => {
+    const result = policyAuto().checkQuery("DROP TABLE users");
+    expect(result.decision).toBe(Decision.PRESENT_ONLY);
+    expect(result.reason).toMatch(/displayed but not executed/);
+    expect(result.reason).not.toMatch(/Unrecognized leading keyword/i);
   });
 
   it("test_grant_active_after_add", () => {
