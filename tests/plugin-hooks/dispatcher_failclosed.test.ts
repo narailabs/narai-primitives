@@ -77,6 +77,72 @@ describe("applyGatesManifest — uncompilable pattern", () => {
   });
 });
 
+// ── unit: applyGatesManifest pattern flags / ignore_case ──
+describe("applyGatesManifest — pattern flags", () => {
+  const run = (
+    rule: Record<string, unknown>,
+    text: string,
+    enforcement?: string,
+  ) => {
+    const decisions: { decision: string; reason: string }[] = [];
+    applyGatesManifest({ enforcement, rules: [rule] }, "test", text, new Set(), decisions);
+    return decisions;
+  };
+
+  it("ignore_case folds in 'i' (matches uppercase)", () => {
+    const r = run(
+      { name: "imp", decision: "deny", pattern: "import\\s+psycopg2", ignore_case: true },
+      "IMPORT psycopg2",
+    );
+    expect(r).toHaveLength(1);
+    expect(r[0].decision).toBe("deny");
+  });
+
+  it("explicit flags:'i' matches case-insensitively", () => {
+    expect(
+      run({ name: "p", decision: "ask", pattern: "post", flags: "i" }, "send POST"),
+    ).toHaveLength(1);
+  });
+
+  it("backward compatible: no flags stays case-sensitive (no match)", () => {
+    expect(run({ name: "p", decision: "deny", pattern: "import" }, "IMPORT")).toHaveLength(0);
+  });
+
+  it("denies an unknown flag under fail_closed", () => {
+    const r = run(
+      { name: "bad", decision: "deny", pattern: "a", flags: "z" },
+      "echo hi",
+      "fail_closed",
+    );
+    expect(r).toHaveLength(1);
+    expect(r[0].decision).toBe("deny");
+  });
+
+  it("skips (no decision) an unknown flag under fail_open", () => {
+    expect(run({ name: "bad", decision: "deny", pattern: "a", flags: "z" }, "echo hi")).toHaveLength(0);
+  });
+
+  it("rejects the 'g' flag (lastIndex footgun) as unknown under fail_closed", () => {
+    const r = run(
+      { name: "bad", decision: "deny", pattern: "a", flags: "g" },
+      "echo hi",
+      "fail_closed",
+    );
+    expect(r).toHaveLength(1);
+    expect(r[0].decision).toBe("deny");
+  });
+
+  it("rejects the 'y' flag as unknown under fail_closed", () => {
+    const r = run(
+      { name: "bad", decision: "deny", pattern: "a", flags: "y" },
+      "echo hi",
+      "fail_closed",
+    );
+    expect(r).toHaveLength(1);
+    expect(r[0].decision).toBe("deny");
+  });
+});
+
 // ── integration: subprocess ──
 interface Result { stdout: string; stderr: string; exitCode: number }
 

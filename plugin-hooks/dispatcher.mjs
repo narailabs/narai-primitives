@@ -563,6 +563,19 @@ function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// Resolve optional case/flag controls for a pattern rule. Returns
+// { flags } on success or { error: true } for an unknown flag (the caller
+// fails closed). Backward compatible: a rule with neither field -> "".
+// `g` and `y` are deliberately disallowed: the compiled regex is reused
+// across every command segment, and a sticky/global flag carries `lastIndex`
+// between `.test()` calls, so it would intermittently miss and fail open.
+function resolveRuleFlags(rule) {
+  let flags = typeof rule.flags === "string" ? rule.flags : "";
+  if (flags && !/^[imsu]*$/.test(flags)) return { error: true };
+  if (rule.ignore_case === true && !flags.includes("i")) flags += "i";
+  return { flags };
+}
+
 // Turn a literal string into a case-insensitive regex fragment via character
 // classes. Used for verbs and hostnames so the matcher needs no global `i`
 // flag (which would wrongly conflate curl's case-sensitive `-X` method flag
@@ -616,12 +629,18 @@ export function buildExternalWriteMatcher(rule) {
   // tolerated, so an allowlisted host cannot be spoofed via path, query,
   // userinfo, a subdomain suffix (`atlassian.net.evil.com`), or a label prefix
   // (`evil-atlassian.net`).
-  const TOKEN = `(?:^|[\\s'"=])`;
   const SCHEME = `(?:[A-Za-z][A-Za-z0-9+.\\-]*:\\/{1,2})?`;
+  const SCHEME_REQ = `(?:[A-Za-z][A-Za-z0-9+.\\-]*:\\/{1,2})`;
   const USER = `(?:[^/?#\\s'"]*@)?`;
   const SUB = `(?:[A-Za-z0-9\\-]+\\.)*`;
   const HOSTPART = `${SUB}${HOST}\\.?(?=[:/?#\\s'"]|$)`;
-  const urlHostRe = new RegExp(`${TOKEN}${SCHEME}${USER}${HOSTPART}`);
+  // Two anchors. Unquoted (line/whitespace start): scheme is optional, so curl's
+  // scheme-less default (`curl -X POST atlassian.net/api`) still matches. Quoted
+  // (`'`/`"`): a scheme is REQUIRED, so a bare allowlisted host inside a quoted
+  // query value or data arg (`"...?ref=atlassian.net"`, `"u=atlassian.net"`) no
+  // longer reads as the request host. `=` is no longer a host-start delimiter.
+  const ANCHOR = `(?:(?:^|\\s)${SCHEME}|['"]${SCHEME_REQ})`;
+  const urlHostRe = new RegExp(`${ANCHOR}${USER}${HOSTPART}`);
   // Command names are matched case-insensitively (a case-insensitive
   // filesystem resolves `CURL`/`HTTP` to the real binary). The verb and data
   // flags below stay case-sensitive on purpose, so `-X` is not confused with
@@ -723,8 +742,18 @@ export function applyGatesManifest(manifest, source, text, disabled, decisions, 
       }
     } else {
       if (typeof rule.pattern !== "string") continue;
+      const fr = resolveRuleFlags(rule);
+      if (fr.error) {
+        if (enforcement === "fail_closed") {
+          decisions.push({
+            decision: "deny",
+            reason: `fail-closed enforcement: ${source} gate rule '${rule.name ?? "rule"}' has unknown regex flags`,
+          });
+        }
+        continue;
+      }
       let re;
-      try { re = new RegExp(expandPattern(rule.pattern)); } catch {
+      try { re = new RegExp(expandPattern(rule.pattern), fr.flags); } catch {
         if (enforcement === "fail_closed") {
           decisions.push({
             decision: "deny",
