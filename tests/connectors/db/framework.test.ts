@@ -129,6 +129,40 @@ describe("framework envelope translation", () => {
     }
   });
 
+  it("SQL execution error → VALIDATION_ERROR envelope, NOT CONNECTION_ERROR", async () => {
+    const c = buildDbConnector({
+      dispatch: async () => ({
+        status: "error" as const,
+        error_code: "SQL_ERROR",
+        error: 'relation "nope" does not exist',
+        execution_time_ms: 0,
+      }),
+    });
+    const env = await c.fetch("query", { server: "dev", sql: "SELECT * FROM nope" });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.error_code).toBe("VALIDATION_ERROR");
+      expect(env.error_code).not.toBe("CONNECTION_ERROR");
+      expect(env.message).toContain("does not exist");
+    }
+  });
+
+  it("real connection failure still maps to CONNECTION_ERROR", async () => {
+    const c = buildDbConnector({
+      dispatch: async () => ({
+        status: "error" as const,
+        error_code: "CONNECTION_ERROR",
+        error: "ECONNREFUSED 127.0.0.1:5432",
+        execution_time_ms: 0,
+      }),
+    });
+    const env = await c.fetch("query", { server: "dev", sql: "SELECT 1" });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.error_code).toBe("CONNECTION_ERROR");
+    }
+  });
+
   it("schema action → success envelope with data.tables/table_count", async () => {
     const dbPath = makeFixtureDb();
     const env = await connector.fetch("schema", { sqlite_path: dbPath });
