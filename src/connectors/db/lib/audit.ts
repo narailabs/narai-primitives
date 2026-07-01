@@ -125,12 +125,16 @@ export interface LogQueryParams {
 // `{"message":"authorization: …"}` swallowed the trailing `"}` and
 // produced unterminated JSON.
 const _SENSITIVE_KEYS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth";
+
+// ⚡ Bolt: Prevent ReDoS by loop unrolling the string value regex (O(N) linear performance).
 const _SENSITIVE_LITERAL_SQUOTE_RE = new RegExp(
-  `("?\\b(?:${_SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)'(?:[^'\\\\]|\\\\.)*'`,
+  `("?\\b(?:${_SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)'[^'\\\\]*(?:\\\\.[^'\\\\]*)*'`,
   "gi",
 );
+
+// ⚡ Bolt: Prevent ReDoS by loop unrolling the string value regex (O(N) linear performance).
 const _SENSITIVE_LITERAL_DQUOTE_RE = new RegExp(
-  `("?\\b(?:${_SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)"(?:[^"\\\\]|\\\\.)*"`,
+  `("?\\b(?:${_SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)"[^"\\\\]*(?:\\\\.[^"\\\\]*)*"`,
   "gi",
 );
 const _SENSITIVE_AUTH_QUOTED_RE =

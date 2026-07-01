@@ -10,3 +10,6 @@
 ## 2024-06-25 - Avoid array sort for Top-K in hot paths
 **Learning:** V8 engine sorting (`[...arr].sort()`) is surprisingly slow and blocks the event loop for thousands of records when fetching Top-K elements (e.g. usage statistics). It scales at O(N log N) when O(N) is sufficient for a fixed K.
 **Action:** When gathering top elements from a large data array in this codebase, manually track the top items in a single O(N) pass rather than sorting a full copy.
+## 2024-05-18 - Loop Unrolling Regex for O(N) Performance
+**Learning:** The previous regexes `(?:[^'\\]|\\.)*` used for matching string values in the secret scrubber caused catastrophic backtracking (ReDoS) and scaled poorly with long payloads due to repeated alternation.
+**Action:** Unroll loops when parsing escaped strings, e.g., `[^'\\]*(?:\\.[^'\\]*)*`, to keep processing strictly linear O(N) and drastically improve match speed on large payloads.
