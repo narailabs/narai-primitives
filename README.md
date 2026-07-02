@@ -10,12 +10,14 @@ service integrations.
 - **Nine connectors behind one dependency.** `aws`, `confluence`, `db`
   (postgres, mysql, sqlite, mssql, mongodb, dynamodb, oracle), `gcp`,
   `github`, `gitlab`, `jira`, `linear`, `notion`.
-- **Read-only by default.** Every connector action is classified
-  (`read` / `write` / `delete` / `admin` / `privilege`). Reads auto-approve by
-  default, with configurable approval modes (`auto` / `confirm_once` /
-  `confirm_each` / `grant_required`); writes, deletes, and admin actions are
-  escalated or denied by the toolkit's policy gate, and config can never set
-  `admin` to auto-succeed — the policy loader rejects it.
+- **Read-only by default.** Every connector action is classified before it
+  runs. Toolkit policy is keyed by `read` / `write` / `admin` plus per-aspect
+  rules (a delete is a `write` carrying a `delete` aspect; the `db` connector
+  adds further kinds internally). Reads auto-approve by default, with
+  configurable approval modes (`auto` / `confirm_once` / `confirm_each` /
+  `grant_required`); writes and admin actions are escalated or denied by the
+  policy gate, and config can never set `admin` to auto-succeed — the policy
+  loader rejects it.
 - **Credentials stay inside the connector process.** Config references such as
   `password: env:DB_PW` are expanded in the connector subprocess — the calling
   agent never handles secrets. The `/credentials` subpath adds a resolver with
