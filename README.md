@@ -15,10 +15,12 @@ service integrations.
   writes and deletes escalate through the toolkit's policy gate;
   admin and privilege actions require an explicit grant.
 - **Credentials stay inside the connector process.** Config references such as
-  `password: env:DB_PW` resolve through env-var, file, OS-keychain, or
-  cloud-secret-manager providers in the connector subprocess — the calling
-  agent never handles secrets. Cloud SDKs and database drivers are optional
-  dependencies, loaded lazily only when used.
+  `password: env:DB_PW` are expanded in the connector subprocess — the calling
+  agent never handles secrets. The `/credentials` subpath adds a resolver with
+  env-var, file, OS-keychain, and cloud-secret-manager providers for code that
+  opts in by registering them; the stock connector bootstrap expands `env:`
+  references only. Cloud SDKs and database drivers are optional dependencies,
+  loaded lazily only when used.
 - **Repo config can tighten policy, never escalate it.** User-level
   `~/.connectors/config.yaml` deep-merges with a per-repo overlay; the overlay
   can retarget servers and tighten rules but cannot lift the
