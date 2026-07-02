@@ -23,8 +23,9 @@ service integrations.
   agent never handles secrets. The `/credentials` subpath adds a resolver with
   env-var, file, OS-keychain, and cloud-secret-manager providers for code that
   opts in by registering them; the stock connector bootstrap expands `env:`
-  references only. Cloud SDKs and database drivers are optional dependencies,
-  loaded lazily only when used.
+  references only. Cloud SDKs and database drivers are loaded
+  lazily only when used, and all but the bundled sqlite driver
+  (`better-sqlite3`) are optional dependencies.
 - **Repo config can tighten `db` policy, never escalate it.** For the `db`
   connector, user-level `~/.connectors/config.yaml` deep-merges with a
   per-repo overlay; the overlay can retarget servers and tighten rules but
