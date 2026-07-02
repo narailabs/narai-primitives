@@ -11,9 +11,11 @@ service integrations.
   (postgres, mysql, sqlite, mssql, mongodb, dynamodb, oracle), `gcp`,
   `github`, `gitlab`, `jira`, `linear`, `notion`.
 - **Read-only by default.** Every connector action is classified
-  (`read` / `write` / `delete` / `admin` / `privilege`). Reads auto-approve;
-  writes and deletes escalate through the toolkit's policy gate;
-  admin and privilege actions require an explicit grant.
+  (`read` / `write` / `delete` / `admin` / `privilege`). Reads auto-approve by
+  default, with configurable approval modes (`auto` / `confirm_once` /
+  `confirm_each` / `grant_required`); writes, deletes, and admin actions are
+  escalated or denied by the toolkit's policy gate, and config can never set
+  `admin` to auto-succeed — the policy loader rejects it.
 - **Credentials stay inside the connector process.** Config references such as
   `password: env:DB_PW` are expanded in the connector subprocess — the calling
   agent never handles secrets. The `/credentials` subpath adds a resolver with
@@ -21,10 +23,11 @@ service integrations.
   opts in by registering them; the stock connector bootstrap expands `env:`
   references only. Cloud SDKs and database drivers are optional dependencies,
   loaded lazily only when used.
-- **Repo config can tighten policy, never escalate it.** User-level
-  `~/.connectors/config.yaml` deep-merges with a per-repo overlay; the overlay
-  can retarget servers and tighten rules but cannot lift the
-  admin/privilege ceiling.
+- **Repo config can tighten `db` policy, never escalate it.** For the `db`
+  connector, user-level `~/.connectors/config.yaml` deep-merges with a
+  per-repo overlay; the overlay can retarget servers and tighten rules but
+  cannot lift the admin/privilege ceiling. The other connectors read their
+  policy from their own `~/.<name>-agent/config.yaml` discovery.
 
 ## Install
 
