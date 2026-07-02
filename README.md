@@ -1,21 +1,28 @@
 # narai-primitives
 
-Read-only connectors + planning hub + connector framework, in one package.
+Read-only connectors, a planning hub, a connector toolkit, and credential
+resolution for agent tooling — one npm dependency instead of N hand-rolled
+service integrations.
 
-Bundles what used to ship as eleven separate `@narai/*` packages:
-
-- `@narai/connector-toolkit` → `narai-primitives/toolkit`
-- `@narai/connector-config` → `narai-primitives/config`
-- `@narai/connector-hub` → `narai-primitives` (default) or `narai-primitives/hub`
-- `@narai/credential-providers` → `narai-primitives/credentials`
-- `@narai/aws-agent-connector` → `narai-primitives/aws`
-- `@narai/confluence-agent-connector` → `narai-primitives/confluence`
-- `@narai/db-agent-connector` → `narai-primitives/db`
-- `@narai/gcp-agent-connector` → `narai-primitives/gcp`
-- `@narai/github-agent-connector` → `narai-primitives/github`
-- `@narai/jira-agent-connector` → `narai-primitives/jira`
-- `@narai/notion-agent-connector` → `narai-primitives/notion`
-- `@narai/gitlab-agent-connector` → `narai-primitives/gitlab`
+- **One `gather()` call.** `gather({ prompt, consumer })` plans against each
+  connector's bundled documentation, dispatches the plan in parallel as
+  connector subprocesses, and returns the plan plus structured results.
+- **Nine connectors behind one dependency.** `aws`, `confluence`, `db`
+  (postgres, mysql, sqlite, mssql, mongodb, dynamodb, oracle), `gcp`,
+  `github`, `gitlab`, `jira`, `linear`, `notion`.
+- **Read-only by default.** Every connector action is classified
+  (`read` / `write` / `delete` / `admin` / `privilege`). Reads auto-approve;
+  writes and deletes escalate through the toolkit's policy gate;
+  admin and privilege actions require an explicit grant.
+- **Credentials stay inside the connector process.** Config references such as
+  `password: env:DB_PW` resolve through env-var, file, OS-keychain, or
+  cloud-secret-manager providers in the connector subprocess — the calling
+  agent never handles secrets. Cloud SDKs and database drivers are optional
+  dependencies, loaded lazily only when used.
+- **Repo config can tighten policy, never escalate it.** User-level
+  `~/.connectors/config.yaml` deep-merges with a per-repo overlay; the overlay
+  can retarget servers and tighten rules but cannot lift the
+  admin/privilege ceiling.
 
 ## Install
 
@@ -47,6 +54,26 @@ npx narai jira list_issues --project AUTH
 # individual (back-compat aliases)
 npx jira-agent-connector --action list_issues --params '{"project":"AUTH"}'
 ```
+
+## Bundled packages and subpaths
+
+Bundles what used to ship as eleven separate `@narai/*` packages:
+
+- `@narai/connector-toolkit` → `narai-primitives/toolkit`
+- `@narai/connector-config` → `narai-primitives/config`
+- `@narai/connector-hub` → `narai-primitives` (default) or `narai-primitives/hub`
+- `@narai/credential-providers` → `narai-primitives/credentials`
+- `@narai/aws-agent-connector` → `narai-primitives/aws`
+- `@narai/confluence-agent-connector` → `narai-primitives/confluence`
+- `@narai/db-agent-connector` → `narai-primitives/db`
+- `@narai/gcp-agent-connector` → `narai-primitives/gcp`
+- `@narai/github-agent-connector` → `narai-primitives/github`
+- `@narai/jira-agent-connector` → `narai-primitives/jira`
+- `@narai/notion-agent-connector` → `narai-primitives/notion`
+
+The `gitlab` and `linear` connectors were added natively in 2.x
+(`narai-primitives/gitlab`, `narai-primitives/linear`); they never shipped as
+standalone `@narai/*` packages.
 
 ## Migration from the old `@narai/*` packages
 
