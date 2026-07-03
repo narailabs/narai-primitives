@@ -23,14 +23,16 @@ service integrations.
   agent never handles secrets. The `/credentials` subpath adds a resolver with
   env-var, file, OS-keychain, and cloud-secret-manager providers for code that
   opts in by registering them; the stock connector bootstrap expands `env:`
-  references only. Cloud SDKs and database drivers are loaded
-  lazily only when used, and all but the bundled sqlite driver
-  (`better-sqlite3`) are optional dependencies.
-- **Repo config can tighten `db` policy, never escalate it.** For the `db`
-  connector, user-level `~/.connectors/config.yaml` deep-merges with a
-  per-repo overlay; the overlay can retarget servers and tighten rules but
-  cannot lift the admin/privilege ceiling. The other connectors read their
-  policy from their own `~/.<name>-agent/config.yaml` discovery.
+  references only. Cloud SDKs and database drivers — other than the
+  bundled sqlite driver (`better-sqlite3`), which loads with the `db`
+  connector — are optional dependencies, loaded lazily only when used.
+- **The `db` connector's config has a ceiling no overlay can lift.** For the
+  `db` connector, user-level `~/.connectors/config.yaml` deep-merges with a
+  per-repo overlay (repo wins, so an overlay can retarget servers and
+  override non-admin policy in either direction) — but `admin: allow` and
+  `privilege: allow` are rejected at every level after the merge. The other
+  connectors read their policy from their own `~/.<name>-agent/config.yaml`
+  discovery.
 
 ## Install
 
