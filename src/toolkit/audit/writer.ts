@@ -52,17 +52,18 @@ export interface AuditWriterOptions {
  * matched mid-string and the greedy unquoted value class swallowed the
  * trailing `"}`, producing unterminated JSON.
  */
-const SENSITIVE_KEYS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth";
+const SENSITIVE_KEYS =
+  "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth";
 const SENSITIVE_SQUOTE_RE = new RegExp(
-  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)'(?:[^'\\\\]|\\\\.)*'`,
+  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)'[^'\\\\]*(?:\\\\.[^'\\\\]*)*'`,
   "gi",
 );
 const SENSITIVE_DQUOTE_RE = new RegExp(
-  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)"(?:[^"\\\\]|\\\\.)*"`,
+  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)"[^"\\\\]*(?:\\\\.[^"\\\\]*)*"`,
   "gi",
 );
 const SENSITIVE_AUTH_QUOTED_RE =
-  /(?<=["'])(\bauthorization\b)("?)(\s*[:=]\s*)(?:(["'])((?:bearer|basic)\s+)?(?:\\.|[^\r\n\\])*?\4|((?:bearer|basic)\s+)?[^"'\r\n]+)/gi;
+  /(?<=["'])(\bauthorization\b)("?)(\s*[:=]\s*)(?:(["'])((?:bearer|basic)\s+)?[^\r\n\\]*(?:\\.[^\r\n\\]*)*?\4|((?:bearer|basic)\s+)?[^"'\r\n]+)/gi;
 const SENSITIVE_AUTH_LINE_RE =
   /(?:^|(?<=[\r\n]))(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?[^\r\n]+/gi;
 
@@ -109,7 +110,8 @@ export interface AuditWriter {
   readonly enabled: boolean;
   readonly sessionId: string;
   logEvent(
-    event: Omit<AuditEvent, "timestamp" | "session_id"> & Record<string, unknown>,
+    event: Omit<AuditEvent, "timestamp" | "session_id"> &
+      Record<string, unknown>,
   ): void;
 }
 
@@ -125,7 +127,8 @@ class DiskAuditWriter implements AuditWriter {
   }
 
   logEvent(
-    event: Omit<AuditEvent, "timestamp" | "session_id"> & Record<string, unknown>,
+    event: Omit<AuditEvent, "timestamp" | "session_id"> &
+      Record<string, unknown>,
   ): void {
     if (!this.enabled || this._path === null) return;
     const record: Record<string, unknown> = {
@@ -161,9 +164,7 @@ class NullAuditWriter implements AuditWriter {
 export function createAuditWriter(opts: AuditWriterOptions): AuditWriter {
   if (!opts.enabled) return new NullAuditWriter(opts.sessionId);
   if (opts.path === undefined || opts.path.length === 0) {
-    throw new Error(
-      "audit: 'path' is required when 'enabled' is true",
-    );
+    throw new Error("audit: 'path' is required when 'enabled' is true");
   }
   return new DiskAuditWriter(opts);
 }

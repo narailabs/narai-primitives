@@ -41,8 +41,8 @@ export function enableAudit(filePath: string, sessionId?: string | null): void {
   _state.sessionId =
     sessionId !== undefined && sessionId !== null
       ? sessionId
-      // Python: secrets.token_hex(6) → 12 hex chars.
-      : crypto.randomBytes(6).toString("hex");
+      : // Python: secrets.token_hex(6) → 12 hex chars.
+        crypto.randomBytes(6).toString("hex");
 }
 
 /** Disable audit logging and clear state. */
@@ -124,17 +124,18 @@ export interface LogQueryParams {
 // Anchoring avoids the regression where a mid-string match on
 // `{"message":"authorization: …"}` swallowed the trailing `"}` and
 // produced unterminated JSON.
-const _SENSITIVE_KEYS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth";
+const _SENSITIVE_KEYS =
+  "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth";
 const _SENSITIVE_LITERAL_SQUOTE_RE = new RegExp(
-  `("?\\b(?:${_SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)'(?:[^'\\\\]|\\\\.)*'`,
+  `("?\\b(?:${_SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)'[^'\\\\]*(?:\\\\.[^'\\\\]*)*'`,
   "gi",
 );
 const _SENSITIVE_LITERAL_DQUOTE_RE = new RegExp(
-  `("?\\b(?:${_SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)"(?:[^"\\\\]|\\\\.)*"`,
+  `("?\\b(?:${_SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)"[^"\\\\]*(?:\\\\.[^"\\\\]*)*"`,
   "gi",
 );
 const _SENSITIVE_AUTH_QUOTED_RE =
-  /(?<=["'])(\bauthorization\b)("?)(\s*[:=]\s*)(?:(["'])((?:bearer|basic)\s+)?(?:\\.|[^\r\n\\])*?\4|((?:bearer|basic)\s+)?[^"'\r\n]+)/gi;
+  /(?<=["'])(\bauthorization\b)("?)(\s*[:=]\s*)(?:(["'])((?:bearer|basic)\s+)?[^\r\n\\]*(?:\\.[^\r\n\\]*)*?\4|((?:bearer|basic)\s+)?[^"'\r\n]+)/gi;
 const _SENSITIVE_AUTH_LINE_RE =
   /(?:^|(?<=[\r\n]))(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?[^\r\n]+/gi;
 
