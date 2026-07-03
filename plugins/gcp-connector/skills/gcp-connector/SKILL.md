@@ -30,13 +30,46 @@ orchestrator.
 | `list_services` | `project_id` |
 | `describe_db` | `project_id`, `instance_id`, optional `database` |
 | `list_topics` | `project_id` |
-| `query_logs` | `project_id`, `filter`, optional `hours` (default 24, max 168), optional `max_results` (default 100, max 1000) |
+| `query_logs` | `project_id`, exactly one of `filter` / `structured_filter`, optional `hours` (default 24, max 168), optional `max_results` (default 100, max 1000) |
 
 Example:
 
 ```bash
 gcp-connector --action list_services --params '{"project_id":"acme-prod-123"}'
 ```
+
+### query_logs filters
+
+Prefer `structured_filter` — JSON clauses compiled internally to a Cloud
+Logging filter string with correct quoting/escaping. Operators: `=`, `!=`,
+`>=`, `<=`, `contains` (alias `:`). Fields are dotted identifier paths
+(`severity`, `textPayload`, `trace`, `logName`, `resource.type`,
+`resource.labels.*`, `jsonPayload.*`). Clauses combine under `and` / `or`,
+nested one level deep. Values are always treated as data — quotes,
+backslashes, and newlines in values are escaped, never interpreted as
+filter syntax.
+
+```bash
+gcp-connector --action query_logs --params '{
+  "project_id": "acme-prod-123",
+  "structured_filter": {"and": [
+    {"field": "resource.type", "op": "=", "value": "k8s_container"},
+    {"field": "resource.labels.namespace_name", "op": "=", "value": "prod-app"},
+    {"field": "severity", "op": ">=", "value": "ERROR"},
+    {"field": "textPayload", "op": "contains", "value": "connection refused"}
+  ]}
+}'
+```
+
+The raw `filter` string remains available for simple unquoted expressions
+(e.g. `severity=ERROR`) but rejects semicolons, quotes, and shell
+metacharacters — use `structured_filter` for anything needing quoted
+values, severity floors, or multi-word search.
+
+Each returned entry has `timestamp`, `severity`, `message` (falls back
+`textPayload` → `jsonPayload.message` → stringified `jsonPayload`),
+`container`, `namespace`, `pod`, `trace_id`, `log_name`, `insert_id`
+(missing values are `null`).
 
 ## Credentials
 

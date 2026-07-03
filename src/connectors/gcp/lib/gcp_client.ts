@@ -14,6 +14,10 @@ import {
   execFileSync,
   type ExecFileSyncOptionsWithStringEncoding,
 } from "node:child_process";
+import {
+  compileLogFilter,
+  type StructuredLogFilter,
+} from "./log_filter.js";
 
 type CommandRunner = (
   file: string,
@@ -110,6 +114,7 @@ export class GcpClient {
     binary: "gcloud" | "bq",
     subcommand: string,
     args: string[],
+    opts: { unsafeCheckExemptIndices?: readonly number[] } = {},
   ): GcpResult<string> {
     if (!ALLOWED_BINARIES.has(binary)) {
       return {
@@ -134,10 +139,17 @@ export class GcpClient {
     // that content is validated at the call site (bqQuery) and may
     // legitimately contain `;` inside string literals or as a single
     // trailing terminator, so we skip the blocklist for it specifically.
+    //
+    // Callers may also exempt specific argv indices whose content is safe
+    // by construction (e.g. a compiled structured log filter, which needs
+    // `>` and `"` for legitimate Cloud Logging syntax). Exemptions never
+    // apply to flag/subcommand positions.
     const isBqQuery = binary === "bq" && subcommand === "query";
     const lastIndex = args.length - 1;
+    const exempt = new Set(opts.unsafeCheckExemptIndices ?? []);
     for (let idx = 0; idx < args.length; idx++) {
       if (isBqQuery && idx === lastIndex) continue;
+      if (exempt.has(idx)) continue;
       const arg = args[idx] ?? "";
       if (/[;|&`$<>\n]/.test(arg)) {
         return {
@@ -261,6 +273,60 @@ export class GcpClient {
         retriable: false,
       };
     }
+    return this._loggingRead(projectId, filter, hours, maxResults, false);
+  }
+
+  /**
+   * Query Cloud Logging with a structured filter (see log_filter.ts). The
+   * filter is compiled internally with allowlisted operators, an identifier
+   * pattern on fields, and values emitted as escaped quoted literals — so
+   * the compiled string is safe by construction and does not go through the
+   * raw-filter character blocklist. Returns the entries alongside the
+   * compiled filter string so callers can echo what actually ran.
+   */
+  public async queryLogsStructured(
+    projectId: string,
+    filter: StructuredLogFilter,
+    hours: number,
+    maxResults: number,
+  ): Promise<GcpResult<{ entries: GcpLogEntry[]; compiledFilter: string }>> {
+    if (!PROJECT_ID_SAFE.test(projectId)) {
+      return {
+        ok: false,
+        code: "INVALID_PROJECT",
+        message: `Invalid project_id '${projectId}'`,
+        retriable: false,
+      };
+    }
+    let compiled: string;
+    try {
+      compiled = compileLogFilter(filter);
+    } catch (err) {
+      return {
+        ok: false,
+        code: "INVALID_FILTER",
+        message: err instanceof Error ? err.message : String(err),
+        retriable: false,
+      };
+    }
+    const result = await this._loggingRead(
+      projectId,
+      compiled,
+      hours,
+      maxResults,
+      true,
+    );
+    if (!result.ok) return result;
+    return { ok: true, data: { entries: result.data, compiledFilter: compiled } };
+  }
+
+  private async _loggingRead(
+    projectId: string,
+    filter: string,
+    hours: number,
+    maxResults: number,
+    filterIsCompiled: boolean,
+  ): Promise<GcpResult<GcpLogEntry[]>> {
     if (!Number.isFinite(hours) || hours <= 0 || hours > 168) {
       return {
         ok: false,
@@ -270,16 +336,25 @@ export class GcpClient {
       };
     }
     await this._throttle();
-    const raw = this._run("gcloud", "logging read", [
-      filter,
-      "--project",
-      projectId,
-      "--limit",
-      String(Math.min(Math.max(1, Math.trunc(maxResults)), 1000)),
-      "--freshness",
-      `${Math.trunc(hours)}h`,
-      "--format=json",
-    ]);
+    const raw = this._run(
+      "gcloud",
+      "logging read",
+      [
+        filter,
+        "--project",
+        projectId,
+        "--limit",
+        String(Math.min(Math.max(1, Math.trunc(maxResults)), 1000)),
+        "--freshness",
+        `${Math.trunc(hours)}h`,
+        "--format=json",
+      ],
+      // A compiled filter legitimately contains `"` and (for severity
+      // floors) `>` / `<`; it never traverses a shell (execFileSync) and is
+      // safe by construction, so it is exempt from the metachar blocklist.
+      // Raw filters keep the strict blocklist.
+      filterIsCompiled ? { unsafeCheckExemptIndices: [0] } : {},
+    );
     if (!raw.ok) return raw;
     return parseJsonArray<GcpLogEntry>(raw.data);
   }
@@ -359,6 +434,10 @@ export interface GcpLogEntry {
   severity?: string;
   textPayload?: string;
   jsonPayload?: Record<string, unknown>;
+  resource?: { type?: string; labels?: Record<string, string> };
+  trace?: string;
+  logName?: string;
+  insertId?: string;
 }
 
 export interface GcpBqResult {
