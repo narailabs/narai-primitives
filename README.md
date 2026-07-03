@@ -5,8 +5,11 @@ resolution for agent tooling — one npm dependency instead of N hand-rolled
 service integrations.
 
 - **One `gather()` call.** `gather({ prompt, consumer })` plans against each
-  connector's bundled documentation, dispatches the plan in parallel as
-  connector subprocesses, and returns the plan plus structured results.
+  configured connector's bundled documentation, dispatches the plan in
+  parallel as connector subprocesses, and returns the plan plus structured
+  results. Connectors are enabled per consumer in `~/.connectors/config.yaml`
+  (see Configuration below); with none configured, `gather()` returns an
+  empty plan.
 - **Nine connectors behind one dependency.** `aws`, `confluence`, `db`
   (postgres, mysql, sqlite, mssql, mongodb, dynamodb, oracle), `gcp`,
   `github`, `gitlab`, `jira`, `linear`, `notion`.
