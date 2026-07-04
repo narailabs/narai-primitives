@@ -129,18 +129,18 @@ call the Atlassian REST API directly — the binary is the only sanctioned
 channel. Never edit the operator's config to weaken a policy decision;
 report the decision instead.
 
-Default policy (operator may override under `connectors.jira.policy` in
-`~/.connectors/config.yaml`; per-site override under
-`connectors.jira.options.sites.<alias>.policy`):
+Default policy (operator may override via `~/.jira-agent/config.yaml`
+(user-level) or `<cwd>/.jira-agent/config.yaml` (repo overlay — wins on
+collisions)):
 
 ```yaml
 policy:
-  read: allow
+  read: success
   write: escalate
-  delete: escalate
-  admin: deny
-  privilege: deny
+  admin: denied
+  aspects:
+    delete: escalate
 ```
 
-The `admin` and `privilege` rules cannot be set to `allow` — the safety
-floor is enforced at config load.
+The `admin` rule cannot be set to `success` — the safety floor is
+enforced at config load.
