@@ -53,12 +53,14 @@ export interface AuditWriterOptions {
  * trailing `"}`, producing unterminated JSON.
  */
 const SENSITIVE_KEYS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth";
+// ⚡ Bolt: Prevent ReDoS and improve regex performance by replacing the alternation (?:[^'\\\\]|\\\\.)*
+// with loop unrolling. Using [^'\\\\]*(?:\\\\.[^'\\\\]*)* achieves O(N) linear performance while maintaining equivalence.
 const SENSITIVE_SQUOTE_RE = new RegExp(
-  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)'(?:[^'\\\\]|\\\\.)*'`,
+  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)'[^'\\\\]*(?:\\\\.[^'\\\\]*)*'`,
   "gi",
 );
 const SENSITIVE_DQUOTE_RE = new RegExp(
-  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)"(?:[^"\\\\]|\\\\.)*"`,
+  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)"[^"\\\\]*(?:\\\\.[^"\\\\]*)*"`,
   "gi",
 );
 const SENSITIVE_AUTH_QUOTED_RE =
