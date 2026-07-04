@@ -1,6 +1,6 @@
 {
   "name": "narai-primitives",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "description": "Read-only-by-default service connectors (AWS, Confluence, databases, GCP, GitHub, GitLab, Jira, Linear, Notion) plus a planning hub, connector toolkit, and credential resolution, in one package. One gather() call plans and fans out across connectors; writes route through a policy gate. Replaces the deprecated @narai/* packages.",
   "keywords": [
     "agent",

@@ -134,10 +134,19 @@ export class GcpClient {
     // that content is validated at the call site (bqQuery) and may
     // legitimately contain `;` inside string literals or as a single
     // trailing terminator, so we skip the blocklist for it specifically.
+    //
+    // `gcloud logging read` takes the filter as the first positional
+    // argument; Cloud Logging filter syntax legitimately uses `>` (severity
+    // floors) and `"` (exact/text matches). The filter is validated at the
+    // call site (queryLogs) — raw strings keep the strict character check,
+    // compiled strings are safe by construction — so the blocklist covers
+    // only the flag positions here.
     const isBqQuery = binary === "bq" && subcommand === "query";
+    const isLoggingRead = binary === "gcloud" && subcommand === "logging read";
     const lastIndex = args.length - 1;
     for (let idx = 0; idx < args.length; idx++) {
       if (isBqQuery && idx === lastIndex) continue;
+      if (isLoggingRead && idx === 0) continue;
       const arg = args[idx] ?? "";
       if (/[;|&`$<>\n]/.test(arg)) {
         return {
@@ -244,6 +253,7 @@ export class GcpClient {
     filter: string,
     hours: number,
     maxResults: number,
+    opts: { compiled?: boolean } = {},
   ): Promise<GcpResult<GcpLogEntry[]>> {
     if (!PROJECT_ID_SAFE.test(projectId)) {
       return {
@@ -253,7 +263,10 @@ export class GcpClient {
         retriable: false,
       };
     }
-    if (/[;'"\n]/.test(filter)) {
+    // Raw filter strings keep the strict character check. Filters compiled
+    // by log_filter.ts contain quotes by design and are safe by
+    // construction (values are escaped data), so they skip it.
+    if (!opts.compiled && /[;'"\n]/.test(filter)) {
       return {
         ok: false,
         code: "INVALID_FILTER",
@@ -359,6 +372,10 @@ export interface GcpLogEntry {
   severity?: string;
   textPayload?: string;
   jsonPayload?: Record<string, unknown>;
+  resource?: { type?: string; labels?: Record<string, string> };
+  trace?: string;
+  logName?: string;
+  insertId?: string;
 }
 
 export interface GcpBqResult {

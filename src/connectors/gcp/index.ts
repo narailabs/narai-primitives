@@ -14,9 +14,15 @@ import { z } from "zod";
 import {
   GcpClient,
   detectGcloudAvailable,
+  type GcpLogEntry,
   type GcpResult,
 } from "./lib/gcp_client.js";
 import { GcpCliError } from "./lib/gcp_error.js";
+import {
+  compileLogFilter,
+  LogFilterError,
+  type FilterNode,
+} from "./lib/log_filter.js";
 
 // ───────────────────────────────────────────────────────────────────────────
 // Param schemas
@@ -42,24 +48,66 @@ const describeDbParams = z.object({
   database: z.string().default(""),
 });
 
-const queryLogsParams = z.object({
-  project_id: projectIdField,
-  filter: z
-    .string()
-    .min(1, "query_logs requires a non-empty 'filter'")
-    .refine((f) => !/[;'"]/.test(f), {
+// Structured filter clauses — compiled to a Cloud Logging filter string by
+// log_filter.ts, which owns the security model (op allowlist, identifier
+// fields, values escaped as data). The zod shape mirrors those constraints
+// so bad input fails fast as a VALIDATION_ERROR.
+const FILTER_FIELD_SAFE = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/;
+
+const filterClauseSchema = z
+  .object({
+    field: z
+      .string()
+      .regex(
+        FILTER_FIELD_SAFE,
+        "Filter field must be a dotted identifier (e.g. resource.labels.namespace_name)",
+      ),
+    op: z.enum(["=", "!=", ">=", "<=", "contains", ":"]),
+    value: z.union([z.string(), z.number()]),
+  })
+  .strict();
+
+const filterLeafGroupSchema = z.union([
+  z.object({ and: z.array(filterClauseSchema).min(1) }).strict(),
+  z.object({ or: z.array(filterClauseSchema).min(1) }).strict(),
+]);
+
+const filterMemberSchema = z.union([filterClauseSchema, filterLeafGroupSchema]);
+
+const structuredFilterSchema = z.union([
+  filterClauseSchema,
+  z.object({ and: z.array(filterMemberSchema).min(1) }).strict(),
+  z.object({ or: z.array(filterMemberSchema).min(1) }).strict(),
+]);
+
+const queryLogsParams = z
+  .object({
+    project_id: projectIdField,
+    filter: z
+      .string()
+      .min(1, "query_logs requires a non-empty 'filter'")
+      .refine((f) => !/[;'"]/.test(f), {
+        message:
+          "Filter contains forbidden characters — no semicolons or quotes allowed",
+      })
+      .transform((f) => f.trim())
+      .optional(),
+    structured_filter: structuredFilterSchema.optional(),
+    hours: z.coerce.number().int().positive().max(MAX_LOG_HOURS).default(24),
+    max_results: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(MAX_RESULTS_CAP)
+      .default(MAX_RESULTS_DEFAULT),
+  })
+  .refine(
+    (p) => (p.filter !== undefined) !== (p.structured_filter !== undefined),
+    {
       message:
-        "Filter contains forbidden characters — no semicolons or quotes allowed",
-    })
-    .transform((f) => f.trim()),
-  hours: z.coerce.number().int().positive().max(MAX_LOG_HOURS).default(24),
-  max_results: z.coerce
-    .number()
-    .int()
-    .positive()
-    .max(MAX_RESULTS_CAP)
-    .default(MAX_RESULTS_DEFAULT),
-});
+        "query_logs requires exactly one of 'filter' (raw string) or 'structured_filter' (JSON clauses)",
+    },
+  );
 
 // ───────────────────────────────────────────────────────────────────────────
 // Error-code translation
@@ -83,6 +131,54 @@ const CODE_MAP: Record<string, ErrorCode> = {
   PERMISSION_DENIED: "AUTH_ERROR",
   RATE_LIMITED: "RATE_LIMITED",
 };
+
+const MAX_JSON_MESSAGE_BYTES = 2048;
+
+/**
+ * Project a raw Cloud Logging entry into the envelope shape. Existing
+ * fields keep their pre-2.6 semantics; new fields are null when absent —
+ * never omitted.
+ *
+ * message fallback chain: textPayload → jsonPayload.message →
+ * JSON.stringify(jsonPayload) truncated to ~2KB → null.
+ */
+function projectLogEntry(e: GcpLogEntry): {
+  timestamp: string | null;
+  severity: string;
+  message: string | null;
+  container: string | null;
+  namespace: string | null;
+  pod: string | null;
+  trace_id: string | null;
+  log_name: string | null;
+  insert_id: string | null;
+} {
+  let message: string | null = e.textPayload ?? null;
+  if (message === null && e.jsonPayload !== undefined) {
+    const jsonMessage = e.jsonPayload["message"];
+    if (typeof jsonMessage === "string" && jsonMessage.length > 0) {
+      message = jsonMessage;
+    } else {
+      const serialized = JSON.stringify(e.jsonPayload);
+      message =
+        serialized.length > MAX_JSON_MESSAGE_BYTES
+          ? serialized.slice(0, MAX_JSON_MESSAGE_BYTES)
+          : serialized;
+    }
+  }
+  const labels = e.resource?.labels ?? {};
+  return {
+    timestamp: e.timestamp ?? null,
+    severity: e.severity ?? "",
+    message,
+    container: labels["container_name"] ?? null,
+    namespace: labels["namespace_name"] ?? null,
+    pod: labels["pod_name"] ?? null,
+    trace_id: e.trace ?? null,
+    log_name: e.logName ?? null,
+    insert_id: e.insertId ?? null,
+  };
+}
 
 function throwIfError<T>(
   result: GcpResult<T>,
@@ -203,26 +299,31 @@ export function buildGcpConnector(overrides: BuildOptions = {}): Connector {
         },
       },
       query_logs: {
-        description: "Query Cloud Logging for entries matching a filter",
+        description:
+          "Query Cloud Logging for entries matching a filter. Prefer " +
+          "'structured_filter' (JSON clauses with and/or, compiled with " +
+          "correct quoting) over the raw 'filter' string, which forbids " +
+          "quotes and semicolons.",
         params: queryLogsParams,
         classify: { kind: "read" },
         handler: async (p: z.infer<typeof queryLogsParams>, ctx) => {
+          const compiled = p.structured_filter !== undefined;
+          const filter = compiled
+            ? compileLogFilter(p.structured_filter as FilterNode)
+            : (p.filter as string);
           const result = await ctx.sdk.queryLogs(
             p.project_id,
-            p.filter,
+            filter,
             p.hours,
             p.max_results,
+            { compiled },
           );
           throwIfError(result);
           return {
             project_id: p.project_id,
-            filter: p.filter,
+            filter,
             hours: p.hours,
-            entries: result.data.map((e) => ({
-              timestamp: e.timestamp ?? null,
-              severity: e.severity ?? "",
-              message: e.textPayload ?? "",
-            })),
+            entries: result.data.map(projectLogEntry),
             entry_count: result.data.length,
             truncated: result.data.length >= p.max_results,
           };
@@ -230,6 +331,13 @@ export function buildGcpConnector(overrides: BuildOptions = {}): Connector {
       },
     },
     mapError: (err) => {
+      if (err instanceof LogFilterError) {
+        return {
+          error_code: "VALIDATION_ERROR",
+          message: err.message,
+          retriable: false,
+        };
+      }
       if (err instanceof GcpCliError) {
         return {
           error_code: CODE_MAP[err.code] ?? "CONNECTION_ERROR",
@@ -254,3 +362,11 @@ export {
   type GcpResult,
 } from "./lib/gcp_client.js";
 export { GcpCliError } from "./lib/gcp_error.js";
+export {
+  compileLogFilter,
+  LogFilterError,
+  type FilterClause,
+  type FilterGroup,
+  type FilterNode,
+  type FilterOp,
+} from "./lib/log_filter.js";

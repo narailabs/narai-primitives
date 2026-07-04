@@ -30,7 +30,7 @@ orchestrator.
 | `list_services` | `project_id` |
 | `describe_db` | `project_id`, `instance_id`, optional `database` |
 | `list_topics` | `project_id` |
-| `query_logs` | `project_id`, `filter`, optional `hours` (default 24, max 168), optional `max_results` (default 100, max 1000) |
+| `query_logs` | `project_id`, exactly one of `filter` (raw string; no quotes/semicolons) or `structured_filter` (JSON clauses `{field, op, value}` with one level of `and`/`or` nesting, compiled internally with correct quoting — use it for `severity>="ERROR"` floors, exact matches, and multi-word text search), optional `hours` (default 24, max 168), optional `max_results` (default 100, max 1000) |
 
 Example:
 
