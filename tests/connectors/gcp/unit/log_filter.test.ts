@@ -18,7 +18,7 @@ describe("compileLogFilter — common query shapes", () => {
         {
           field: "resource.labels.namespace_name",
           op: "=",
-          value: "afs-dev-app",
+          value: "orders-dev-app",
         },
         {
           field: "resource.labels.container_name",
@@ -30,7 +30,7 @@ describe("compileLogFilter — common query shapes", () => {
     };
     expect(compileLogFilter(filter)).toBe(
       'resource.type="k8s_container" AND ' +
-        'resource.labels.namespace_name="afs-dev-app" AND ' +
+        'resource.labels.namespace_name="orders-dev-app" AND ' +
         'resource.labels.container_name="data-entry" AND ' +
         'severity>="ERROR"',
     );

@@ -42,7 +42,7 @@ function makeConnector(client: GcpClient) {
 const K8S_ERROR_FILTER = {
   and: [
     { field: "resource.type", op: "=", value: "k8s_container" },
-    { field: "resource.labels.namespace_name", op: "=", value: "afs-dev-app" },
+    { field: "resource.labels.namespace_name", op: "=", value: "orders-dev-app" },
     { field: "resource.labels.container_name", op: "=", value: "data-entry" },
     { field: "severity", op: ">=", value: "ERROR" },
   ],
@@ -60,7 +60,7 @@ describe("GcpClient.queryLogsStructured", () => {
     expect(r.ok).toBe(true);
     const expected =
       'resource.type="k8s_container" AND ' +
-      'resource.labels.namespace_name="afs-dev-app" AND ' +
+      'resource.labels.namespace_name="orders-dev-app" AND ' +
       'resource.labels.container_name="data-entry" AND ' +
       'severity>="ERROR"';
     if (r.ok) expect(r.data.compiledFilter).toBe(expected);
@@ -230,7 +230,7 @@ describe("query_logs action — entry projection", () => {
       type: "k8s_container",
       labels: {
         container_name: "data-entry",
-        namespace_name: "afs-dev-app",
+        namespace_name: "orders-dev-app",
         pod_name: "data-entry-7d9f",
       },
     },
@@ -258,7 +258,7 @@ describe("query_logs action — entry projection", () => {
       severity: "ERROR",
       message: "NullPointerException at FreightAuditService",
       container: "data-entry",
-      namespace: "afs-dev-app",
+      namespace: "orders-dev-app",
       pod: "data-entry-7d9f",
       trace_id: K8S_ENTRY.trace,
       log_name: K8S_ENTRY.logName,
