@@ -1,6 +1,9 @@
 {
   "name": "linear-connector-plugin",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Read + write CRUD on Linear issues, projects, comments, and attachment links. Policy-gated.",
-  "author": "narai"
+  "author": {
+    "name": "NarAI Labs",
+    "url": "https://github.com/narailabs"
+  }
 }

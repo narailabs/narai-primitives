@@ -1,6 +1,9 @@
 {
   "name": "gcp-connector-plugin",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Read-only GCP connector for Claude Code. Built on narai-primitives (subpath ./gcp). Cloud Run, Cloud SQL, Pub/Sub, Cloud Logging.",
-  "author": "narai"
+  "author": {
+    "name": "NarAI Labs",
+    "url": "https://github.com/narailabs"
+  }
 }

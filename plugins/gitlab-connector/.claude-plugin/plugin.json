@@ -1,6 +1,9 @@
 {
   "name": "gitlab-connector-plugin",
-  "version": "1.0.0",
-  "description": "Read + write GitLab connector — projects, issues, merge requests, notes, releases, and CI pipelines. Policy-gated. Built on narai-primitives. Self-hosted GitLab supported via GITLAB_HOST.",
-  "author": "narailabs"
+  "version": "1.0.1",
+  "description": "Read + write GitLab connector \u2014 projects, issues, merge requests, notes, releases, and CI pipelines. Policy-gated. Built on narai-primitives. Self-hosted GitLab supported via GITLAB_HOST.",
+  "author": {
+    "name": "NarAI Labs",
+    "url": "https://github.com/narailabs"
+  }
 }
