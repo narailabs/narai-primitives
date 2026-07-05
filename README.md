@@ -1,6 +1,6 @@
 # narai-primitives
 
-Read-only connectors, a planning hub, a connector toolkit, and credential
+Read-only-by-default connectors, a planning hub, a connector toolkit, and credential
 resolution for agent tooling — one npm dependency instead of N hand-rolled
 service integrations.
 
