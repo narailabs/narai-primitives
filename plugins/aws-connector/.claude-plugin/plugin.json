@@ -1,6 +1,9 @@
 {
   "name": "aws-connector-plugin",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Read-only AWS connector for Claude Code. Built on narai-primitives (subpath ./aws). Lambda, RDS, S3, CloudWatch.",
-  "author": "narai"
+  "author": {
+    "name": "NarAI Labs",
+    "url": "https://github.com/narailabs"
+  }
 }

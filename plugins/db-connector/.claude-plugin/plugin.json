@@ -1,6 +1,6 @@
 {
   "name": "db-connector-plugin",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Safe, read-only database query agent for Claude Code. Built on narai-primitives (subpath ./db). Every statement passes the policy gate before any driver loads or any connection is opened.",
   "author": {
     "name": "Narai Labs",
@@ -9,9 +9,18 @@
   "homepage": "https://github.com/narailabs/narai-primitives/tree/main/plugins/db-connector",
   "repository": "https://github.com/narailabs/narai-primitives",
   "license": "MIT",
-  "keywords": ["database", "sql", "postgresql", "mysql", "sqlite", "policy-gate"],
+  "keywords": [
+    "database",
+    "sql",
+    "postgresql",
+    "mysql",
+    "sqlite",
+    "policy-gate"
+  ],
   "userConfig": {
     "install_guardrails": {
+      "type": "string",
+      "title": "DB-client guardrails",
       "description": "Block direct DB-client invocations (psql, mysql, sqlite3, mongosh, pg_dump, aws dynamodb, ...) from Bash so all database access is routed through the db-connector CLI. Strongly recommended. Set to 'off' to disable.",
       "sensitive": false
     }
