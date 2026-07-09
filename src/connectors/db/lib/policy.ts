@@ -631,7 +631,15 @@ export class Policy {
     for (let i = 0; i < statements.length; i++) {
       const stmt = statements[i]!;
       const op = classifications[i]!;
-      perStmt.push({ stmt, op, result: this._decideOne(stmt, op) });
+      let result: PolicyResult;
+      try {
+        result = this._decideOne(stmt, op);
+      } catch (exc) {
+        const reason = (exc as Error).message;
+        _emitDeny(reason, op);
+        return { decision: "deny", reason };
+      }
+      perStmt.push({ stmt, op, result });
     }
 
     // Pick the strictest decision; break ties by first occurrence so the
@@ -724,7 +732,14 @@ export class Policy {
       _emitDeny(reason, null);
       return { decision: "deny", reason };
     }
-    const result = this._decideOne(stmt, op);
+    let result: PolicyResult;
+    try {
+      result = this._decideOne(stmt, op);
+    } catch (exc) {
+      const reason = (exc as Error).message;
+      _emitDeny(reason, op);
+      return { decision: "deny", reason };
+    }
     if (result.decision === "deny") _emitDeny(result.reason, op);
     else if (result.decision === "escalate") _emitEscalate(result.reason, op);
     else if (result.decision === "present_only") _emitPresentOnly(result.reason, op, result.formatted_sql);
