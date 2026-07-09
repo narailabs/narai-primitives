@@ -45,10 +45,27 @@ function aggregate(connector, sessionId, records) {
       avg_ms: s.ms_count > 0 ? Math.round(s.ms_total / s.ms_count) : 0,
     };
   }
-  const top_responses = [...records]
-    .sort((a, b) => b.response_bytes - a.response_bytes)
-    .slice(0, 3)
+
+  // ⚡ Bolt: Replace O(N log N) sort with O(N) Top-K manual tracking
+  // Avoids sorting the entire records array to find the 3 largest response_bytes.
+  let top1 = null, top2 = null, top3 = null;
+  for (const r of records) {
+    if (!top1 || r.response_bytes > top1.response_bytes) {
+      top3 = top2;
+      top2 = top1;
+      top1 = r;
+    } else if (!top2 || r.response_bytes > top2.response_bytes) {
+      top3 = top2;
+      top2 = r;
+    } else if (!top3 || r.response_bytes > top3.response_bytes) {
+      top3 = r;
+    }
+  }
+
+  const top_responses = [top1, top2, top3]
+    .filter(Boolean)
     .map((r) => ({ action: r.action, response_bytes: r.response_bytes }));
+
   return {
     session_id: sessionId,
     connector,
