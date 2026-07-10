@@ -22,12 +22,27 @@ function aggregate(connector, sessionId, records) {
   const byAction = {};
   let totalBytes = 0, totalTokens = 0, errors = 0;
   let start = records[0].ts, end = records[0].ts;
+  // ⚡ Bolt: Replace O(N log N) sort with O(N) Top-K manual tracking
+  // Avoids sorting the entire records array to find the 3 largest response_bytes.
+  // Strict `>` keeps the first record of a tie ahead of later ones, matching
+  // the stable sort this replaced.
+  let top1 = null, top2 = null, top3 = null;
   for (const r of records) {
     totalBytes += r.response_bytes;
     totalTokens += r.estimated_tokens;
     if (r.status !== "success") errors++;
     if (r.ts < start) start = r.ts;
     if (r.ts > end) end = r.ts;
+    if (!top1 || r.response_bytes > top1.response_bytes) {
+      top3 = top2;
+      top2 = top1;
+      top1 = r;
+    } else if (!top2 || r.response_bytes > top2.response_bytes) {
+      top3 = top2;
+      top2 = r;
+    } else if (!top3 || r.response_bytes > top3.response_bytes) {
+      top3 = r;
+    }
     const s = byAction[r.action] ||= {
       calls: 0, response_bytes: 0, estimated_tokens: 0, ms_total: 0, ms_count: 0,
     };
@@ -44,22 +59,6 @@ function aggregate(connector, sessionId, records) {
       estimated_tokens: s.estimated_tokens,
       avg_ms: s.ms_count > 0 ? Math.round(s.ms_total / s.ms_count) : 0,
     };
-  }
-
-  // ⚡ Bolt: Replace O(N log N) sort with O(N) Top-K manual tracking
-  // Avoids sorting the entire records array to find the 3 largest response_bytes.
-  let top1 = null, top2 = null, top3 = null;
-  for (const r of records) {
-    if (!top1 || r.response_bytes > top1.response_bytes) {
-      top3 = top2;
-      top2 = top1;
-      top1 = r;
-    } else if (!top2 || r.response_bytes > top2.response_bytes) {
-      top3 = top2;
-      top2 = r;
-    } else if (!top3 || r.response_bytes > top3.response_bytes) {
-      top3 = r;
-    }
   }
 
   const top_responses = [top1, top2, top3]

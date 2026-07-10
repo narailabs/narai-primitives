@@ -114,6 +114,46 @@ describe("session-summary.mjs", () => {
     runHook("session-summary.mjs", { USAGE_CONNECTOR_NAME: "github" }, JSON.stringify({ session_id: "S" }));
     expect(JSON.parse(readFileSync(join(dir, "summary-S.json"), "utf-8")).marker).toBe("preexisting");
   });
+
+  // top_responses is produced by a Top-K scan that replaced `sort().slice(0, 3)`.
+  // These pin the three properties that make the two interchangeable: descending
+  // order, ties broken toward the earlier record, and a short tail under 3 records.
+  function summarize(records: Array<Record<string, unknown>>) {
+    const dir = join(workDir, "usage");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "S.jsonl"), records.map((r) => JSON.stringify(r)).join("\n") + "\n");
+    const res = runHook("session-summary.mjs", { USAGE_CONNECTOR_NAME: "github" }, JSON.stringify({ session_id: "S" }));
+    expect(res.status).toBe(0);
+    return JSON.parse(readFileSync(join(dir, "summary-S.json"), "utf-8"));
+  }
+  const rec = (action: string, response_bytes: number) => ({
+    ts: "2026-04-23T12:00:00.000Z", session_id: "S", connector: "github",
+    action, status: "success", response_bytes, estimated_tokens: 1,
+  });
+
+  it("reports the top 3 responses in descending byte order", () => {
+    const summary = summarize([rec("a", 10), rec("b", 500), rec("c", 50), rec("d", 100)]);
+    expect(summary.top_responses).toEqual([
+      { action: "b", response_bytes: 500 },
+      { action: "d", response_bytes: 100 },
+      { action: "c", response_bytes: 50 },
+    ]);
+  });
+
+  it("breaks response_bytes ties toward the earlier record", () => {
+    const summary = summarize([rec("first", 7), rec("second", 7), rec("third", 7), rec("fourth", 7)]);
+    expect(summary.top_responses.map((t: { action: string }) => t.action)).toEqual([
+      "first", "second", "third",
+    ]);
+  });
+
+  it("returns fewer than 3 entries when there are fewer than 3 records", () => {
+    const summary = summarize([rec("only", 3), rec("other", 9)]);
+    expect(summary.top_responses).toEqual([
+      { action: "other", response_bytes: 9 },
+      { action: "only", response_bytes: 3 },
+    ]);
+  });
 });
 
 describe("stale-summarize.mjs", () => {
