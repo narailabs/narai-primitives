@@ -10,3 +10,6 @@
 ## 2024-06-25 - Avoid array sort for Top-K in hot paths
 **Learning:** V8 engine sorting (`[...arr].sort()`) is surprisingly slow and blocks the event loop for thousands of records when fetching Top-K elements (e.g. usage statistics). It scales at O(N log N) when O(N) is sufficient for a fixed K.
 **Action:** When gathering top elements from a large data array in this codebase, manually track the top items in a single O(N) pass rather than sorting a full copy.
+## 2024-05-24 - O(N log N) sorting for Top-K extraction
+**Learning:** Found a performance bottleneck in `plugin-hooks/session-summary.mjs` where `[...records].sort().slice(0, 3)` was used to find the top 3 records by size. This causes an O(N log N) sort operation and unnecessary array allocations, which is inefficient and can block the event loop for large log files.
+**Action:** Replace `[...records].sort().slice(0, K)` patterns with an O(N) manual Top-K tracking loop to avoid array allocations and sort overhead, especially in metrics and logging pipelines where N can be very large.
