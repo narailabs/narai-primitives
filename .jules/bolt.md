@@ -10,3 +10,6 @@
 ## 2024-06-25 - Avoid array sort for Top-K in hot paths
 **Learning:** V8 engine sorting (`[...arr].sort()`) is surprisingly slow and blocks the event loop for thousands of records when fetching Top-K elements (e.g. usage statistics). It scales at O(N log N) when O(N) is sufficient for a fixed K.
 **Action:** When gathering top elements from a large data array in this codebase, manually track the top items in a single O(N) pass rather than sorting a full copy.
+## 2023-10-27 - Top-K Extraction O(N log N) Bottleneck in Session Summary Hook
+**Learning:** V8 engine sorting (`[...arr].sort()`) is surprisingly slow and blocks the event loop for thousands of records when fetching Top-K elements (e.g. usage statistics) in Node.js hooks, causing unnecessary CPU spikes when dealing with large session logs. It scales at O(N log N) when O(N) is sufficient for a fixed K.
+**Action:** When extracting a fixed number of top elements (e.g., top 3 requests by response bytes) from a potentially unbounded array of records, use a manual tracking loop (O(N)) instead of sorting the entire array and slicing it.
