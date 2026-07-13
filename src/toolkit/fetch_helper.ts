@@ -79,6 +79,7 @@ export async function fetchWithCaps(
   url: string,
   init: RequestInit = {},
   caps: FetchCapsOptions = {},
+  fetchImpl: typeof fetch = globalThis.fetch
 ): Promise<Response> {
   const maxBytes = caps.maxBytes ?? FETCH_MAX_BYTES_DEFAULT;
   const timeoutMs = caps.timeoutMs ?? FETCH_TIMEOUT_MS_DEFAULT;
@@ -89,7 +90,7 @@ export async function fetchWithCaps(
 
   let response: Response;
   try {
-    response = await fetch(url, { ...init, signal });
+    response = await fetchImpl(url, { ...init, signal });
   } finally {
     clearTimeout(timer);
   }
