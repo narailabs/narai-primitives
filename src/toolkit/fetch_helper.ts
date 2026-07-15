@@ -24,6 +24,7 @@ export interface FetchCapsOptions {
   timeoutMs?: number;
   /** Optional external signal composed with the internal timeout. */
   signal?: AbortSignal;
+  fetchImpl?: typeof fetch | undefined;
 }
 
 /** Thrown when the response body grows past `maxBytes`. */
@@ -87,9 +88,11 @@ export async function fetchWithCaps(
   const timer = setTimeout(() => timeoutCtl.abort(new Error("fetch_helper timeout")), timeoutMs);
   const signal = mergeSignals(timeoutCtl.signal, caps.signal ?? init.signal ?? undefined);
 
+  const doFetch = caps.fetchImpl ?? globalThis.fetch;
+
   let response: Response;
   try {
-    response = await fetch(url, { ...init, signal });
+    response = await doFetch(url, { ...init, signal });
   } finally {
     clearTimeout(timer);
   }

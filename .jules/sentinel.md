@@ -33,3 +33,7 @@
 ## 2024-05-18 - Audit Redaction Defense-in-Depth
 **Learning:** The pattern `(?:\\.|[^"\\\\])*` was flagged as a potential Regular Expression Denial of Service (ReDoS) vulnerability. However, because the two alternatives `\\.` and `[^"\\\\]` are disjoint on their first character, matching (including the unterminated-quote failure path) is actually already linear. The ReDoS label was overstated. That said, swapping the alternatives to `(?:[^"\\\\]|\\\\.)*` is a harmless improvement that makes the linear-time guarantee more structural rather than incidental.
 **Prevention:** When dealing with potential ReDoS in quoted string parsing, structural loop unrolling (like `[^'\\]*(?:\\.[^'\\]*)*` or simply prioritizing the non-escaped character class `(?:[^"\\\\]|\\\\.)*`) can provide stronger structural guarantees of linearity, even if the original pattern is practically linear due to disjoint alternatives. Always verify the actual execution time of failure paths (like unterminated quotes) before declaring a catastrophic ReDoS.
+## 2024-05-18 - Fix DoS memory exhaustion in fetchAttachment
+**Vulnerability:** fetchAttachment used response.arrayBuffer() directly before checking bounds, leading to unbounded memory consumption DoS if the remote payload was large.
+**Learning:** `fetchWithCaps` enforces limits iteratively as bytes stream, rather than pulling the full string/buffer into memory and then checking lengths.
+**Prevention:** Always use `fetchWithCaps` from `src/toolkit/fetch_helper.ts` rather than `fetch(...).arrayBuffer()` for third-party REST streams.
