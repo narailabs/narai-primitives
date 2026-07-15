@@ -10,3 +10,6 @@
 ## 2024-06-25 - Avoid array sort for Top-K in hot paths
 **Learning:** V8 engine sorting (`[...arr].sort()`) is surprisingly slow and blocks the event loop for thousands of records when fetching Top-K elements (e.g. usage statistics). It scales at O(N log N) when O(N) is sufficient for a fixed K.
 **Action:** When gathering top elements from a large data array in this codebase, manually track the top items in a single O(N) pass rather than sorting a full copy.
+## 2024-05-30 - Sequential Array Loop vs Set Sorting
+**Learning:** In string parsing routines (e.g. `_boundarySemicolons` in `policy.ts`), collecting indexes with `Set.add()` and then doing `Array.from().sort()` causes huge performance regressions (O(N log N) overhead) for large strings, such as thousands of statements in a single batch.
+**Action:** Since iterating character-by-character naturally yields monotonically increasing indices, use a sequential array (`number[]` with `.push()`) instead of a Set, completely eliminating the need for sorting.
