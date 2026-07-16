@@ -23,7 +23,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { validateUrl, sanitizeLabel } from "./security_check.js";
-import { FETCH_MAX_BYTES_DEFAULT, FETCH_TIMEOUT_MS_DEFAULT, FetchCapExceeded, fetchWithCaps } from "./fetch_helper.js";
+import { FETCH_MAX_BYTES_DEFAULT, FETCH_TIMEOUT_MS_DEFAULT, fetchWithCaps } from "./fetch_helper.js";
 import { extract as extractBinary, FORMAT_MAP, type BinaryFormat } from "./extract_binary.js";
 
 export interface FetchAttachmentOptions {

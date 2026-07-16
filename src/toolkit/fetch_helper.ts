@@ -25,7 +25,7 @@ export interface FetchCapsOptions {
   /** Optional external signal composed with the internal timeout. */
   signal?: AbortSignal;
   /** Optional fetch override, typically for mocking in tests. */
-  fetchImpl?: typeof fetch;
+  fetchImpl?: typeof fetch | undefined;
 }
 
 /** Thrown when the response body grows past `maxBytes`. */
