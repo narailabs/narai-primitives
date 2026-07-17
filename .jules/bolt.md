@@ -10,3 +10,6 @@
 ## 2024-06-25 - Avoid array sort for Top-K in hot paths
 **Learning:** V8 engine sorting (`[...arr].sort()`) is surprisingly slow and blocks the event loop for thousands of records when fetching Top-K elements (e.g. usage statistics). It scales at O(N log N) when O(N) is sufficient for a fixed K.
 **Action:** When gathering top elements from a large data array in this codebase, manually track the top items in a single O(N) pass rather than sorting a full copy.
+## 2024-06-25 - Avoid array sort when parsing SQL statement boundaries
+**Learning:** In the database connector's policy parser (`src/connectors/db/lib/policy.ts`), scanning for semicolons to split SQL boundaries historically populated a `Set<number>`, which was then converted to an array and sorted (`Array.from(b1).sort(...)`). Because the parser iterates strictly forwards through the string, the found indices are naturally monotonically increasing and unique.
+**Action:** When tracking index positions sequentially, directly push them into a standard array (`number[]`). This entirely avoids the $O(M \log M)$ penalty of V8 engine sorting and the overhead of Set-to-Array conversion in hot paths.
