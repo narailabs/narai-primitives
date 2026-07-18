@@ -20,6 +20,7 @@ export const FETCH_TIMEOUT_MS_DEFAULT = 60_000; // 60 s
 
 /** Options controlling the caps. Missing fields fall back to defaults. */
 export interface FetchCapsOptions {
+  fetchImpl?: typeof globalThis.fetch;
   maxBytes?: number;
   timeoutMs?: number;
   /** Optional external signal composed with the internal timeout. */
@@ -89,7 +90,8 @@ export async function fetchWithCaps(
 
   let response: Response;
   try {
-    response = await fetch(url, { ...init, signal });
+    const doFetch = caps?.fetchImpl ?? globalThis.fetch;
+    response = await doFetch(url, { ...init, signal });
   } finally {
     clearTimeout(timer);
   }

@@ -22,6 +22,7 @@
  */
 
 import { validateUrl } from "./security_check.js";
+import { fetchWithCaps } from "./fetch_helper.js";
 import { ConnectorError } from "./connector_error.js";
 import type { ErrorCode } from "./policy/types.js";
 
@@ -224,7 +225,9 @@ export class HttpClient {
             }
           : { method, headers, signal: ctrl.signal };
 
-        const response = await this._fetch(url, init);
+        const response = responseType === "binary"
+          ? await fetchWithCaps(url, init, { fetchImpl: this._fetch.bind(this), signal: ctrl.signal })
+          : await this._fetch(url, init);
         const status = response.status;
         const customRetry = this._shouldRetryResponse?.(response) ?? false;
 
