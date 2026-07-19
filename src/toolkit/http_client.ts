@@ -24,6 +24,7 @@
 import { validateUrl } from "./security_check.js";
 import { ConnectorError } from "./connector_error.js";
 import type { ErrorCode } from "./policy/types.js";
+import { fetchWithCaps } from "./fetch_helper.js";
 
 export type HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
 
@@ -200,11 +201,6 @@ export class HttpClient {
     let lastError: HttpResultErr | null = null;
     for (let attempt = 0; attempt < this._maxAttempts; attempt++) {
       await this._throttle();
-      const ctrl = new AbortController();
-      const timer = setTimeout(
-        () => ctrl.abort(),
-        this._connectTimeoutMs + this._readTimeoutMs,
-      );
       try {
         const headers = this._buildHeaders(opts, responseType);
         // Pass FormData / Blob / ArrayBuffer / typed-array / string bodies
@@ -216,15 +212,17 @@ export class HttpClient {
           ? {
               method,
               headers,
-              signal: ctrl.signal,
               body: isRawBody(opts.body)
                 ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
                   (opts.body as any)
                 : JSON.stringify(opts.body),
             }
-          : { method, headers, signal: ctrl.signal };
+          : { method, headers };
 
-        const response = await this._fetch(url, init);
+        const response = await fetchWithCaps(url, init, {
+          timeoutMs: this._connectTimeoutMs + this._readTimeoutMs,
+          fetchImpl: this._fetch
+        });
         const status = response.status;
         const customRetry = this._shouldRetryResponse?.(response) ?? false;
 
@@ -312,7 +310,7 @@ export class HttpClient {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         const aborted =
-          err instanceof DOMException || /abort/i.test(message);
+          err instanceof DOMException || /abort/i.test(message) || /timeout/i.test(message);
         lastError = {
           ok: false,
           code: aborted ? "TIMEOUT" : "NETWORK_ERROR",
@@ -324,8 +322,6 @@ export class HttpClient {
           continue;
         }
         return lastError;
-      } finally {
-        clearTimeout(timer);
       }
     }
     return (

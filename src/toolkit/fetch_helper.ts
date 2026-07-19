@@ -24,6 +24,7 @@ export interface FetchCapsOptions {
   timeoutMs?: number;
   /** Optional external signal composed with the internal timeout. */
   signal?: AbortSignal;
+  fetchImpl?: typeof globalThis.fetch;
 }
 
 /** Thrown when the response body grows past `maxBytes`. */
@@ -82,6 +83,7 @@ export async function fetchWithCaps(
 ): Promise<Response> {
   const maxBytes = caps.maxBytes ?? FETCH_MAX_BYTES_DEFAULT;
   const timeoutMs = caps.timeoutMs ?? FETCH_TIMEOUT_MS_DEFAULT;
+  const doFetch = caps.fetchImpl ?? globalThis.fetch;
 
   const timeoutCtl = new AbortController();
   const timer = setTimeout(() => timeoutCtl.abort(new Error("fetch_helper timeout")), timeoutMs);
@@ -89,49 +91,49 @@ export async function fetchWithCaps(
 
   let response: Response;
   try {
-    response = await fetch(url, { ...init, signal });
+    response = await doFetch(url, { ...init, signal });
+
+    const clHeader = response.headers.get("content-length");
+    if (clHeader !== null) {
+      const cl = Number(clHeader);
+      if (Number.isFinite(cl) && cl > maxBytes) {
+        try { await response.body?.cancel(); } catch { /* best-effort */ }
+        throw new FetchCapExceeded(maxBytes, cl, url);
+      }
+    }
+
+    const reader = response.body?.getReader();
+    if (reader === undefined) {
+      return response;
+    }
+
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value === undefined) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        try { await reader.cancel(); } catch { /* best-effort */ }
+        throw new FetchCapExceeded(maxBytes, total, url);
+      }
+      chunks.push(value);
+    }
+
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+
+    return new Response(merged, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
   } finally {
     clearTimeout(timer);
   }
-
-  const clHeader = response.headers.get("content-length");
-  if (clHeader !== null) {
-    const cl = Number(clHeader);
-    if (Number.isFinite(cl) && cl > maxBytes) {
-      try { await response.body?.cancel(); } catch { /* best-effort */ }
-      throw new FetchCapExceeded(maxBytes, cl, url);
-    }
-  }
-
-  const reader = response.body?.getReader();
-  if (reader === undefined) {
-    return response;
-  }
-
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (value === undefined) continue;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      try { await reader.cancel(); } catch { /* best-effort */ }
-      throw new FetchCapExceeded(maxBytes, total, url);
-    }
-    chunks.push(value);
-  }
-
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-
-  return new Response(merged, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-  });
 }
