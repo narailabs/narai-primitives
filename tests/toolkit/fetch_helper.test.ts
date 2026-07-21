@@ -97,6 +97,33 @@ describe("fetchWithCaps", () => {
     ).rejects.toThrow();
   });
 
+  it("keeps the timeout armed during the body stream (Slowloris)", async () => {
+    // Headers arrive immediately, but the body never delivers a chunk unless
+    // the composed signal aborts — a slow-drip / stalled body. The timeout must
+    // still fire, otherwise the read loop hangs forever. This regresses if the
+    // streaming loop is moved back outside the timed try (clearTimeout too early).
+    globalThis.fetch = vi.fn((_: unknown, init?: RequestInit) => {
+      const signal = init?.signal;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          if (signal?.aborted) {
+            controller.error(signal.reason ?? new Error("aborted"));
+            return;
+          }
+          signal?.addEventListener("abort", () => {
+            controller.error(signal.reason ?? new Error("aborted"));
+          });
+          // never enqueue and never close: the body stalls indefinitely
+        },
+      });
+      return Promise.resolve(new Response(body, { status: 200 }));
+    }) as unknown as typeof globalThis.fetch;
+
+    await expect(
+      fetchWithCaps("https://example.com/slowloris", {}, { timeoutMs: 20 }),
+    ).rejects.toThrow();
+  });
+
   it("composes an external AbortSignal with the internal timeout", async () => {
     mockFetchAwaitsAbort();
     const ctl = new AbortController();
