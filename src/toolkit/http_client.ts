@@ -226,7 +226,7 @@ export class HttpClient {
           : { method, headers, signal: ctrl.signal };
 
         const response = responseType === "binary"
-          ? await fetchWithCaps(url, init, { fetchImpl: this._fetch.bind(this), signal: ctrl.signal })
+          ? await fetchWithCaps(url, init, { fetchImpl: this._fetch.bind(this), signal: ctrl.signal, timeoutMs: this._connectTimeoutMs + this._readTimeoutMs })
           : await this._fetch(url, init);
         const status = response.status;
         const customRetry = this._shouldRetryResponse?.(response) ?? false;
