@@ -33,3 +33,8 @@
 ## 2024-05-18 - Audit Redaction Defense-in-Depth
 **Learning:** The pattern `(?:\\.|[^"\\\\])*` was flagged as a potential Regular Expression Denial of Service (ReDoS) vulnerability. However, because the two alternatives `\\.` and `[^"\\\\]` are disjoint on their first character, matching (including the unterminated-quote failure path) is actually already linear. The ReDoS label was overstated. That said, swapping the alternatives to `(?:[^"\\\\]|\\\\.)*` is a harmless improvement that makes the linear-time guarantee more structural rather than incidental.
 **Prevention:** When dealing with potential ReDoS in quoted string parsing, structural loop unrolling (like `[^'\\]*(?:\\.[^'\\]*)*` or simply prioritizing the non-escaped character class `(?:[^"\\\\]|\\\\.)*`) can provide stronger structural guarantees of linearity, even if the original pattern is practically linear due to disjoint alternatives. Always verify the actual execution time of failure paths (like unterminated quotes) before declaring a catastrophic ReDoS.
+
+## 2024-05-27 - [Fetch Timeout Bypass]
+**Vulnerability:** Slowloris DoS vector on `fetchWithCaps`. The response stream reading did not obey the timeout.
+**Learning:** `clearTimeout` was called immediately after headers resolved, making the timeout useless for the response body.
+**Prevention:** Extend the `try...finally` block over the full body reading lifecycle to ensure the timeout signal protects the entire request.
