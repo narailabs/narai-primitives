@@ -18,6 +18,12 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parsePluginConfig } from "./plugin-config.mjs";
+import {
+  auditMemoEvent,
+  memoActive,
+  memoHandleAsk,
+  memoHandlePostToolUse,
+} from "./memo.mjs";
 
 const VALID_EVENTS = new Set([
   "session-start",
@@ -383,6 +389,35 @@ async function onPreToolUse(cfg) {
   const rank = { deny: 2, ask: 1, allow: 0 };
   decisions.sort((a, b) => rank[b.decision] - rank[a.decision]);
   const winner = decisions[0];
+
+  // Ask-memoization ("approve once per workload"): when the winning decision
+  // is an `ask` from a rule that opts in via a `memo` field AND a live grant
+  // exists for the same gate + scope + session, replay the earlier approval
+  // as an `allow`. Inert unless NARAI_MEMO_PATH is configured; every failure
+  // mode falls through to the unchanged ask (fail-closed to asking). Denies
+  // never consult the memo store.
+  if (winner.decision === "ask" && winner.rule?.memo !== undefined && memoActive()) {
+    let replay = null;
+    try {
+      replay = memoHandleAsk(winner.rule, payload, command);
+    } catch (err) {
+      process.stderr.write(`dispatcher: memo evaluation failed (${err.message})\n`);
+      replay = null;
+    }
+    if (replay) {
+      process.stdout.write(JSON.stringify(replay.output));
+      try {
+        await auditMemoEvent("guardrail_memo_replay", {
+          tool: payload.tool_name,
+          ...replay.audit,
+        });
+      } catch (err) {
+        process.stderr.write(`dispatcher: memo audit failed (${err.message})\n`);
+      }
+      return;
+    }
+  }
+
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
@@ -419,6 +454,32 @@ async function readStdin() {
   return Buffer.concat(chunks).toString("utf-8").trim();
 }
 async function onPostToolUse(cfg) {
+  // Ask-memoization bookkeeping: confirm a pending ask-approval into a grant
+  // (the tool ran, so the operator approved the ask) and invalidate grants on
+  // a branch switch. Only reads stdin when NARAI_MEMO_PATH is configured, so
+  // existing deployments keep their exact stdin semantics for
+  // usage-record.mjs (which reads fd 0 itself).
+  let raw = null;
+  if (memoActive()) {
+    raw = await readStdin();
+    if (raw) {
+      try {
+        let payload = null;
+        try {
+          payload = JSON.parse(raw);
+        } catch {
+          payload = null;
+        }
+        if (payload !== null) {
+          const events = memoHandlePostToolUse(payload);
+          for (const ev of events) await auditMemoEvent(ev.type, ev.details);
+        }
+      } catch (err) {
+        process.stderr.write(`dispatcher: memo post-tool-use failed (${err.message})\n`);
+      }
+    }
+  }
+
   const pluginData = process.env.CLAUDE_PLUGIN_DATA;
   if (!pluginData) return;
   const usagePath = path.join(
@@ -432,7 +493,18 @@ async function onPostToolUse(cfg) {
   process.env.USAGE_CONNECTOR_NAME = cfg.name;
   if (cfg.binPath) process.env.USAGE_BIN_HINT = cfg.binPath;
   try {
-    await import(pathToFileURL(usagePath).href);
+    if (raw === null) {
+      await import(pathToFileURL(usagePath).href);
+    } else {
+      // stdin was already consumed for memo bookkeeping; usage-record reads
+      // fd 0 itself, so replay the captured payload through a subprocess.
+      const { spawnSync } = await import("node:child_process");
+      spawnSync("node", [usagePath], {
+        input: raw,
+        stdio: ["pipe", "inherit", "inherit"],
+        env: process.env,
+      });
+    }
   } catch (err) {
     process.stderr.write(`dispatcher: usage-record failed (${err.message})\n`);
   }
@@ -770,6 +842,9 @@ export function applyGatesManifest(manifest, source, text, disabled, decisions, 
         decisions.push({
           decision: rule.decision,
           reason: rule.reason ?? `${source} gate: ${rule.name ?? "rule"}`,
+          // Carried so ask-memoization (memo.mjs) can read the winning
+          // rule's optional `memo` config; inert everywhere else.
+          rule,
         });
         break;
       }

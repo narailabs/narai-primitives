@@ -95,6 +95,77 @@ boundary:
   `applies_to`, name-based disabling, and strictest-wins all behave as for
   `pattern` rules.
 
+## Ask memoization (`memo`): approve once per workload
+
+A repeated `ask` for the same intent — pushing the same feature branch six
+times during one working session — trains operators to click through prompts.
+A rule may opt in to **ask memoization** so an approval is remembered for the
+rest of that workload:
+
+```json
+{
+  "name": "push",
+  "decision": "ask",
+  "reason": "Pushing publishes commits. Confirm before proceeding.",
+  "pattern": "^git\\s+push(\\s|$)",
+  "memo": { "scope": "repo_branch", "idle_minutes": 30, "max_hours": 8 }
+}
+```
+
+Memoization is **inert by default**: it activates only when the operator sets
+`NARAI_MEMO_PATH` to a writable state directory (mirroring how
+`NARAI_AUDIT_PATH` activates auditing), and `NARAI_MEMO_DISABLE=1` is the kill
+switch. With no grants on disk, dispatcher output is byte-identical to the
+non-memoized behavior. `deny` rules never consult the memo store, and a rule
+without a `memo` field is never memoized.
+
+How a grant comes to exist — the first ask always happens:
+
+1. The winning `ask` from a memo-carrying rule records a *pending* entry and
+   leaves the ask unchanged. The operator sees the prompt.
+2. The `post-tool-use` event fires only if the tool actually ran — i.e. the
+   operator approved the ask (a hook `ask` cannot be silenced by client-side
+   allowlists). The pending entry is promoted to a *grant*. Execution under
+   `bypassPermissions`-style modes does not count: it cannot prove a human
+   approved.
+3. The next `ask` from the same rule, same scope, and same session replays as
+   an `allow`, announced to the operator via `systemMessage` with a revocation
+   phrase. Every replay, grant, and invalidation is written to the
+   `NARAI_AUDIT_PATH` audit trail (`guardrail_memo_replay`,
+   `guardrail_memo_granted`, `guardrail_memo_invalidated`).
+
+What makes a grant live — the workload model:
+
+- **Scope identity is primary.** `repo_branch` keys the grant to the git repo
+  toplevel + remote + branch, re-resolved from the *current* command and
+  repository state on every replay — so different branches are independent
+  grants by construction, and a branch switched behind the guard's back can
+  never fire a stale grant. `exact_command` keys to the literal command
+  string. Scope resolution fails closed: a non-git directory, detached HEAD,
+  non-literal `cd` target, delete/force/mapped refspec, or a rule that fired
+  on a substring false-positive (`echo git push`) simply keeps asking.
+- **Freshness is a sliding idle window**, not an absolute timer: the grant
+  expires `idle_minutes` (default 30) after its *last* replay, and every
+  replay refreshes the clock. An actively used workload stays approved; an
+  abandoned one disarms itself.
+- **Deterministic invalidation.** A `git checkout`/`git switch` observed on
+  `post-tool-use` drops the repo's grants for branches other than the
+  now-current one. Grants are session-keyed, so a new session always re-asks.
+  `max_hours` (default 8) is an outer backstop from grant time.
+
+Revocation and inspection:
+
+```sh
+NARAI_MEMO_PATH=... node plugin-hooks/memo.mjs clear    # drop all grants (audited)
+NARAI_MEMO_PATH=... node plugin-hooks/memo.mjs status   # list grants as JSONL
+NARAI_MEMO_PATH=... node plugin-hooks/memo.mjs prune    # sweep expired state
+```
+
+Pick `memo` rules deliberately. A repeated push to the same feature branch is
+the same intent; creating a merge request, force-pushing, deleting a remote
+branch, or reading a credential file is a distinct decision every time — leave
+those un-memoized.
+
 ## Shipped example presets
 
 The `jira` and `gitlab` connectors ship a `gates.json` as a starting point.
