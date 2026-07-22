@@ -296,6 +296,13 @@ export function resolveScope(scope, command, cwd) {
   if (!target) return null;
   const repo = gitOut(eff.dir, ["rev-parse", "--show-toplevel"]);
   if (!repo) return null;
+  // The remote NAME is not a stable destination: `git remote set-url` or a
+  // pushurl override can repoint it after a grant. Key the scope to the
+  // effective push URL, re-resolved on every call — a repointed remote is a
+  // different workload and re-asks. An unresolvable remote (nonexistent
+  // name, or a raw URL positional) fails closed.
+  const pushUrl = gitOut(eff.dir, ["remote", "get-url", "--push", target.remote]);
+  if (!pushUrl) return null;
   let branch = target.refspec;
   // A symbolic HEAD refspec ("git push origin HEAD") names whatever branch is
   // checked out at run time; keying a grant on the literal string would make
@@ -309,8 +316,8 @@ export function resolveScope(scope, command, cwd) {
     branch = head;
   }
   return {
-    key: `repo_branch:${repo}\u0001${target.remote}\u0001${branch}`,
-    detail: `branch '${branch}' -> ${target.remote} (repo ${path.basename(repo)})`,
+    key: `repo_branch:${repo}\u0001${target.remote}\u0001${pushUrl}\u0001${branch}`,
+    detail: `branch '${branch}' -> ${target.remote} (${pushUrl})`,
     repo,
     remote: target.remote,
     branch,

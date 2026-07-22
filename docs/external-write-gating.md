@@ -142,10 +142,12 @@ How a grant comes to exist — the first ask always happens:
 What makes a grant live — the workload model:
 
 - **Scope identity is primary.** `repo_branch` keys the grant to the git repo
-  toplevel + remote + branch, re-resolved from the *current* command and
-  repository state on every replay — so different branches are independent
-  grants by construction, and a branch switched behind the guard's back can
-  never fire a stale grant. `exact_command` keys to the literal command
+  toplevel + remote + **effective push URL** + branch, re-resolved from the
+  *current* command and repository state on every replay — so different
+  branches are independent grants by construction, a branch switched behind
+  the guard's back can never fire a stale grant, and a remote repointed after
+  the approval (`git remote set-url`, a pushurl override) re-asks instead of
+  publishing to the new destination. `exact_command` keys to the literal command
   string. Scope resolution fails closed: a non-git directory, detached HEAD,
   non-literal `cd` target, delete/force/mapped refspec, a push flag outside
   the scope-neutral whitelist (`-u`, `--set-upstream`, quiet/verbose/progress

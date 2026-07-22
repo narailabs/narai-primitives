@@ -11,9 +11,10 @@
   revocation phrase — instead of re-prompting. Rules without `memo` are never
   memoized; `deny` rules never consult the store.
 - **Workload model.** Scope identity is primary (`repo_branch` = git repo
-  toplevel + remote + branch, re-resolved from the live repository on every
-  replay, so different branches are independent grants and an unobserved
-  branch switch can never fire a stale grant). Freshness is a sliding idle
+  toplevel + remote + effective push URL + branch, re-resolved from the live
+  repository on every replay, so different branches are independent grants,
+  an unobserved branch switch can never fire a stale grant, and a repointed
+  remote — `git remote set-url` / pushurl override — re-asks). Freshness is a sliding idle
   window (`idle_minutes` after last use, refreshed on each replay), with
   `max_hours` as an outer backstop. A `git checkout`/`git switch` observed on
   `post-tool-use` deterministically drops the repo's stale-branch grants;
@@ -41,7 +42,9 @@
 - **git-connector preset** (`plugins/git-connector`, 1.1.0): the `push` ask
   rule now carries the standard `memo` example
   (`repo_branch`, 30 min idle, 8 h backstop) — inert until the operator sets
-  `NARAI_MEMO_PATH`.
+  `NARAI_MEMO_PATH` — and the plugin's hooks now register the dispatcher's
+  `post-tool-use` event (like the other connectors), which grant promotion
+  and branch-switch invalidation require.
 - `post-tool-use` still runs usage-record exactly as before; when memoization
   is active the captured stdin is replayed to it through a subprocess.
 

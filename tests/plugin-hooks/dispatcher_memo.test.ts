@@ -108,6 +108,7 @@ function makeFixture(gates: unknown = GATES): Fixture {
   git(repo, "commit", "-q", "-m", "init");
   git(repo, "branch", "other");
   git(repo, "checkout", "-q", "-b", "feature-1");
+  git(repo, "remote", "add", "origin", "https://example.invalid/fixture.git");
 
   const memoDir = fs.mkdtempSync(path.join(os.tmpdir(), "memo-store-"));
   const auditDir = fs.mkdtempSync(path.join(os.tmpdir(), "memo-audit-"));
@@ -410,6 +411,15 @@ describe("dispatcher — ask memoization", () => {
       const out = JSON.parse(r.stdout);
       expect(out.hookSpecificOutput.permissionDecision, cmd).toBe("ask");
     }
+  });
+
+  it("a repointed remote never rides a grant (push URL is part of the scope)", async () => {
+    await approve(fx, "git push");
+    const live = await pre(fx, "git push");
+    expect(JSON.parse(live.stdout).hookSpecificOutput.permissionDecision).toBe("allow");
+    git(fx.repo, "remote", "set-url", "origin", "https://example.invalid/elsewhere.git");
+    const r = await pre(fx, "git push");
+    expect(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision).toBe("ask");
   });
 
   it("a branch switch inside the pushing command never rides a grant", async () => {

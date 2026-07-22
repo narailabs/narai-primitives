@@ -29,6 +29,7 @@ function makeRepo(branch = "feature-1"): string {
   git(dir, "add", "f.txt");
   git(dir, "commit", "-q", "-m", "init");
   git(dir, "checkout", "-q", "-b", branch);
+  git(dir, "remote", "add", "origin", "https://example.invalid/one.git");
   return dir;
 }
 
@@ -195,6 +196,21 @@ describe("resolveScope", () => {
     const a = resolveScope("repo_branch", "git push origin b1", repo);
     const b = resolveScope("repo_branch", "git push origin b2", repo);
     expect(a.key).not.toBe(b.key);
+  });
+
+  it("keys the scope to the effective push URL, not the remote name", () => {
+    const a = resolveScope("repo_branch", "git push", repo);
+    git(repo, "remote", "set-url", "origin", "https://example.invalid/two.git");
+    try {
+      const b = resolveScope("repo_branch", "git push", repo);
+      expect(a.key).not.toBe(b.key); // repointed remote = different workload
+    } finally {
+      git(repo, "remote", "set-url", "origin", "https://example.invalid/one.git");
+    }
+  });
+
+  it("fails closed on a remote that does not resolve to a push URL", () => {
+    expect(resolveScope("repo_branch", "git push nosuch", repo)).toBeNull();
   });
 
   it("fails closed when the command itself moves HEAD before pushing", () => {
