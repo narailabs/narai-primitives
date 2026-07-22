@@ -373,6 +373,19 @@ describe("dispatcher — ask memoization", () => {
     expect(grantFiles(fx)).toHaveLength(1);
   });
 
+  it("a symbolic HEAD refspec resolves to the live branch, never the literal string", async () => {
+    // "git push origin HEAD" names whatever branch is checked out, so its
+    // grant must key on the resolved branch (same scope as the no-refspec
+    // form) — a literal "HEAD" key would be branch-blind and survive an
+    // unobserved switch.
+    await approve(fx, "git push origin HEAD");
+    const same = await pre(fx, "git push");
+    expect(JSON.parse(same.stdout).hookSpecificOutput.permissionDecision).toBe("allow");
+    git(fx.repo, "checkout", "-q", "other"); // no post-tool-use hook fired
+    const r = await pre(fx, "git push origin HEAD");
+    expect(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision).toBe("ask");
+  });
+
   it("a force push never rides a plain-push grant", async () => {
     await approve(fx, "git push");
     const r = await pre(fx, "git push --force origin feature-1");

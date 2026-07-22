@@ -24,8 +24,10 @@
   `bypassPermissions`-style permission modes is not trusted as approval.
 - **Activation and audit.** Inert unless `NARAI_MEMO_PATH` points at a state
   directory (mirrors `NARAI_AUDIT_PATH`); `NARAI_MEMO_DISABLE=1` is the kill
-  switch. Zero-state dispatcher output is byte-identical to 2.6.0 (proven on
-  an 18-case battery). Replays, grants, and invalidations are audited as
+  switch. Zero-state dispatcher *output* is byte-identical to 2.6.0 (proven on
+  an 18-case battery); the one new side effect is a pending record written
+  under `NARAI_MEMO_PATH` on each memoized ask (owner-only perms, pruned
+  opportunistically). Replays, grants, and invalidations are audited as
   `guardrail_memo_replay` / `guardrail_memo_granted` /
   `guardrail_memo_invalidated`. New `plugin-hooks/memo.mjs` CLI:
   `clear` (revocation), `status`, `prune`.

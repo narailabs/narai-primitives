@@ -107,11 +107,13 @@ function readJson(file) {
 }
 
 /** Atomic write (tmp + rename) so a crashed writer never leaves a half
- * record for the fail-closed reader to trip on. */
+ * record for the fail-closed reader to trip on. Store dirs/files are
+ * owner-only: a grant file is a standing promptless-approval, so it gets
+ * the same on-disk posture as a credential. */
 function writeJsonAtomic(file, obj) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(obj) + "\n", "utf-8");
+  fs.writeFileSync(tmp, JSON.stringify(obj) + "\n", { encoding: "utf-8", mode: 0o600 });
   fs.renameSync(tmp, file);
 }
 
@@ -283,6 +285,12 @@ export function resolveScope(scope, command, cwd) {
   const repo = gitOut(eff.dir, ["rev-parse", "--show-toplevel"]);
   if (!repo) return null;
   let branch = target.refspec;
+  // A symbolic HEAD refspec ("git push origin HEAD") names whatever branch is
+  // checked out at run time; keying a grant on the literal string would make
+  // it branch-blind (it would survive an unobserved branch switch — and the
+  // push it approves could then land on any branch). Treat it exactly like
+  // the no-refspec form: resolve against the live repository on every call.
+  if (branch !== null && branch.toUpperCase() === "HEAD") branch = null;
   if (branch === null) {
     const head = gitOut(eff.dir, ["rev-parse", "--abbrev-ref", "HEAD"]);
     if (!head || head === "HEAD") return null; // detached HEAD: no workload identity

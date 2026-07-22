@@ -115,9 +115,11 @@ rest of that workload:
 Memoization is **inert by default**: it activates only when the operator sets
 `NARAI_MEMO_PATH` to a writable state directory (mirroring how
 `NARAI_AUDIT_PATH` activates auditing), and `NARAI_MEMO_DISABLE=1` is the kill
-switch. With no grants on disk, dispatcher output is byte-identical to the
-non-memoized behavior. `deny` rules never consult the memo store, and a rule
-without a `memo` field is never memoized.
+switch. With no grants on disk, dispatcher *output* is byte-identical to the
+non-memoized behavior; the only side effect is a pending record written under
+`NARAI_MEMO_PATH` on each memoized ask (pruned opportunistically). `deny`
+rules never consult the memo store, and a rule without a `memo` field is
+never memoized.
 
 How a grant comes to exist — the first ask always happens:
 
@@ -127,7 +129,10 @@ How a grant comes to exist — the first ask always happens:
    operator approved the ask (a hook `ask` cannot be silenced by client-side
    allowlists). The pending entry is promoted to a *grant*. Execution under
    `bypassPermissions`-style modes does not count: it cannot prove a human
-   approved.
+   approved. Note that the tool's *exit status* is deliberately not consulted:
+   what is memoized is the operator's approval of the intent, so an approved
+   push that then fails (network, rejected ref) still grants — the retry is
+   the same approved intent.
 3. The next `ask` from the same rule, same scope, and same session replays as
    an `allow`, announced to the operator via `systemMessage` with a revocation
    phrase. Every replay, grant, and invalidation is written to the
@@ -161,10 +166,24 @@ NARAI_MEMO_PATH=... node plugin-hooks/memo.mjs status   # list grants as JSONL
 NARAI_MEMO_PATH=... node plugin-hooks/memo.mjs prune    # sweep expired state
 ```
 
+Threat model: a grant file is a **standing promptless approval**, so the
+store is security-relevant state. It is written with owner-only permissions
+(0700 directories, 0600 files), grants are keyed to the live `session_id`
+(not normally present in a model's context), and every replay is both audited
+and announced — so a fabricated or stolen grant cannot fire silently. But the
+store lives on the same filesystem the gated agent can write to: an agent
+with unrestricted shell access could in principle forge a grant for its own
+session. That is no worse than the same agent editing the gate manifest or
+the hook itself — filesystem integrity is the trust boundary, as it always
+was — but operators auditing an incident should treat `NARAI_MEMO_PATH`
+contents as part of the record.
+
 Pick `memo` rules deliberately. A repeated push to the same feature branch is
 the same intent; creating a merge request, force-pushing, deleting a remote
 branch, or reading a credential file is a distinct decision every time — leave
-those un-memoized.
+those un-memoized. Also prefer leaving `repo_branch` rules un-memoized in
+repositories configured with `push.default=matching`, where a bare `git push`
+pushes all matching branches rather than the one the grant names.
 
 ## Shipped example presets
 

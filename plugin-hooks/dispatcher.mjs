@@ -498,12 +498,16 @@ async function onPostToolUse(cfg) {
     } else {
       // stdin was already consumed for memo bookkeeping; usage-record reads
       // fd 0 itself, so replay the captured payload through a subprocess.
+      // process.execPath (not a literal "node") so bun-only hosts still work.
       const { spawnSync } = await import("node:child_process");
-      spawnSync("node", [usagePath], {
+      const res = spawnSync(process.execPath, [usagePath], {
         input: raw,
         stdio: ["pipe", "inherit", "inherit"],
         env: process.env,
       });
+      if (res.error) {
+        process.stderr.write(`dispatcher: usage-record failed (${res.error.message})\n`);
+      }
     }
   } catch (err) {
     process.stderr.write(`dispatcher: usage-record failed (${err.message})\n`);
