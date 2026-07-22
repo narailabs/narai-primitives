@@ -1,5 +1,58 @@
 # Changelog
 
+## 2.7.0 — 2026-07-21
+
+### plugin-hooks: ask memoization ("approve once per workload")
+
+- **`memo` gate-rule field.** An `ask` rule may opt in to memoization with
+  `"memo": { "scope": "repo_branch" | "exact_command", "idle_minutes": 30,
+  "max_hours": 8 }`. After the operator approves the ask once, identical
+  workload hits replay as an `allow` — announced via `systemMessage` with a
+  revocation phrase — instead of re-prompting. Rules without `memo` are never
+  memoized; `deny` rules never consult the store.
+- **Workload model.** Scope identity is primary (`repo_branch` = git repo
+  toplevel + remote + effective push URL + branch, re-resolved from the live
+  repository on every replay, so different branches are independent grants,
+  an unobserved branch switch can never fire a stale grant, and a repointed
+  remote — `git remote set-url` / pushurl override — re-asks). Freshness is a sliding idle
+  window (`idle_minutes` after last use, refreshed on each replay), with
+  `max_hours` as an outer backstop. A `git checkout`/`git switch` observed on
+  `post-tool-use` deterministically drops the repo's stale-branch grants;
+  grants are session-keyed so session end drops all.
+- **Grants require proof of approval.** The PreToolUse miss records a pending
+  entry; the `post-tool-use` event — which fires only if the tool actually
+  ran, i.e. the ask was approved — promotes it to a grant. Execution under
+  `bypassPermissions`-style permission modes is not trusted as approval.
+- **Activation and audit.** Inert unless `NARAI_MEMO_PATH` points at a state
+  directory (mirrors `NARAI_AUDIT_PATH`); `NARAI_MEMO_DISABLE=1` is the kill
+  switch. Zero-state dispatcher *output* is byte-identical to 2.6.0 (proven on
+  an 18-case battery); the one new side effect is a pending record written
+  under `NARAI_MEMO_PATH` on each memoized ask (owner-only perms, pruned
+  opportunistically). Replays, grants, and invalidations are audited as
+  `guardrail_memo_replay` / `guardrail_memo_granted` /
+  `guardrail_memo_invalidated`. New `plugin-hooks/memo.mjs` CLI:
+  `clear` (revocation), `status`, `prune`.
+- **Scope resolution fails closed** on non-git directories, detached HEAD,
+  non-literal `cd` targets, delete/force/mapped refspecs, extra positionals,
+  push flags outside a scope-neutral whitelist (`--tags`, `--all`,
+  `--mirror`, `--delete`, `--force*`, `--repo`, `-o`, and anything unknown
+  are different intents from a branch push), commands that move HEAD before
+  pushing (`git checkout`/`git switch` in any segment), shell shapes where
+  segment execution is not plainly sequential (`||`, subshells, grouping,
+  substitution, control-flow keywords, `cd` inside a pipeline), bare pushes
+  under a multi-ref `push.default` (`matching`), resolved branches on the
+  protected list (`main`/`master` always; `NARAI_GIT_PROTECTED_BRANCHES`
+  extends it), and substring false-positives (`echo git push` can never arm
+  a grant).
+- **git-connector preset** (`plugins/git-connector`, 1.1.0): the `push` ask
+  rule now carries the standard `memo` example
+  (`repo_branch`, 30 min idle, 8 h backstop) — inert until the operator sets
+  `NARAI_MEMO_PATH` — and the plugin's hooks now register the dispatcher's
+  `post-tool-use` event (like the other connectors), which grant promotion
+  and branch-switch invalidation require.
+- `post-tool-use` still runs usage-record exactly as before; when memoization
+  is active the captured stdin is replayed to it through a subprocess.
+
 ## 2.6.0 — 2026-07-03
 
 ### gcp connector

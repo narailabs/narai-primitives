@@ -113,7 +113,10 @@ admin/privilege ceiling that an overlay cannot bypass — see
 
 External-write gating for the API connectors (asking or denying state-changing
 HTTP before it runs) is operator-configurable via per-connector `gates.json`
-manifests. See [`docs/external-write-gating.md`](docs/external-write-gating.md).
+manifests. Ask rules can opt in to **ask memoization** — approve a gated action
+once and later repeats within the same workload (same repo + remote + branch,
+actively in use) replay without re-prompting, announced and audited. See
+[`docs/external-write-gating.md`](docs/external-write-gating.md).
 
 ## Contributing
 
