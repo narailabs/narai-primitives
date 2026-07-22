@@ -37,7 +37,12 @@
       "name": "push",
       "decision": "ask",
       "reason": "Pushing publishes commits. Confirm before proceeding.",
-      "pattern": "^git\\s+push(\\s|$)"
+      "pattern": "^git\\s+push(\\s|$)",
+      "memo": {
+        "scope": "repo_branch",
+        "idle_minutes": 30,
+        "max_hours": 8
+      }
     },
     {
       "name": "delete_branch_local",
