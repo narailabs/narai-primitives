@@ -153,8 +153,14 @@ What makes a grant live — the workload model:
   the scope-neutral whitelist (`-u`, `--set-upstream`, quiet/verbose/progress
   reporting — everything else, `--tags`/`--all`/`--delete`/`--force*`/
   `--repo`/`-o`/unknown, is a different intent), a command that moves HEAD
-  before pushing (`git checkout`/`git switch` in any segment), or a rule that
-  fired on a substring false-positive (`echo git push`) simply keeps asking.
+  before pushing (`git checkout`/`git switch` in any segment), shell shapes
+  where segment execution is not plainly sequential (`||`, subshells,
+  grouping, substitution, control-flow keywords, a `cd` inside a pipeline),
+  a bare push under a multi-ref `push.default` (`matching`), a resolved
+  branch on the protected list (`main`/`master` always;
+  `NARAI_GIT_PROTECTED_BRANCHES` extends it — pattern-based denies can miss
+  the bare form, so the engine backstops), or a rule that fired on a
+  substring false-positive (`echo git push`) simply keeps asking.
 - **Freshness is a sliding idle window**, not an absolute timer: the grant
   expires `idle_minutes` (default 30) after its *last* replay, and every
   replay refreshes the clock. An actively used workload stays approved; an
@@ -187,9 +193,7 @@ contents as part of the record.
 Pick `memo` rules deliberately. A repeated push to the same feature branch is
 the same intent; creating a merge request, force-pushing, deleting a remote
 branch, or reading a credential file is a distinct decision every time — leave
-those un-memoized. Also prefer leaving `repo_branch` rules un-memoized in
-repositories configured with `push.default=matching`, where a bare `git push`
-pushes all matching branches rather than the one the grant names.
+those un-memoized.
 
 ## Shipped example presets
 

@@ -198,6 +198,55 @@ describe("resolveScope", () => {
     expect(a.key).not.toBe(b.key);
   });
 
+  it("fails closed on conditional execution, subshells, grouping, and pipelined cd", () => {
+    const pushRe = /^git\s+(?:-C\s+\S+\s+)?push\b/;
+    for (const cmd of [
+      "false && cd /approved-repo || git push", // skipped cd resurrected by ||
+      "git push || echo failed", // any || makes segment execution conditional
+      "(cd /x && git push)", // subshell
+      "{ cd /x && git push; }", // group
+      "cd /x | git push", // pipeline cd runs in a subshell, never applies
+      "if true; then cd /x; fi\ngit push", // control-flow keyword
+      "git push $(echo origin)", // substitution
+    ]) {
+      expect(effectiveDirFor(cmd, "/start", pushRe), cmd).toBeNull();
+    }
+  });
+
+  it("fails closed on a multi-ref push default for the bare form", () => {
+    git(repo, "config", "push.default", "matching");
+    try {
+      expect(resolveScope("repo_branch", "git push", repo)).toBeNull();
+      // An explicit single refspec pushes one ref regardless of the default.
+      expect(resolveScope("repo_branch", "git push origin feature-1", repo)).not.toBeNull();
+    } finally {
+      git(repo, "config", "--unset", "push.default");
+    }
+  });
+
+  it("never resolves a protected branch as a workload", () => {
+    const prot = makeRepo("tmp-branch");
+    try {
+      git(prot, "checkout", "-q", "-B", "main");
+      expect(resolveScope("repo_branch", "git push", prot)).toBeNull();
+      expect(resolveScope("repo_branch", "git push origin main", prot)).toBeNull();
+    } finally {
+      fs.rmSync(prot, { recursive: true, force: true });
+    }
+  });
+
+  it("honors NARAI_GIT_PROTECTED_BRANCHES in the never-memoize list", () => {
+    const rel = makeRepo("tmp-branch");
+    process.env.NARAI_GIT_PROTECTED_BRANCHES = "release";
+    try {
+      git(rel, "checkout", "-q", "-B", "release");
+      expect(resolveScope("repo_branch", "git push", rel)).toBeNull();
+    } finally {
+      delete process.env.NARAI_GIT_PROTECTED_BRANCHES;
+      fs.rmSync(rel, { recursive: true, force: true });
+    }
+  });
+
   it("keys the scope to the effective push URL, not the remote name", () => {
     const a = resolveScope("repo_branch", "git push", repo);
     git(repo, "remote", "set-url", "origin", "https://example.invalid/two.git");

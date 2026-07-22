@@ -413,6 +413,29 @@ describe("dispatcher — ask memoization", () => {
     }
   });
 
+  it("a bare push on a protected branch never arms or rides a grant", async () => {
+    // The text-based protected-branch deny only sees explicit branch names;
+    // the engine backstop keeps the bare form un-memoizable on main/master.
+    git(fx.repo, "checkout", "-q", "-B", "main");
+    await approve(fx, "git push");
+    expect(grantFiles(fx)).toHaveLength(0);
+    const r = await pre(fx, "git push");
+    expect(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision).toBe("ask");
+  });
+
+  it("push.default=matching: a bare push never rides a single-branch grant", async () => {
+    await approve(fx, "git push");
+    git(fx.repo, "config", "push.default", "matching");
+    const r = await pre(fx, "git push");
+    expect(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision).toBe("ask");
+  });
+
+  it("a short-circuit-skipped cd never redirects a grant", async () => {
+    await approve(fx, "git push");
+    const r = await pre(fx, "false && cd /elsewhere || git push");
+    expect(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision).toBe("ask");
+  });
+
   it("a repointed remote never rides a grant (push URL is part of the scope)", async () => {
     await approve(fx, "git push");
     const live = await pre(fx, "git push");

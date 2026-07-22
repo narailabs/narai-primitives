@@ -178,11 +178,25 @@ function stripLead(s) {
  * directory cannot be determined literally (fail-closed).
  */
 export function effectiveDirFor(command, startCwd, segmentRe) {
-  const segments = command.split(/(?:&&|\|\||;|\||\n)/);
+  // Segment-by-segment tracking is only sound for plain sequencing (&&, ;,
+  // newline), where every earlier segment definitely ran. Short-circuit
+  // alternation (`false && cd /x || git push` skips the cd), subshells,
+  // command grouping, and substitution can skip or relocate a `cd` — or the
+  // tracked segment itself — at run time. Fail closed on all of them.
+  if (/\|\||[(){}`]|\$\(/.test(command)) return null;
+  // A pipeline runs each side in its own subshell, so a `cd` there never
+  // affects the tracked segment's directory — but the sequential model
+  // below would wrongly apply it. Pipes without a cd are fine.
+  if (command.includes("|") && /(?:^|[^A-Za-z0-9_])cd\s/.test(command)) return null;
+  const SHELL_KEYWORD = /^(?:if|then|elif|else|fi|while|until|do|done|for|case|esac|function|!)\b/;
+  const segments = command.split(/(?:&&|;|\||\n)/);
   let dir = startCwd;
   for (const rawSeg of segments) {
     const seg = stripLead(rawSeg.trim());
     if (seg.length === 0) continue;
+    // Control-flow keywords make execution of this (and following)
+    // segments conditional in ways the sequential model cannot see.
+    if (SHELL_KEYWORD.test(seg)) return null;
     if (segmentRe.test(seg)) {
       const c = /(?:^|[^A-Za-z0-9_])git\s+-C\s+(\S+)/.exec(seg);
       if (c) {
@@ -304,6 +318,16 @@ export function resolveScope(scope, command, cwd) {
   const pushUrl = gitOut(eff.dir, ["remote", "get-url", "--push", target.remote]);
   if (!pushUrl) return null;
   let branch = target.refspec;
+  // Without a refspec, WHAT gets pushed depends on push.default: simple/
+  // current/upstream(/tracking) push exactly the current branch, but
+  // `matching` pushes every branch whose name matches — a multi-ref intent
+  // that must never ride a single-branch grant. Unknown or future values
+  // fail closed. (An explicit refspec — including HEAD — always pushes one
+  // ref, so this only gates the bare form.)
+  if (branch === null) {
+    const pushDefault = gitOut(eff.dir, ["config", "push.default"]) || "simple";
+    if (!["simple", "current", "upstream", "tracking"].includes(pushDefault)) return null;
+  }
   // A symbolic HEAD refspec ("git push origin HEAD") names whatever branch is
   // checked out at run time; keying a grant on the literal string would make
   // it branch-blind (it would survive an unobserved branch switch — and the
@@ -315,6 +339,18 @@ export function resolveScope(scope, command, cwd) {
     if (!head || head === "HEAD") return null; // detached HEAD: no workload identity
     branch = head;
   }
+  // A protected branch is never a memoizable workload: pattern-based
+  // protected-branch denies can miss the bare `git push` form (no branch
+  // name in the command text), and one approved bare push on such a branch
+  // must not arm a standing grant there. main/master are always protected;
+  // NARAI_GIT_PROTECTED_BRANCHES extends the list (same variable the gate
+  // manifests use).
+  const protectedBranches = new Set(["main", "master"]);
+  for (const b of (process.env.NARAI_GIT_PROTECTED_BRANCHES ?? "").split(",")) {
+    const t = b.trim();
+    if (t) protectedBranches.add(t);
+  }
+  if (protectedBranches.has(branch)) return null;
   return {
     key: `repo_branch:${repo}\u0001${target.remote}\u0001${pushUrl}\u0001${branch}`,
     detail: `branch '${branch}' -> ${target.remote} (${pushUrl})`,

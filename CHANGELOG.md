@@ -37,8 +37,13 @@
   push flags outside a scope-neutral whitelist (`--tags`, `--all`,
   `--mirror`, `--delete`, `--force*`, `--repo`, `-o`, and anything unknown
   are different intents from a branch push), commands that move HEAD before
-  pushing (`git checkout`/`git switch` in any segment), and substring
-  false-positives (`echo git push` can never arm a grant).
+  pushing (`git checkout`/`git switch` in any segment), shell shapes where
+  segment execution is not plainly sequential (`||`, subshells, grouping,
+  substitution, control-flow keywords, `cd` inside a pipeline), bare pushes
+  under a multi-ref `push.default` (`matching`), resolved branches on the
+  protected list (`main`/`master` always; `NARAI_GIT_PROTECTED_BRANCHES`
+  extends it), and substring false-positives (`echo git push` can never arm
+  a grant).
 - **git-connector preset** (`plugins/git-connector`, 1.1.0): the `push` ask
   rule now carries the standard `memo` example
   (`repo_branch`, 30 min idle, 8 h backstop) — inert until the operator sets
