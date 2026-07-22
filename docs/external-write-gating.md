@@ -147,8 +147,12 @@ What makes a grant live — the workload model:
   grants by construction, and a branch switched behind the guard's back can
   never fire a stale grant. `exact_command` keys to the literal command
   string. Scope resolution fails closed: a non-git directory, detached HEAD,
-  non-literal `cd` target, delete/force/mapped refspec, or a rule that fired
-  on a substring false-positive (`echo git push`) simply keeps asking.
+  non-literal `cd` target, delete/force/mapped refspec, a push flag outside
+  the scope-neutral whitelist (`-u`, `--set-upstream`, quiet/verbose/progress
+  reporting — everything else, `--tags`/`--all`/`--delete`/`--force*`/
+  `--repo`/`-o`/unknown, is a different intent), a command that moves HEAD
+  before pushing (`git checkout`/`git switch` in any segment), or a rule that
+  fired on a substring false-positive (`echo git push`) simply keeps asking.
 - **Freshness is a sliding idle window**, not an absolute timer: the grant
   expires `idle_minutes` (default 30) after its *last* replay, and every
   replay refreshes the clock. An actively used workload stays approved; an

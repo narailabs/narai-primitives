@@ -394,6 +394,37 @@ describe("dispatcher — ask memoization", () => {
     expect(out.hookSpecificOutput.permissionDecisionReason).toBe("force push");
   });
 
+  it("multi-ref / ref-rewriting push flags never ride a plain-push grant", async () => {
+    // Even when the manifest has ONLY the memo-carrying push rule (no
+    // separate force/tags rules), the engine's scope parser fails closed on
+    // flags outside the scope-neutral whitelist.
+    await approve(fx, "git push");
+    for (const cmd of [
+      "git push --tags",
+      "git push --all",
+      "git push --delete origin feature-1",
+      "git push --force-with-lease origin feature-1",
+      "git push --mirror",
+    ]) {
+      const r = await pre(fx, cmd);
+      const out = JSON.parse(r.stdout);
+      expect(out.hookSpecificOutput.permissionDecision, cmd).toBe("ask");
+    }
+  });
+
+  it("a branch switch inside the pushing command never rides a grant", async () => {
+    // `git switch other && git push` resolves HEAD before the tool runs;
+    // replay-allowing it would push the post-switch branch promptless. The
+    // scope fails closed on any HEAD-moving segment — and never arms a
+    // grant from such a command either.
+    await approve(fx, "git push");
+    const r = await pre(fx, "git switch other && git push");
+    expect(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision).toBe("ask");
+    const before = grantFiles(fx).length;
+    await approve(fx, "git checkout other && git push");
+    expect(grantFiles(fx)).toHaveLength(before); // no new grant armed
+  });
+
   it("denies never consult the memo store", async () => {
     await approve(fx, "git push");
     const r = await pre(fx, "git push origin main");

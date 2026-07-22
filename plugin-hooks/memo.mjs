@@ -219,10 +219,16 @@ function gitOut(dir, args) {
   }
 }
 
-/** git-push flags that consume a separate following argument (their `=`
- * forms are self-contained and handled by the `=` check below). */
-const PUSH_FLAGS_WITH_ARG = new Set([
-  "-o", "--push-option", "--receive-pack", "--exec", "--repo",
+/** The only push flags a memoized scope may look through: they change how
+ * the push reports itself, never which refs go where. Every other flag —
+ * `--force*`, `--delete`, `--tags`, `--all`, `--mirror`, `--prune`,
+ * `--repo`, `-o`, and anything unknown — turns the command into a different
+ * intent from the granted branch push, so parsing fails closed and the
+ * operator is asked. None of these take a value, so any `=` form is also
+ * rejected. */
+const SCOPE_NEUTRAL_PUSH_FLAGS = new Set([
+  "-u", "--set-upstream", "-q", "--quiet", "-v", "--verbose",
+  "--porcelain", "--progress", "--no-progress",
 ]);
 
 /**
@@ -230,8 +236,9 @@ const PUSH_FLAGS_WITH_ARG = new Set([
  * { remote, refspec } (refspec null when absent) or null when the segment
  * cannot be parsed confidently — unknown shapes fail closed. Refspecs that
  * are not a plain branch name (`:branch` deletes, `+branch` forces,
- * `src:dst` maps, wildcards) return null on purpose: those are distinct
- * intents that must never ride a plain-push grant.
+ * `src:dst` maps, wildcards) and flags outside the scope-neutral whitelist
+ * return null on purpose: those are distinct intents that must never ride
+ * a plain-push grant.
  */
 export function parsePushTarget(segment) {
   const m = /^git\s+(?:-C\s+\S+\s+)?push\b(.*)$/.exec(stripLead(segment.trim()));
@@ -242,8 +249,7 @@ export function parsePushTarget(segment) {
   for (let i = 0; i < tokens.length; i++) {
     const tok = tokens[i];
     if (tok.startsWith("-")) {
-      const bare = tok.includes("=") ? tok.slice(0, tok.indexOf("=")) : tok;
-      if (!tok.includes("=") && PUSH_FLAGS_WITH_ARG.has(bare)) i += 1;
+      if (tok.includes("=") || !SCOPE_NEUTRAL_PUSH_FLAGS.has(tok)) return null;
       continue;
     }
     // Redirections / descriptors are not push arguments.
@@ -273,6 +279,12 @@ export function resolveScope(scope, command, cwd) {
     };
   }
   if (scope !== "repo_branch") return null;
+  // A command that itself moves HEAD — `git checkout`/`git switch` in any
+  // segment (e.g. `git switch other && git push`) — makes the pre-tool-use
+  // branch resolution meaningless: the push would run on the post-switch
+  // branch while the grant lookup used the pre-switch one. Fail closed;
+  // such a compound command always asks (and never arms a grant).
+  if (/\bgit\s+(?:-C\s+\S+\s+)?(?:checkout|switch)\b/.test(command)) return null;
   // Anchored at segment start (post prefix-strip): only a segment that IS a
   // git push can establish a push workload scope. A gate that fires on a
   // substring false-positive (e.g. `echo git push`) stays a plain ask and

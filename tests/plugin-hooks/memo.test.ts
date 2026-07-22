@@ -67,19 +67,40 @@ describe("parsePushTarget", () => {
     });
   });
 
-  it("skips flags, including flags with separate arguments", () => {
+  it("looks through scope-neutral flags only", () => {
     expect(parsePushTarget("git push -u origin feature-1")).toEqual({
       remote: "origin",
       refspec: "feature-1",
     });
-    expect(parsePushTarget("git push -o ci.skip origin feature-1")).toEqual({
+    expect(parsePushTarget("git push --set-upstream -q origin feature-1")).toEqual({
       remote: "origin",
       refspec: "feature-1",
     });
-    expect(parsePushTarget("git push --push-option=ci.skip origin feature-1")).toEqual({
-      remote: "origin",
-      refspec: "feature-1",
-    });
+  });
+
+  it("fails closed on any flag outside the scope-neutral whitelist", () => {
+    // Multi-ref / ref-rewriting / server-affecting flags are different
+    // intents from a plain branch push and must never resolve a scope.
+    for (const cmd of [
+      "git push --tags",
+      "git push --all",
+      "git push --mirror",
+      "git push --prune origin",
+      "git push --delete origin feature-1",
+      "git push -d origin feature-1",
+      "git push --force origin feature-1",
+      "git push -f origin feature-1",
+      "git push --force-with-lease origin feature-1",
+      "git push --follow-tags origin feature-1",
+      "git push --repo=other origin feature-1",
+      "git push -o ci.skip origin feature-1",
+      "git push --push-option=ci.skip origin feature-1",
+      "git push --no-verify origin feature-1",
+      "git push --dry-run origin feature-1",
+      "git push --quiet=nope origin feature-1", // `=` form of a no-value flag
+    ]) {
+      expect(parsePushTarget(cmd), cmd).toBeNull();
+    }
   });
 
   it("ignores redirections", () => {
@@ -174,6 +195,20 @@ describe("resolveScope", () => {
     const a = resolveScope("repo_branch", "git push origin b1", repo);
     const b = resolveScope("repo_branch", "git push origin b2", repo);
     expect(a.key).not.toBe(b.key);
+  });
+
+  it("fails closed when the command itself moves HEAD before pushing", () => {
+    // The pre-tool-use branch resolution would name the pre-switch branch
+    // while the push runs on the post-switch one — never memoizable.
+    for (const cmd of [
+      "git switch other && git push",
+      "git checkout other && git push",
+      "git checkout -b new-branch && git push -u origin new-branch",
+      "git -C sub switch other; git push",
+      "git push && git checkout other", // order-agnostic on purpose
+    ]) {
+      expect(resolveScope("repo_branch", cmd, repo), cmd).toBeNull();
+    }
   });
 
   it("fails closed outside a git repo", () => {
