@@ -10,3 +10,6 @@
 ## 2024-06-25 - Avoid array sort for Top-K in hot paths
 **Learning:** V8 engine sorting (`[...arr].sort()`) is surprisingly slow and blocks the event loop for thousands of records when fetching Top-K elements (e.g. usage statistics). It scales at O(N log N) when O(N) is sufficient for a fixed K.
 **Action:** When gathering top elements from a large data array in this codebase, manually track the top items in a single O(N) pass rather than sorting a full copy.
+## 2024-07-24 - Avoid Set and sorting for monotonic index extraction
+**Learning:** Accumulating boundary indices (like semicolons in SQL strings) using `Set` and subsequently converting to an array and sorting (`Array.from(set).sort()`) introduces unnecessary O(N log N) overhead. When indices are naturally found in sequential order during string traversal, accumulating them directly in an array (`array.push(i)`) guarantees they are monotonically increasing without any need for deduplication or sorting.
+**Action:** When tracking index positions during string or array iteration, use standard arrays populated sequentially instead of Sets.
