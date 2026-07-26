@@ -101,21 +101,23 @@ export async function fetchAttachment(
   }
 
   let response: Response;
+  let rawBytes: Uint8Array;
+
   try {
     response = await doFetch(url, init);
+
+    const contentLength = Number(response.headers.get("content-length") ?? "0");
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+      throw new FetchCapExceeded(maxBytes, contentLength, url);
+    }
+
+    const buffer = await response.arrayBuffer();
+    rawBytes = new Uint8Array(buffer);
+    if (rawBytes.byteLength > maxBytes) {
+      throw new FetchCapExceeded(maxBytes, rawBytes.byteLength, url);
+    }
   } finally {
     clearTimeout(timer);
-  }
-
-  const contentLength = Number(response.headers.get("content-length") ?? "0");
-  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
-    throw new FetchCapExceeded(maxBytes, contentLength, url);
-  }
-
-  const buffer = await response.arrayBuffer();
-  const rawBytes = new Uint8Array(buffer);
-  if (rawBytes.byteLength > maxBytes) {
-    throw new FetchCapExceeded(maxBytes, rawBytes.byteLength, url);
   }
 
   const contentType = (
