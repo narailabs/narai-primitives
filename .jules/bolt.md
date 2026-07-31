@@ -10,3 +10,6 @@
 ## 2024-06-25 - Avoid array sort for Top-K in hot paths
 **Learning:** V8 engine sorting (`[...arr].sort()`) is surprisingly slow and blocks the event loop for thousands of records when fetching Top-K elements (e.g. usage statistics). It scales at O(N log N) when O(N) is sufficient for a fixed K.
 **Action:** When gathering top elements from a large data array in this codebase, manually track the top items in a single O(N) pass rather than sorting a full copy.
+## 2024-06-25 - Avoid Set and sorting for monotonically increasing boundary iteration
+**Learning:** When parsing SQL strings for boundaries (e.g. semicolons) by iterating over the string, indices collected are naturally strictly monotonically increasing. Pushing them sequentially into a `number[]` array is optimal. Collecting them in a `Set<number>` and then converting to an array with an explicit `.sort((a,b) => a-b)` introduces unnecessary O(N log N) performance overhead, becoming a bottleneck for very large payloads.
+**Action:** When tracking index positions sequentially during string or array loops, use standard arrays (`number[]`) populated sequentially (`push`) instead of `Set`s that require subsequent conversion and sorting.
