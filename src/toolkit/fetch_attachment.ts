@@ -100,107 +100,106 @@ export async function fetchAttachment(
     init.headers = opts.headers;
   }
 
-  let response: Response;
   try {
-    response = await doFetch(url, init);
+    const response = await doFetch(url, init);
+
+    const contentLength = Number(response.headers.get("content-length") ?? "0");
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+      throw new FetchCapExceeded(maxBytes, contentLength, url);
+    }
+
+    const buffer = await response.arrayBuffer();
+    const rawBytes = new Uint8Array(buffer);
+    if (rawBytes.byteLength > maxBytes) {
+      throw new FetchCapExceeded(maxBytes, rawBytes.byteLength, url);
+    }
+
+    const contentType = (
+      response.headers.get("content-type") ?? "application/octet-stream"
+    )
+      .split(";")[0]
+      ?.trim()
+      .toLowerCase() ?? "application/octet-stream";
+
+    const dispositionFilename = parseContentDispositionFilename(
+      response.headers.get("content-disposition"),
+    );
+    const rawFilename = dispositionFilename ?? filenameFromUrl(url);
+    const filename = sanitizeLabel(rawFilename, 255);
+
+    const checksum = createHash("sha256").update(rawBytes).digest("hex");
+
+    let extracted: FetchAttachmentResult["extracted"];
+
+    if (contentType.startsWith("text/")) {
+      extracted = {
+        format: "text",
+        text: new TextDecoder("utf-8").decode(rawBytes),
+      };
+    } else if (contentType in MIME_TO_FORMAT) {
+      const fmt = MIME_TO_FORMAT[contentType] as BinaryFormat;
+      const ext = formatExtension(fmt);
+      const tmp = path.join(os.tmpdir(), `toolkit-attach-${randomUUID()}${ext}`);
+      try {
+        fs.writeFileSync(tmp, rawBytes);
+        const r = await extractBinary(tmp, fmt, { maxBytes });
+        extracted = { format: r.format, text: r.text };
+      } catch (e) {
+        extracted = {
+          format: "skipped",
+          text: null,
+          warning: e instanceof Error ? e.message : String(e),
+        };
+      } finally {
+        try {
+          fs.unlinkSync(tmp);
+        } catch {
+          /* best-effort cleanup */
+        }
+      }
+    } else if (FORMAT_MAP[path.extname(filename).toLowerCase()]) {
+      // Server advertised a generic mime (octet-stream etc.) but the filename
+      // extension is one we can extract — still try.
+      const fmt = FORMAT_MAP[path.extname(filename).toLowerCase()] as BinaryFormat;
+      const tmp = path.join(
+        os.tmpdir(),
+        `toolkit-attach-${randomUUID()}${formatExtension(fmt)}`,
+      );
+      try {
+        fs.writeFileSync(tmp, rawBytes);
+        const r = await extractBinary(tmp, fmt, { maxBytes });
+        extracted = { format: r.format, text: r.text };
+      } catch (e) {
+        extracted = {
+          format: "skipped",
+          text: null,
+          warning: e instanceof Error ? e.message : String(e),
+        };
+      } finally {
+        try {
+          fs.unlinkSync(tmp);
+        } catch {
+          /* best-effort cleanup */
+        }
+      }
+    } else {
+      extracted = {
+        format: "skipped",
+        text: null,
+        warning: `Unsupported mime type '${contentType}' — no extractor configured`,
+      };
+    }
+
+    return {
+      rawBytes,
+      contentType,
+      filename,
+      checksum,
+      extracted,
+      sizeBytes: rawBytes.byteLength,
+      sourceUrl: url,
+    };
   } finally {
     clearTimeout(timer);
   }
-
-  const contentLength = Number(response.headers.get("content-length") ?? "0");
-  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
-    throw new FetchCapExceeded(maxBytes, contentLength, url);
-  }
-
-  const buffer = await response.arrayBuffer();
-  const rawBytes = new Uint8Array(buffer);
-  if (rawBytes.byteLength > maxBytes) {
-    throw new FetchCapExceeded(maxBytes, rawBytes.byteLength, url);
-  }
-
-  const contentType = (
-    response.headers.get("content-type") ?? "application/octet-stream"
-  )
-    .split(";")[0]
-    ?.trim()
-    .toLowerCase() ?? "application/octet-stream";
-
-  const dispositionFilename = parseContentDispositionFilename(
-    response.headers.get("content-disposition"),
-  );
-  const rawFilename = dispositionFilename ?? filenameFromUrl(url);
-  const filename = sanitizeLabel(rawFilename, 255);
-
-  const checksum = createHash("sha256").update(rawBytes).digest("hex");
-
-  let extracted: FetchAttachmentResult["extracted"];
-
-  if (contentType.startsWith("text/")) {
-    extracted = {
-      format: "text",
-      text: new TextDecoder("utf-8").decode(rawBytes),
-    };
-  } else if (contentType in MIME_TO_FORMAT) {
-    const fmt = MIME_TO_FORMAT[contentType] as BinaryFormat;
-    const ext = formatExtension(fmt);
-    const tmp = path.join(os.tmpdir(), `toolkit-attach-${randomUUID()}${ext}`);
-    try {
-      fs.writeFileSync(tmp, rawBytes);
-      const r = await extractBinary(tmp, fmt, { maxBytes });
-      extracted = { format: r.format, text: r.text };
-    } catch (e) {
-      extracted = {
-        format: "skipped",
-        text: null,
-        warning: e instanceof Error ? e.message : String(e),
-      };
-    } finally {
-      try {
-        fs.unlinkSync(tmp);
-      } catch {
-        /* best-effort cleanup */
-      }
-    }
-  } else if (FORMAT_MAP[path.extname(filename).toLowerCase()]) {
-    // Server advertised a generic mime (octet-stream etc.) but the filename
-    // extension is one we can extract — still try.
-    const fmt = FORMAT_MAP[path.extname(filename).toLowerCase()] as BinaryFormat;
-    const tmp = path.join(
-      os.tmpdir(),
-      `toolkit-attach-${randomUUID()}${formatExtension(fmt)}`,
-    );
-    try {
-      fs.writeFileSync(tmp, rawBytes);
-      const r = await extractBinary(tmp, fmt, { maxBytes });
-      extracted = { format: r.format, text: r.text };
-    } catch (e) {
-      extracted = {
-        format: "skipped",
-        text: null,
-        warning: e instanceof Error ? e.message : String(e),
-      };
-    } finally {
-      try {
-        fs.unlinkSync(tmp);
-      } catch {
-        /* best-effort cleanup */
-      }
-    }
-  } else {
-    extracted = {
-      format: "skipped",
-      text: null,
-      warning: `Unsupported mime type '${contentType}' — no extractor configured`,
-    };
-  }
-
-  return {
-    rawBytes,
-    contentType,
-    filename,
-    checksum,
-    extracted,
-    sizeBytes: rawBytes.byteLength,
-    sourceUrl: url,
-  };
 }

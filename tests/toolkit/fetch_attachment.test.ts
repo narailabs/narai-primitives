@@ -61,4 +61,30 @@ describe("fetchAttachment", () => {
       }),
     ).rejects.toThrow();
   });
+
+  it("aborts request if body reading exceeds timeoutMs (Slowloris protection)", async () => {
+    const slowFetch: typeof fetch = (async (_url: unknown, init?: RequestInit) => {
+      // Simulate headers resolving immediately but body trickling slowly
+      return {
+        status: 200,
+        headers: new Headers({ "content-type": "text/plain" }),
+        arrayBuffer: async () => {
+          return new Promise((resolve, reject) => {
+            const onAbort = () => reject(init?.signal?.reason ?? new Error("aborted"));
+            if (init?.signal?.aborted) return onAbort();
+            init?.signal?.addEventListener("abort", onAbort);
+            // Simulate a slow read that takes longer than the timeout
+            setTimeout(() => resolve(new ArrayBuffer(0)), 500);
+          });
+        },
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    await expect(
+      fetchAttachment("https://example.com/slow", {
+        fetchImpl: slowFetch,
+        timeoutMs: 50, // Short timeout
+      }),
+    ).rejects.toThrow();
+  });
 });
