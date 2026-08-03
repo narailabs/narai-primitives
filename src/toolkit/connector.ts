@@ -18,9 +18,16 @@
 import type { ZodSchema } from "zod";
 import { z } from "zod";
 import { parseAgentArgs } from "./agent_cli.js";
-import { createAuditWriter, scrubSecrets, type AuditWriter } from "./audit/writer.js";
+import {
+  createAuditWriter,
+  scrubSecrets,
+  type AuditWriter,
+} from "./audit/writer.js";
 import { readFirstMatchingPattern } from "./hardship/read.js";
-import { createHardshipRecorder, type HardshipRecorder } from "./hardship/record.js";
+import {
+  createHardshipRecorder,
+  type HardshipRecorder,
+} from "./hardship/record.js";
 import { buildCurateSnapshot } from "./plugin/curate-cmd.js";
 import { ApprovalEngine } from "./policy/approval.js";
 import { loadPolicyConfig, type LoadedPolicy } from "./policy/config.js";
@@ -74,14 +81,12 @@ export interface ActionSpec<TParams = any, TSdk = unknown> {
  *     }),
  *   },
  */
-export function defineAction<S extends ZodSchema, TSdk = unknown>(
-  spec: {
-    params: S;
-    classify: Classification | ((p: z.infer<S>) => Classification);
-    handler: (p: z.infer<S>, ctx: Context<TSdk>) => Promise<unknown>;
-    description?: string;
-  },
-): ActionSpec<z.infer<S>, TSdk> {
+export function defineAction<S extends ZodSchema, TSdk = unknown>(spec: {
+  params: S;
+  classify: Classification | ((p: z.infer<S>) => Classification);
+  handler: (p: z.infer<S>, ctx: Context<TSdk>) => Promise<unknown>;
+  description?: string;
+}): ActionSpec<z.infer<S>, TSdk> {
   return spec;
 }
 
@@ -109,8 +114,12 @@ export interface DecisionContext {
  * status decision can only be made after running the handler.
  */
 export class EnvelopeOverride extends Error {
-  readonly envelope: Omit<ExtendedEnvelope, "action"> & Partial<Pick<ExtendedEnvelope, "action">>;
-  constructor(envelope: Omit<ExtendedEnvelope, "action"> & Partial<Pick<ExtendedEnvelope, "action">>) {
+  readonly envelope: Omit<ExtendedEnvelope, "action"> &
+    Partial<Pick<ExtendedEnvelope, "action">>;
+  constructor(
+    envelope: Omit<ExtendedEnvelope, "action"> &
+      Partial<Pick<ExtendedEnvelope, "action">>,
+  ) {
     super(`EnvelopeOverride: ${envelope.status}`);
     this.name = "EnvelopeOverride";
     this.envelope = envelope;
@@ -137,7 +146,10 @@ export interface ConnectorConfig<TSdk = unknown> {
     ctx: DecisionContext,
   ) => Decision | ExtendedEnvelope;
   /** Map a caught exception to a custom error envelope. Return `undefined` to fall through. */
-  mapError?: (err: unknown, action: string) => Partial<ErrorEnvelope> | undefined;
+  mapError?: (
+    err: unknown,
+    action: string,
+  ) => Partial<ErrorEnvelope> | undefined;
 
   // Optional config ──────────────────────────────────────────────────────────
   policyConfigPath?: string;
@@ -169,7 +181,11 @@ export interface ConnectorConfig<TSdk = unknown> {
     recorder?: HardshipRecorder;
   };
   /** Derive a per-request tenant scope key from the resolved SDK. Used to tag hardship entries. */
-  scope?: (ctx: { sdk: TSdk; action: string; params: unknown }) => string | null;
+  scope?: (ctx: {
+    sdk: TSdk;
+    action: string;
+    params: unknown;
+  }) => string | null;
   /** Path overrides for test isolation — forwarded to readFirstMatchingPattern. */
   runtime?: {
     cwd?: string;
@@ -202,7 +218,10 @@ const RETRIABLE_CODES: ReadonlySet<ErrorCode> = new Set([
 
 function isZodErrorLike(
   err: unknown,
-): err is { name: string; issues: Array<{ path: unknown[]; message: string }> } {
+): err is {
+  name: string;
+  issues: Array<{ path: unknown[]; message: string }>;
+} {
   if (err === null || typeof err !== "object") return false;
   const e = err as Record<string, unknown>;
   return (
@@ -211,12 +230,17 @@ function isZodErrorLike(
     e["issues"].every((i) => {
       if (!i || typeof i !== "object") return false;
       const issue = i as Record<string, unknown>;
-      return Array.isArray(issue["path"]) && typeof issue["message"] === "string";
+      return (
+        Array.isArray(issue["path"]) && typeof issue["message"] === "string"
+      );
     })
   );
 }
 
-function defaultErrorMap(err: unknown): { error_code: ErrorCode; message: string } {
+function defaultErrorMap(err: unknown): {
+  error_code: ErrorCode;
+  message: string;
+} {
   // Structural check instead of `instanceof z.ZodError` because consumers
   // may install toolkit via `file:` deps or otherwise end up with their
   // own zod instance — instanceof would return false and the error would
@@ -232,13 +256,21 @@ function defaultErrorMap(err: unknown): { error_code: ErrorCode; message: string
   const message = err instanceof Error ? err.message : String(err);
   // Heuristic mapping — connectors override via mapError for service-specific codes.
   const lower = message.toLowerCase();
-  if (lower.includes("enotfound") || lower.includes("econnrefused") || lower.includes("network")) {
+  if (
+    lower.includes("enotfound") ||
+    lower.includes("econnrefused") ||
+    lower.includes("network")
+  ) {
     return { error_code: "CONNECTION_ERROR", message };
   }
   if (lower.includes("timeout") || lower.includes("etimedout")) {
     return { error_code: "TIMEOUT", message };
   }
-  if (lower.includes("401") || lower.includes("unauthor") || lower.includes("forbidden")) {
+  if (
+    lower.includes("401") ||
+    lower.includes("unauthor") ||
+    lower.includes("forbidden")
+  ) {
     return { error_code: "AUTH_ERROR", message };
   }
   if (lower.includes("404") || lower.includes("not found")) {
@@ -288,7 +320,8 @@ export function createConnector<TSdk = unknown>(
       policyLoadError = err instanceof Error ? err.message : String(err);
     }
   }
-  const rules: PolicyRules = loadedPolicy?.rules ?? cfg.defaultPolicy ?? DEFAULT_POLICY;
+  const rules: PolicyRules =
+    loadedPolicy?.rules ?? cfg.defaultPolicy ?? DEFAULT_POLICY;
   const approvalMode: ApprovalMode = loadedPolicy?.approval_mode ?? "auto";
 
   // Audit + approval engine + hardship recorder (all instance-scoped).
@@ -308,7 +341,9 @@ export function createConnector<TSdk = unknown>(
     cfg.hardship?.recorder ??
     createHardshipRecorder({
       connector: cfg.name,
-      ...(cfg.hardship?.enabled !== undefined ? { enabled: cfg.hardship.enabled } : {}),
+      ...(cfg.hardship?.enabled !== undefined
+        ? { enabled: cfg.hardship.enabled }
+        : {}),
       sessionId: audit.sessionId,
     });
 
@@ -377,7 +412,11 @@ export function createConnector<TSdk = unknown>(
         action,
         kind: "validation",
         context: mapped.message,
-        scope: safeScope(cfg, { sdk: undefined as unknown as TSdk, action, params }),
+        scope: safeScope(cfg, {
+          sdk: undefined as unknown as TSdk,
+          action,
+          params,
+        }),
       });
       return env;
     }
@@ -389,17 +428,32 @@ export function createConnector<TSdk = unknown>(
       if (cfg.classify !== undefined) {
         classification = await cfg.classify(action, validated);
       } else if (typeof spec.classify === "function") {
-        classification = (spec.classify as (p: unknown) => Classification)(validated);
+        classification = (spec.classify as (p: unknown) => Classification)(
+          validated,
+        );
       } else {
         classification = spec.classify;
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return errorEnvelope(action, "CONFIG_ERROR", `classify() threw: ${message}`, false, start);
+      const message = scrubSecrets(
+        err instanceof Error ? err.message : String(err),
+      );
+      return errorEnvelope(
+        action,
+        "CONFIG_ERROR",
+        `classify() threw: ${message}`,
+        false,
+        start,
+      );
     }
 
     // 3. Policy gate.
-    let decision: Decision = checkPolicy(classification, rules, approvalMode, approvals);
+    let decision: Decision = checkPolicy(
+      classification,
+      rules,
+      approvalMode,
+      approvals,
+    );
 
     // 4. extendDecision hook: may widen Decision into an ExtendedEnvelope.
     let extended: Decision | ExtendedEnvelope = decision;
@@ -411,8 +465,16 @@ export function createConnector<TSdk = unknown>(
           classification,
         });
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return errorEnvelope(action, "CONFIG_ERROR", `extendDecision() threw: ${message}`, false, start);
+        const message = scrubSecrets(
+          err instanceof Error ? err.message : String(err),
+        );
+        return errorEnvelope(
+          action,
+          "CONFIG_ERROR",
+          `extendDecision() threw: ${message}`,
+          false,
+          start,
+        );
       }
     }
 
@@ -422,7 +484,9 @@ export function createConnector<TSdk = unknown>(
       action,
       reason: decision.reason,
       kind: classification.kind,
-      ...(classification.aspects !== undefined ? { aspects: classification.aspects } : {}),
+      ...(classification.aspects !== undefined
+        ? { aspects: classification.aspects }
+        : {}),
     } as never);
 
     // 5. If not a base success, the caller gets an envelope now (no SDK load).
@@ -430,14 +494,19 @@ export function createConnector<TSdk = unknown>(
       return toEnvelope(cfg.name, action, extended, start, audit);
     }
     if (decision.status === "denied") {
-      const deniedScope = safeScope(cfg, { sdk: undefined as unknown as TSdk, action, params: validated });
+      const deniedScope = safeScope(cfg, {
+        sdk: undefined as unknown as TSdk,
+        action,
+        params: validated,
+      });
       const deniedHitOpts: Parameters<typeof readFirstMatchingPattern>[0] = {
         connector: cfg.name,
         scope: deniedScope,
         facts: { kind: "policy_denied", action, context: decision.reason },
       };
       if (cfg.runtime?.cwd !== undefined) deniedHitOpts.cwd = cfg.runtime.cwd;
-      if (cfg.runtime?.home !== undefined) deniedHitOpts.home = cfg.runtime.home;
+      if (cfg.runtime?.home !== undefined)
+        deniedHitOpts.home = cfg.runtime.home;
       const deniedHit = readFirstMatchingPattern(deniedHitOpts);
       const env: DeniedEnvelope = {
         status: "denied",
@@ -458,14 +527,19 @@ export function createConnector<TSdk = unknown>(
       return env;
     }
     if (decision.status === "escalate") {
-      const escalateScope = safeScope(cfg, { sdk: undefined as unknown as TSdk, action, params: validated });
+      const escalateScope = safeScope(cfg, {
+        sdk: undefined as unknown as TSdk,
+        action,
+        params: validated,
+      });
       const escalateHitOpts: Parameters<typeof readFirstMatchingPattern>[0] = {
         connector: cfg.name,
         scope: escalateScope,
         facts: { kind: "policy_escalate", action, context: decision.reason },
       };
       if (cfg.runtime?.cwd !== undefined) escalateHitOpts.cwd = cfg.runtime.cwd;
-      if (cfg.runtime?.home !== undefined) escalateHitOpts.home = cfg.runtime.home;
+      if (cfg.runtime?.home !== undefined)
+        escalateHitOpts.home = cfg.runtime.home;
       const escalateHit = readFirstMatchingPattern(escalateHitOpts);
       const env: EscalateEnvelope = {
         status: "escalate",
@@ -512,8 +586,10 @@ export function createConnector<TSdk = unknown>(
       policy: decision,
       recordHardship: recorder,
       logger: {
-        debug: (msg: string) => audit.logEvent({ event_type: "debug", details: { msg } } as never),
-        warn: (msg: string) => audit.logEvent({ event_type: "warn", details: { msg } } as never),
+        debug: (msg: string) =>
+          audit.logEvent({ event_type: "debug", details: { msg } } as never),
+        warn: (msg: string) =>
+          audit.logEvent({ event_type: "warn", details: { msg } } as never),
       },
     };
 
@@ -527,7 +603,17 @@ export function createConnector<TSdk = unknown>(
         auditAction(audit, cfg.name, action, envOverride.status, start);
         return envOverride;
       }
-      return mapAndBuildError(err, action, cfg, audit, recorder, classification, start, sdk, validated);
+      return mapAndBuildError(
+        err,
+        action,
+        cfg,
+        audit,
+        recorder,
+        classification,
+        start,
+        sdk,
+        validated,
+      );
     }
 
     const env: SuccessEnvelope = {
@@ -561,15 +647,16 @@ export function createConnector<TSdk = unknown>(
     // hit the case where stdout is empty and the failure is text on stderr.
     // Exit code is 2 (CLI misuse), distinct from 1 (handled action-level error).
     const writeArgErrorEnvelope = (action: string, message: string): void => {
+      const scrubbed = scrubSecrets(message);
       const env = {
         status: "error",
         action,
         error_code: "VALIDATION_ERROR",
-        message,
+        message: scrubbed,
         retriable: false,
       };
       process.stdout.write(JSON.stringify(env) + "\n");
-      process.stderr.write(`argument error: ${message}\n`);
+      process.stderr.write(`argument error: ${scrubbed}\n`);
     };
 
     let parsed;
@@ -592,10 +679,7 @@ export function createConnector<TSdk = unknown>(
       params = JSON.parse(paramsRaw);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      writeArgErrorEnvelope(
-        action,
-        `--params must be valid JSON (${msg})`,
-      );
+      writeArgErrorEnvelope(action, `--params must be valid JSON (${msg})`);
       return 2;
     }
 
