@@ -822,13 +822,21 @@ function mapAndBuildError<TSdk>(
     retriable = RETRIABLE_CODES.has(code);
   }
 
+  // Redact before the message reaches ANY sink. This is the primary runtime
+  // error path (handler throws, credential/SDK loading fails), so an
+  // unscrubbed `message` here lands in the ErrorEnvelope that `main` writes
+  // to stdout — the same leak the classify()/extendDecision() paths guard
+  // against. `mapError` overrides are scrubbed too: a connector's custom
+  // mapper commonly interpolates the raw driver error.
+  message = scrubSecrets(message);
+
   const scope = safeScope(cfg, { sdk, action, params });
 
   auditAction(audit, cfg.name, action, "error", start);
   recorder({
     action,
     kind: code.toLowerCase(),
-    context: scrubSecrets(message),
+    context: message,
     scope,
   });
 
@@ -838,7 +846,7 @@ function mapAndBuildError<TSdk>(
     facts: {
       kind: code.toLowerCase(),
       action,
-      context: scrubSecrets(message),
+      context: message,
     },
   };
   if (cfg.runtime?.cwd !== undefined) hitOpts.cwd = cfg.runtime.cwd;

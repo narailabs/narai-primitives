@@ -276,6 +276,50 @@ describe("createConnector.fetch — runtime errors", () => {
       expect(env.message).toBe("override");
     }
   });
+
+  it("redacts credentials in the handler-throw error envelope", async () => {
+    // Regression (Codex P1): classify()/extendDecision()/arg-parsing were
+    // scrubbed but mapAndBuildError returned `message` verbatim, so the
+    // primary runtime error path still wrote secrets to the stdout envelope.
+    const c = makeAws({
+      listFunctionsHandler: async () => {
+        throw new Error(`connect failed: password="hunter2"`);
+      },
+    });
+    const env = await c.fetch("list_functions", { region: "us-east-1" });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("hunter2");
+      expect(env.message).toContain("[REDACTED]");
+    }
+  });
+
+  it("redacts credentials surfaced through a mapError override", async () => {
+    // A connector's custom mapper commonly interpolates the raw driver error.
+    const c = createConnector({
+      name: "aws-test",
+      credentials: async () => ({}),
+      actions: {
+        list_functions: {
+          params: z.object({}),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error(`api_key='sk-live-abc123'`);
+          },
+        },
+      },
+      mapError: (err) => ({
+        error_code: "CONFIG_ERROR",
+        message: `driver: ${(err as Error).message}`,
+        retriable: false,
+      }),
+    });
+    const env = await c.fetch("list_functions", {});
+    if (env.status === "error") {
+      expect(env.message).not.toContain("sk-live-abc123");
+      expect(env.message).toContain("[REDACTED]");
+    }
+  });
 });
 
 describe("createConnector.fetch — extendDecision hook", () => {
