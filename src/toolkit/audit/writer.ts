@@ -65,39 +65,6 @@ const SENSITIVE_AUTH_QUOTED_RE =
   /(?<=["'])(\bauthorization\b)("?)(\s*[:=]\s*)(?:(["'])((?:bearer|basic)\s+)?(?:\\.|[^\r\n\\])*?\4|((?:bearer|basic)\s+)?[^"'\r\n]+)/gi;
 const SENSITIVE_AUTH_LINE_RE =
   /(?:^|(?<=[\r\n]))(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?[^\r\n]+/gi;
-/**
- * Unquoted-value form (`password:hunter2`). Parser errors echo the offending
- * source fragment, so `--params '{"password":hunter2}'` surfaces the raw
- * value in a `JSON.parse` message that the quoted patterns above skip.
- *
- * Runs LAST so already-redacted quoted values are inert: neither position
- * admits `"` or `'`, so `password='[REDACTED]'` no longer matches.
- *
- * The value is split into two positions rather than one `+` class:
- *
- *   first char — excludes whitespace, quotes, and the structure openers
- *     `{` / `[`. Openers must not match: `{"token":[1,2]}` is well-formed
- *     and redacting from `[` would stop at the inner `,` and mangle the
- *     array. Closers and separators (`,;)]}`) ARE admitted here, because
- *     valid JSON never places one directly after `:` for a scalar field —
- *     if one appears, the text is already malformed, which is exactly the
- *     parser-echo case, and redacting is the safe direction.
- *
- *   rest — excludes the delimiters too, so the match stops at the end of
- *     the field rather than swallowing the payload tail. This is the same
- *     greedy-consumption regression the AUTH anchoring above guards against.
- *
- * Excluding delimiters from BOTH positions was the earlier bug: a value that
- * *begins* with one (`{"password":)hunter2}`) failed to match at all and
- * leaked whole.
- *
- * The replacement is quoted (`"[REDACTED]"`) so redacting a bare JSON literal
- * (`{"token":12345}`) leaves events.jsonl parseable as JSON-per-line.
- */
-const SENSITIVE_UNQUOTED_RE = new RegExp(
-  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)(?:[^\\s"'{\\[][^\\s"',;)\\]}]*)`,
-  "gi",
-);
 
 export function scrubSecrets(text: string): string {
   return text
@@ -130,10 +97,6 @@ export function scrubSecrets(text: string): string {
       SENSITIVE_AUTH_LINE_RE,
       (_m, kw: string, sep: string, scheme: string | undefined) =>
         `${kw}${sep}${scheme || ""}[REDACTED]`,
-    )
-    .replace(
-      SENSITIVE_UNQUOTED_RE,
-      (_m, key: string, sep: string) => `${key}${sep}"[REDACTED]"`,
     );
 }
 

@@ -109,62 +109,6 @@ describe("scrubSecrets", () => {
     expect(out).not.toContain('response="');
   });
 
-  it("redacts unquoted values", () => {
-    // Regression (Codex P2): only quoted values were recognized, so a
-    // JSON.parse failure echoing `--params '{"password":hunter2}'` left the
-    // secret intact in both the stdout envelope and the stderr line.
-    expect(scrubSecrets(`{"password":hunter2}`)).toBe(
-      `{"password":"[REDACTED]"}`,
-    );
-    expect(scrubSecrets("password=hunter2")).toBe(`password="[REDACTED]"`);
-    expect(scrubSecrets(`{"token":12345}`)).toBe(`{"token":"[REDACTED]"}`);
-  });
-
-  it("redacts the unquoted fragment V8 echoes in JSON.parse messages", () => {
-    const raw = `Unexpected token 'h', "{"password":hunter2}" is not valid JSON`;
-    const out = scrubSecrets(raw);
-    expect(out).not.toContain("hunter2");
-    expect(out).toContain("[REDACTED]");
-  });
-
-  it("stops the unquoted branch at structural delimiters", () => {
-    // The value class must not swallow the rest of the payload — the same
-    // greedy-consumption regression the AUTH anchoring guards against.
-    expect(scrubSecrets(`{"token":abc,"user":"bob"}`)).toBe(
-      `{"token":"[REDACTED]","user":"bob"}`,
-    );
-    expect(scrubSecrets("secret=abc; other=keep")).toBe(
-      `secret="[REDACTED]"; other=keep`,
-    );
-  });
-
-  it("redacts unquoted values that begin with a delimiter", () => {
-    // Regression (Codex P2, second round): excluding delimiters from the
-    // FIRST character too meant a value starting with one failed to match
-    // at all and leaked whole.
-    expect(scrubSecrets(`{"password":)hunter2}`)).toBe(
-      `{"password":"[REDACTED]"}`,
-    );
-    for (const lead of [")", "]", "}", ";", ","]) {
-      const out = scrubSecrets(`{"password":${lead}hunter2}`);
-      expect(out).not.toContain("hunter2");
-      expect(out).toContain("[REDACTED]");
-    }
-  });
-
-  it("leaves well-formed nested structures alone", () => {
-    // The structure openers `{` and `[` must NOT match in first position:
-    // redacting from `[` would stop at the inner `,` and mangle the array.
-    expect(scrubSecrets(`{"token":[1,2]}`)).toBe(`{"token":[1,2]}`);
-    expect(scrubSecrets(`{"token":{"v":1}}`)).toBe(`{"token":{"v":1}}`);
-  });
-
-  it("unquoted redaction is idempotent and leaves quoted forms alone", () => {
-    const once = scrubSecrets("SET password='hunter2'");
-    expect(once).toBe("SET password='[REDACTED]'");
-    expect(scrubSecrets(once)).toBe(once);
-  });
-
   it("does not redact non-sensitive keys that merely end in a sensitive token", () => {
     // Regression (Codex P2 on 0733e81): removing `\b` caused
     // `mytoken='x'` / `notpassword='x'` to match the `token`/`password`

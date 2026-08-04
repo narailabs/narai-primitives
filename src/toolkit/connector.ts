@@ -822,13 +822,6 @@ function mapAndBuildError<TSdk>(
     retriable = RETRIABLE_CODES.has(code);
   }
 
-  // Redact before the message reaches ANY sink. This is the primary runtime
-  // error path (handler throws, credential/SDK loading fails), so an
-  // unscrubbed `message` here lands in the ErrorEnvelope that `main` writes
-  // to stdout — the same leak the classify()/extendDecision() paths guard
-  // against. `mapError` overrides are scrubbed too: a connector's custom
-  // mapper commonly interpolates the raw driver error.
-  // DO NOT REMOVE: pinned by tests/toolkit/connector.test.ts.
   message = scrubSecrets(message);
 
   const scope = safeScope(cfg, { sdk, action, params });
