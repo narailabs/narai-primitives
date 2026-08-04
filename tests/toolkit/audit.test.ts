@@ -165,6 +165,38 @@ describe("scrubSecrets", () => {
     expect(scrubSecrets(once)).toBe(once);
   });
 
+  it("redacts compound credential field names", () => {
+    // Regression (Codex P2, third round): `_` is a word character, so
+    // `\btoken\b` missed `session_token` and `\bsecret\b` / `\baccess_key\b`
+    // both missed `secret_access_key` — the field names
+    // src/connectors/aws/cli.ts uses for AWS credentials.
+    expect(scrubSecrets(`{"session_token":"hunter2"}`)).toBe(
+      `{"session_token":"[REDACTED]"}`,
+    );
+    expect(scrubSecrets(`{"secret_access_key":"hunter2"}`)).toBe(
+      `{"secret_access_key":"[REDACTED]"}`,
+    );
+    expect(scrubSecrets("secret_access_key='hunter2'")).toBe(
+      "secret_access_key='[REDACTED]'",
+    );
+    expect(scrubSecrets("refresh-token=abc123")).toBe(
+      `refresh-token="[REDACTED]"`,
+    );
+  });
+
+  it("matches a sensitive keyword only as a whole trailing segment", () => {
+    // Deliberate boundary, not an oversight. The keyword must run to the end
+    // of the field name, so a trailing segment stops the match:
+    // `access_key_id` is AWS's non-secret key identifier (the username half
+    // of the pair), and widening to arbitrary suffixes would re-introduce
+    // the over-redaction that the `\b` boundaries were added to prevent —
+    // `token_count`, `password_hint` and friends would start erasing debug
+    // context. The secret half, `secret_access_key`, IS matched above.
+    expect(scrubSecrets(`{"access_key_id":"AKIA123"}`)).toBe(
+      `{"access_key_id":"AKIA123"}`,
+    );
+  });
+
   it("does not redact non-sensitive keys that merely end in a sensitive token", () => {
     // Regression (Codex P2 on 0733e81): removing `\b` caused
     // `mytoken='x'` / `notpassword='x'` to match the `token`/`password`

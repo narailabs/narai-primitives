@@ -53,12 +53,25 @@ export interface AuditWriterOptions {
  * trailing `"}`, producing unterminated JSON.
  */
 const SENSITIVE_KEYS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth";
+/**
+ * Key boundaries. Plain `\b` is wrong here because `_` is a word character,
+ * so `\btoken\b` misses `session_token` and `\bsecret\b` /
+ * `\baccess[_-]?key\b` both miss `secret_access_key` — the exact field names
+ * `src/connectors/aws/cli.ts` uses for AWS credentials.
+ *
+ * Requiring a non-alphanumeric neighbour instead admits the `_`/`-` joined
+ * compound forms while still rejecting the run-on words `\b` was added to
+ * protect (`mytoken`, `notpassword`, `xsecret`), where the neighbour is a
+ * letter.
+ */
+const KEY_START = "(?<![A-Za-z0-9])";
+const KEY_END = "(?![A-Za-z0-9])";
 const SENSITIVE_SQUOTE_RE = new RegExp(
-  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)'(?:[^'\\\\]|\\\\.)*'`,
+  `("?${KEY_START}(?:${SENSITIVE_KEYS})${KEY_END}"?)(\\s*[:=]\\s*)'(?:[^'\\\\]|\\\\.)*'`,
   "gi",
 );
 const SENSITIVE_DQUOTE_RE = new RegExp(
-  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)"(?:[^"\\\\]|\\\\.)*"`,
+  `("?${KEY_START}(?:${SENSITIVE_KEYS})${KEY_END}"?)(\\s*[:=]\\s*)"(?:[^"\\\\]|\\\\.)*"`,
   "gi",
 );
 const SENSITIVE_AUTH_QUOTED_RE =
@@ -95,7 +108,7 @@ const SENSITIVE_AUTH_LINE_RE =
  * (`{"token":12345}`) leaves events.jsonl parseable as JSON-per-line.
  */
 const SENSITIVE_UNQUOTED_RE = new RegExp(
-  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)(?:[^\\s"'{\\[][^\\s"',;)\\]}]*)`,
+  `("?${KEY_START}(?:${SENSITIVE_KEYS})${KEY_END}"?)(\\s*[:=]\\s*)(?:[^\\s"'{\\[][^\\s"',;)\\]}]*)`,
   "gi",
 );
 
