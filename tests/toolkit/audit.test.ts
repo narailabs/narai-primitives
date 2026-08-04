@@ -184,6 +184,31 @@ describe("scrubSecrets", () => {
     );
   });
 
+  it("redacts Authorization headers embedded mid-string", () => {
+    // Regression (Codex P2, fourth round): thrown messages routinely carry a
+    // prefix, so the header is neither quote-preceded nor at a line start
+    // and both anchored patterns missed it.
+    expect(scrubSecrets("request failed: Authorization: Bearer abc.def")).toBe(
+      "request failed: Authorization: Bearer [REDACTED]",
+    );
+    expect(scrubSecrets("upstream 401 (authorization=Token xyz789)")).not.toContain(
+      "xyz789",
+    );
+  });
+
+  it("the inline Authorization pattern cannot mangle surrounding JSON", () => {
+    // The original single-unanchored-pattern regression: a greedy value class
+    // consumed past the JSON value's closing quote, producing unterminated
+    // JSON. Excluding quotes from the value class is what makes the
+    // unanchored pass safe.
+    expect(scrubSecrets(`{"message":"authorization: Bearer abc"}`)).toBe(
+      `{"message":"authorization: Bearer [REDACTED]"}`,
+    );
+    expect(scrubSecrets(`{"authorization": "Token abc123"}`)).toBe(
+      `{"authorization": "[REDACTED]"}`,
+    );
+  });
+
   it("matches a sensitive keyword only as a whole trailing segment", () => {
     // Deliberate boundary, not an oversight. The keyword must run to the end
     // of the field name, so a trailing segment stops the match:

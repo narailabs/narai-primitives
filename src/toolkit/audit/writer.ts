@@ -79,6 +79,21 @@ const SENSITIVE_AUTH_QUOTED_RE =
 const SENSITIVE_AUTH_LINE_RE =
   /(?:^|(?<=[\r\n]))(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?[^\r\n]+/gi;
 /**
+ * INLINE_RE — the third context: a header embedded mid-string with a prefix,
+ * as thrown messages routinely are (`request failed: Authorization: Bearer
+ * abc.def`). QUOTED_RE needs a preceding quote and LINE_RE needs a line
+ * start, so neither fires and the token reached stdout intact.
+ *
+ * Runs after both, so by this point the only `authorization` occurrences
+ * left are the unanchored ones. The value class excludes `"` and `'` — that
+ * is what makes an unanchored pattern safe here, and is precisely what the
+ * original single-unanchored-pattern regression lacked: it could not consume
+ * past a JSON value's closing quote and mangle the outer payload. Re-running
+ * over already-redacted text is a no-op.
+ */
+const SENSITIVE_AUTH_INLINE_RE =
+  /(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?[^"'\r\n]+/gi;
+/**
  * Unquoted-value form (`password:hunter2`). Parser errors echo the offending
  * source fragment, so `--params '{"password":hunter2}'` surfaces the raw
  * value in a `JSON.parse` message that the quoted patterns above skip.
@@ -141,6 +156,11 @@ export function scrubSecrets(text: string): string {
     )
     .replace(
       SENSITIVE_AUTH_LINE_RE,
+      (_m, kw: string, sep: string, scheme: string | undefined) =>
+        `${kw}${sep}${scheme || ""}[REDACTED]`,
+    )
+    .replace(
+      SENSITIVE_AUTH_INLINE_RE,
       (_m, kw: string, sep: string, scheme: string | undefined) =>
         `${kw}${sep}${scheme || ""}[REDACTED]`,
     )
