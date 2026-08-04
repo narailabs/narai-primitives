@@ -65,24 +65,6 @@ const SENSITIVE_AUTH_QUOTED_RE =
   /(?<=["'])(\bauthorization\b)("?)(\s*[:=]\s*)(?:(["'])((?:bearer|basic)\s+)?(?:\\.|[^\r\n\\])*?\4|((?:bearer|basic)\s+)?[^"'\r\n]+)/gi;
 const SENSITIVE_AUTH_LINE_RE =
   /(?:^|(?<=[\r\n]))(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?[^\r\n]+/gi;
-/**
- * Unquoted-value form (`password:hunter2`). Parser errors echo the offending
- * source fragment, so `--params '{"password":hunter2}'` surfaces the raw
- * value in a `JSON.parse` message that the quoted patterns above skip.
- *
- * Runs LAST so already-redacted quoted values are inert: the value class
- * excludes `"` and `'`, so `password='[REDACTED]'` no longer matches. It also
- * excludes structural delimiters (`,;)]}` and whitespace) to stop at the end
- * of the field rather than swallowing the rest of the payload — the same
- * greedy-consumption regression the AUTH anchoring above guards against.
- *
- * The replacement is quoted (`"[REDACTED]"`) so redacting a bare JSON literal
- * (`{"token":12345}`) leaves events.jsonl parseable as JSON-per-line.
- */
-const SENSITIVE_UNQUOTED_RE = new RegExp(
-  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)[^\\s"',;)\\]}]+`,
-  "gi",
-);
 
 export function scrubSecrets(text: string): string {
   return text
@@ -115,10 +97,6 @@ export function scrubSecrets(text: string): string {
       SENSITIVE_AUTH_LINE_RE,
       (_m, kw: string, sep: string, scheme: string | undefined) =>
         `${kw}${sep}${scheme || ""}[REDACTED]`,
-    )
-    .replace(
-      SENSITIVE_UNQUOTED_RE,
-      (_m, key: string, sep: string) => `${key}${sep}"[REDACTED]"`,
     );
 }
 
