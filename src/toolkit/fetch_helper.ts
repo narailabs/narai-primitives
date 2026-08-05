@@ -79,59 +79,72 @@ export async function fetchWithCaps(
   url: string,
   init: RequestInit = {},
   caps: FetchCapsOptions = {},
+  fetchImpl: typeof fetch = globalThis.fetch
 ): Promise<Response> {
   const maxBytes = caps.maxBytes ?? FETCH_MAX_BYTES_DEFAULT;
   const timeoutMs = caps.timeoutMs ?? FETCH_TIMEOUT_MS_DEFAULT;
 
   const timeoutCtl = new AbortController();
-  const timer = setTimeout(() => timeoutCtl.abort(new Error("fetch_helper timeout")), timeoutMs);
+  // Abort with a DOMException named "AbortError" — the reason propagates
+  // verbatim to whatever `fetch`/`reader.read()` rejects with, and both
+  // docblocks above advertise `AbortError`. A plain `Error` here left callers
+  // doing the conventional `err.name === "AbortError"` check misclassifying a
+  // timeout as a generic network failure. Now that the timer stays armed
+  // through the body stream, that misclassification reaches a second path.
+  const timer = setTimeout(
+    () => timeoutCtl.abort(new DOMException("fetch_helper timeout", "AbortError")),
+    timeoutMs,
+  );
   const signal = mergeSignals(timeoutCtl.signal, caps.signal ?? init.signal ?? undefined);
 
-  let response: Response;
+  // The timeout must cover the entire body read, not just header resolution.
+  // Keeping the streaming loop inside this try (so `clearTimeout` only fires in
+  // the finally after the body is fully drained) closes a Slowloris window where
+  // a server sends headers promptly then drips the body indefinitely.
   try {
-    response = await fetch(url, { ...init, signal });
+    const response = await fetchImpl(url, { ...init, signal });
+
+    const clHeader = response.headers.get("content-length");
+    if (clHeader !== null) {
+      const cl = Number(clHeader);
+      if (Number.isFinite(cl) && cl > maxBytes) {
+        try { await response.body?.cancel(); } catch { /* best-effort */ }
+        throw new FetchCapExceeded(maxBytes, cl, url);
+      }
+    }
+
+    const reader = response.body?.getReader();
+    if (reader === undefined) {
+      return response;
+    }
+
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value === undefined) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        try { await reader.cancel(); } catch { /* best-effort */ }
+        throw new FetchCapExceeded(maxBytes, total, url);
+      }
+      chunks.push(value);
+    }
+
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+
+    return new Response(merged, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
   } finally {
     clearTimeout(timer);
   }
-
-  const clHeader = response.headers.get("content-length");
-  if (clHeader !== null) {
-    const cl = Number(clHeader);
-    if (Number.isFinite(cl) && cl > maxBytes) {
-      try { await response.body?.cancel(); } catch { /* best-effort */ }
-      throw new FetchCapExceeded(maxBytes, cl, url);
-    }
-  }
-
-  const reader = response.body?.getReader();
-  if (reader === undefined) {
-    return response;
-  }
-
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (value === undefined) continue;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      try { await reader.cancel(); } catch { /* best-effort */ }
-      throw new FetchCapExceeded(maxBytes, total, url);
-    }
-    chunks.push(value);
-  }
-
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-
-  return new Response(merged, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-  });
 }

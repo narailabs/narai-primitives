@@ -97,6 +97,91 @@ describe("fetchWithCaps", () => {
     ).rejects.toThrow();
   });
 
+  it("keeps the timeout armed during the body stream (Slowloris)", async () => {
+    // Headers arrive immediately, but the body never delivers a chunk unless
+    // the composed signal aborts — a slow-drip / stalled body. The timeout must
+    // still fire, otherwise the read loop hangs forever. This regresses if the
+    // streaming loop is moved back outside the timed try (clearTimeout too early).
+    globalThis.fetch = vi.fn((_: unknown, init?: RequestInit) => {
+      const signal = init?.signal;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          if (signal?.aborted) {
+            controller.error(signal.reason ?? new Error("aborted"));
+            return;
+          }
+          signal?.addEventListener("abort", () => {
+            controller.error(signal.reason ?? new Error("aborted"));
+          });
+          // never enqueue and never close: the body stalls indefinitely
+        },
+      });
+      return Promise.resolve(new Response(body, { status: 200 }));
+    }) as unknown as typeof globalThis.fetch;
+
+    await expect(
+      fetchWithCaps("https://example.com/slowloris", {}, { timeoutMs: 20 }),
+    ).rejects.toThrow();
+  });
+
+  it("rejects a header-phase timeout with an AbortError", async () => {
+    // The docblock advertises `DOMException` / `AbortError`; callers classify
+    // cancellation with the conventional `err.name === "AbortError"`. Aborting
+    // with a plain Error made that check miss every fetch_helper timeout.
+    mockFetchAwaitsAbort();
+    const err = await fetchWithCaps(
+      "https://example.com/slow",
+      {},
+      { timeoutMs: 10 },
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(DOMException);
+    expect((err as DOMException).name).toBe("AbortError");
+    expect((err as DOMException).message).toBe("fetch_helper timeout");
+  });
+
+  it("rejects a body-stream timeout with an AbortError", async () => {
+    // The path the Slowloris fix opened: the timer now fires while draining the
+    // body, so the reason has to carry the same AbortError name there too.
+    globalThis.fetch = vi.fn((_: unknown, init?: RequestInit) => {
+      const signal = init?.signal;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          if (signal?.aborted) {
+            controller.error(signal.reason ?? new Error("aborted"));
+            return;
+          }
+          signal?.addEventListener("abort", () => {
+            controller.error(signal.reason ?? new Error("aborted"));
+          });
+        },
+      });
+      return Promise.resolve(new Response(body, { status: 200 }));
+    }) as unknown as typeof globalThis.fetch;
+
+    const err = await fetchWithCaps(
+      "https://example.com/slowloris",
+      {},
+      { timeoutMs: 20 },
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(DOMException);
+    expect((err as DOMException).name).toBe("AbortError");
+  });
+
+  it("propagates an external abort reason unchanged", async () => {
+    // The internal timeout reason is ours to set; a caller-supplied reason is
+    // not — it must reach the caller verbatim rather than being rewritten.
+    mockFetchAwaitsAbort();
+    const ctl = new AbortController();
+    const reason = new Error("caller cancelled");
+    const p = fetchWithCaps(
+      "https://example.com/slow",
+      {},
+      { timeoutMs: 60_000, signal: ctl.signal },
+    );
+    ctl.abort(reason);
+    await expect(p).rejects.toBe(reason);
+  });
+
   it("composes an external AbortSignal with the internal timeout", async () => {
     mockFetchAwaitsAbort();
     const ctl = new AbortController();
