@@ -85,7 +85,16 @@ export async function fetchWithCaps(
   const timeoutMs = caps.timeoutMs ?? FETCH_TIMEOUT_MS_DEFAULT;
 
   const timeoutCtl = new AbortController();
-  const timer = setTimeout(() => timeoutCtl.abort(new Error("fetch_helper timeout")), timeoutMs);
+  // Abort with a DOMException named "AbortError" — the reason propagates
+  // verbatim to whatever `fetch`/`reader.read()` rejects with, and both
+  // docblocks above advertise `AbortError`. A plain `Error` here left callers
+  // doing the conventional `err.name === "AbortError"` check misclassifying a
+  // timeout as a generic network failure. Now that the timer stays armed
+  // through the body stream, that misclassification reaches a second path.
+  const timer = setTimeout(
+    () => timeoutCtl.abort(new DOMException("fetch_helper timeout", "AbortError")),
+    timeoutMs,
+  );
   const signal = mergeSignals(timeoutCtl.signal, caps.signal ?? init.signal ?? undefined);
 
   // The timeout must cover the entire body read, not just header resolution.
