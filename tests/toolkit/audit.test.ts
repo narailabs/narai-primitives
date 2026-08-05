@@ -222,6 +222,45 @@ describe("scrubSecrets", () => {
     );
   });
 
+  it("redacts the password in a connection-URL userinfo", () => {
+    // Regression (Codex P2, fifth round): every other pattern keys off a
+    // field name, but a DSN carries the credential positionally, so a driver
+    // error echoing its connection string matched nothing and leaked whole.
+    // src/connectors/db/lib/drivers/mongodb.ts builds exactly this shape.
+    expect(scrubSecrets("mongodb://user:hunter2@host:27017")).toBe(
+      "mongodb://user:[REDACTED]@host:27017",
+    );
+    expect(
+      scrubSecrets("connect failed: postgres://admin:p%40ss@db.internal/app"),
+    ).toBe("connect failed: postgres://admin:[REDACTED]@db.internal/app");
+    expect(scrubSecrets("mongodb+srv://u:pw@cluster.example.net")).toBe(
+      "mongodb+srv://u:[REDACTED]@cluster.example.net",
+    );
+  });
+
+  it("URL userinfo redaction keeps the rest of the URL and is idempotent", () => {
+    // The value class excludes `/` and `@` so the match stops at the
+    // authority instead of swallowing the path — the same greedy-consumption
+    // guard the AUTH patterns carry.
+    const once = scrubSecrets("mongodb://user:hunter2@host:27017/db?tls=true");
+    expect(once).toBe("mongodb://user:[REDACTED]@host:27017/db?tls=true");
+    expect(scrubSecrets(once)).toBe(once);
+    expect(scrubSecrets(`{"dsn":"mongodb://u:pw@h/db"}`)).toBe(
+      `{"dsn":"mongodb://u:[REDACTED]@h/db"}`,
+    );
+  });
+
+  it("leaves credential-free URLs alone", () => {
+    // A colon-less userinfo is left alone by design: that position is far
+    // more often a bare username than a token.
+    expect(scrubSecrets("GET https://api.example.com/v1/users?id=7")).toBe(
+      "GET https://api.example.com/v1/users?id=7",
+    );
+    expect(scrubSecrets("postgres://myuser@localhost/db")).toBe(
+      "postgres://myuser@localhost/db",
+    );
+  });
+
   it("does not redact non-sensitive keys that merely end in a sensitive token", () => {
     // Regression (Codex P2 on 0733e81): removing `\b` caused
     // `mytoken='x'` / `notpassword='x'` to match the `token`/`password`

@@ -136,6 +136,38 @@ describe("createConnector.fetch — validation errors", () => {
     }
   });
 
+  it("scrubs secrets out of Zod validation messages", async () => {
+    // Regression (Codex P2): `safeParse` fails before any of the scrubbed
+    // catch blocks, so a schema whose issue text interpolates the rejected
+    // value put the secret straight into the envelope `main()` writes to
+    // stdout — and into the hardship context recorded alongside it.
+    const c = createConnector({
+      name: "scrub-test",
+      credentials: async () => ({}),
+      actions: {
+        login: {
+          params: z
+            .object({ password: z.string() })
+            .superRefine((v, ctx) => {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: `rejected password="${v.password}"`,
+              });
+            }),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const env = await c.fetch("login", { password: "hunter2" });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.error_code).toBe("VALIDATION_ERROR");
+      expect(env.message).not.toContain("hunter2");
+      expect(env.message).toContain("[REDACTED]");
+    }
+  });
+
   it("handler throwing a foreign ZodError-shaped object still maps to VALIDATION_ERROR", async () => {
     // Simulates a consumer whose zod install is a separate module instance
     // from the toolkit's (e.g. via `file:` deps) — `instanceof z.ZodError`

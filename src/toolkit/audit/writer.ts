@@ -126,6 +126,27 @@ const SENSITIVE_UNQUOTED_RE = new RegExp(
   `("?${KEY_START}(?:${SENSITIVE_KEYS})${KEY_END}"?)(\\s*[:=]\\s*)(?:[^\\s"'{\\[][^\\s"',;)\\]}]*)`,
   "gi",
 );
+/**
+ * Connection-URL userinfo (`mongodb://user:hunter2@host`). Every pattern above
+ * keys off a `password`-style field name; a DSN carries the credential
+ * positionally instead, so a thrown driver error echoing its connection string
+ * matched nothing and leaked whole. `src/connectors/db/lib/drivers/mongodb.ts`
+ * builds exactly this shape (`${user}:${password}@`).
+ *
+ * Only the password position is redacted. The username is not itself a secret
+ * and keeping it — along with scheme, host, and path — is what makes the
+ * scrubbed message still useful for diagnosing a connection failure.
+ *
+ * The value classes exclude `/` and `@`, so the match cannot run past the
+ * authority into the path and swallow the rest of the payload — the same
+ * greedy-consumption guard the AUTH patterns document above. Re-running over
+ * already-redacted text is a no-op (`[REDACTED]` re-matches to itself).
+ *
+ * Residual: a colon-less userinfo (`https://<token>@host`) is left alone,
+ * because that position is far more often a bare username (`postgres://
+ * myuser@localhost/db`) than a token, and this repo never generates it.
+ */
+const URL_USERINFO_RE = /([a-z][a-z0-9+.-]*:\/\/[^\s:/?#@"']+:)[^\s/@"']+@/gi;
 
 export function scrubSecrets(text: string): string {
   return text
@@ -167,7 +188,8 @@ export function scrubSecrets(text: string): string {
     .replace(
       SENSITIVE_UNQUOTED_RE,
       (_m, key: string, sep: string) => `${key}${sep}"[REDACTED]"`,
-    );
+    )
+    .replace(URL_USERINFO_RE, (_m, prefix: string) => `${prefix}[REDACTED]@`);
 }
 
 function isoTimestamp(): string {

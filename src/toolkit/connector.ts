@@ -394,11 +394,18 @@ export function createConnector<TSdk = unknown>(
     const parsed = spec.params.safeParse(params);
     if (!parsed.success) {
       const mapped = defaultErrorMap(parsed.error);
+      // Zod issue text is author-controlled and routinely interpolates the
+      // rejected value (`superRefine` with a custom message, enum/literal
+      // mismatches). `defaultErrorMap` concatenates every issue message, so a
+      // schema that rejects a malformed credential echoes it here — and this
+      // envelope is what `main()` writes to stdout. Scrub once, before both
+      // sinks: the envelope below and the hardship context recorded after it.
+      const message = scrubSecrets(mapped.message);
       const env: ErrorEnvelope = {
         status: "error",
         action,
         error_code: mapped.error_code,
-        message: mapped.message,
+        message,
         retriable: false,
       };
       audit.logEvent({
@@ -411,7 +418,7 @@ export function createConnector<TSdk = unknown>(
       recorder({
         action,
         kind: "validation",
-        context: mapped.message,
+        context: message,
         scope: safeScope(cfg, {
           sdk: undefined as unknown as TSdk,
           action,
