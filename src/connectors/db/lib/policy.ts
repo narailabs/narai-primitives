@@ -133,20 +133,30 @@ const _DECISION_RANK: Record<Decision, number> = {
 // -----------------------------------------------------------------------
 
 const _READ_KEYWORDS: ReadonlySet<string> = new Set([
-  "SELECT", "EXPLAIN", "SHOW", "DESCRIBE", "DESC", "WITH", "VALUES", "TABLE",
+  "SELECT",
+  "EXPLAIN",
+  "SHOW",
+  "DESCRIBE",
+  "DESC",
+  "WITH",
+  "VALUES",
+  "TABLE",
 ]);
 const _WRITE_KEYWORDS: ReadonlySet<string> = new Set([
-  "INSERT", "UPDATE", "REPLACE", "MERGE", "UPSERT",
+  "INSERT",
+  "UPDATE",
+  "REPLACE",
+  "MERGE",
+  "UPSERT",
 ]);
-const _DELETE_KEYWORDS: ReadonlySet<string> = new Set([
-  "DELETE", "TRUNCATE",
-]);
+const _DELETE_KEYWORDS: ReadonlySet<string> = new Set(["DELETE", "TRUNCATE"]);
 const _ADMIN_KEYWORDS: ReadonlySet<string> = new Set([
-  "CREATE", "DROP", "ALTER", "RENAME",
+  "CREATE",
+  "DROP",
+  "ALTER",
+  "RENAME",
 ]);
-const _PRIVILEGE_KEYWORDS: ReadonlySet<string> = new Set([
-  "GRANT", "REVOKE",
-]);
+const _PRIVILEGE_KEYWORDS: ReadonlySet<string> = new Set(["GRANT", "REVOKE"]);
 
 /**
  * Classify a SQL string by its leading keyword.
@@ -181,9 +191,11 @@ export function classifySqlKeywords(
   if (firstWord === "WITH") {
     const masked = Policy._maskStringLiterals(cleaned).toUpperCase();
     if (/\b(GRANT|REVOKE)\b/.test(masked)) return OperationType.PRIVILEGE;
-    if (/\b(CREATE|DROP|ALTER|RENAME)\b/.test(masked)) return OperationType.ADMIN;
+    if (/\b(CREATE|DROP|ALTER|RENAME)\b/.test(masked))
+      return OperationType.ADMIN;
     if (/\b(DELETE|TRUNCATE)\b/.test(masked)) return OperationType.DELETE;
-    if (/\b(INSERT|UPDATE|REPLACE|MERGE|UPSERT)\b/.test(masked)) return OperationType.WRITE;
+    if (/\b(INSERT|UPDATE|REPLACE|MERGE|UPSERT)\b/.test(masked))
+      return OperationType.WRITE;
     return OperationType.READ;
   }
 
@@ -251,8 +263,10 @@ function _boundarySemicolons(
   sql: string,
   treatBackslashAsEscape: boolean,
   dialect: SqlDialect = "generic",
-): Set<number> {
-  const boundaries = new Set<number>();
+): number[] {
+  // ⚡ Bolt: Replace Set with Array. Sequential parsing naturally sorts indices,
+  // avoiding unnecessary O(N log N) sorting overhead later.
+  const boundaries: number[] = [];
   let inString: string | null = null; // Either null, "'", '"', or '`'
 
   for (let i = 0; i < sql.length; i++) {
@@ -269,7 +283,10 @@ function _boundarySemicolons(
         i++; // skip escaped char like \'
       }
     } else {
-      if ((c === "[" && _bracketsAreIdentifierQuotes(dialect)) || _isExecCommentStart(sql, i)) {
+      if (
+        (c === "[" && _bracketsAreIdentifierQuotes(dialect)) ||
+        _isExecCommentStart(sql, i)
+      ) {
         throw new Error("Ambiguous or unrecognized SQL construct");
       }
       if (c === "'" || c === '"' || c === "`") {
@@ -280,7 +297,7 @@ function _boundarySemicolons(
           i = dEnd - 1; // Advance loop to end of dollar quote
         }
       } else if (c === ";") {
-        boundaries.add(i);
+        boundaries.push(i);
       }
     }
   }
@@ -300,24 +317,26 @@ function _boundarySemicolons(
  * and backslash-as-escape semantics. If the two modes disagree on statement
  * boundaries, the function fails closed and throws an error.
  */
-function _splitStatements(sql: string, dialect: SqlDialect = "generic"): string[] {
+function _splitStatements(
+  sql: string,
+  dialect: SqlDialect = "generic",
+): string[] {
   const cleaned = Policy._stripComments(sql, dialect);
 
   const b1 = _boundarySemicolons(cleaned, false, dialect);
   const b2 = _boundarySemicolons(cleaned, true, dialect);
 
-  if (b1.size !== b2.size) {
+  if (b1.length !== b2.length) {
     throw new Error("Ambiguous SQL statement boundaries");
   }
-  const b1Array = Array.from(b1).sort((a, b) => a - b);
-  const b2Array = Array.from(b2).sort((a, b) => a - b);
-  for (let i = 0; i < b1Array.length; i++) {
-    if (b1Array[i] !== b2Array[i]) {
+
+  for (let i = 0; i < b1.length; i++) {
+    if (b1[i] !== b2[i]) {
       throw new Error("Ambiguous SQL statement boundaries");
     }
   }
 
-  const boundaries = b1Array;
+  const boundaries = b1;
 
   const out: string[] = [];
   let start = 0;
@@ -356,7 +375,6 @@ export function classifyStatements(
   return stmts.map((s) => classifySqlKeywords(s, dialect));
 }
 
-
 /**
  * Heuristic: a SELECT is "unbounded" if it reads from a table but has
  * no WHERE, LIMIT, JOIN, or specific id filter.
@@ -377,7 +395,10 @@ export type ApprovalMode =
   | "grant_required";
 
 const _VALID_APPROVAL_MODES: ReadonlySet<ApprovalMode> = new Set([
-  "auto", "confirm_once", "confirm_each", "grant_required",
+  "auto",
+  "confirm_once",
+  "confirm_each",
+  "grant_required",
 ]);
 
 /**
@@ -452,7 +473,11 @@ export class Policy {
             } else {
               inString = null;
             }
-          } else if (c === "\\" && treatBackslashAsEscape && i + 1 < sql.length) {
+          } else if (
+            c === "\\" &&
+            treatBackslashAsEscape &&
+            i + 1 < sql.length
+          ) {
             i++;
           }
         } else if (c === "$" && _dollarQuoteEnd(sql, i) !== -1) {
@@ -461,17 +486,25 @@ export class Policy {
           // (which would delete a following `;` and hide a statement).
           i = _dollarQuoteEnd(sql, i) - 1;
         } else {
-          if ((c === "[" && _bracketsAreIdentifierQuotes(dialect)) || _isExecCommentStart(sql, i)) {
+          if (
+            (c === "[" && _bracketsAreIdentifierQuotes(dialect)) ||
+            _isExecCommentStart(sql, i)
+          ) {
             throw new Error("Ambiguous or unrecognized SQL construct");
           }
           if (c === "'" || c === '"' || c === "`") {
             inString = c;
           } else if (c === "-" && i + 1 < sql.length && sql[i + 1] === "-") {
-            if (i + 2 < sql.length && !/[\s\x00-\x1F]/.test(sql[i + 2] as string)) {
+            if (
+              i + 2 < sql.length &&
+              !/[\s\x00-\x1F]/.test(sql[i + 2] as string)
+            ) {
               throw new Error("Ambiguous or unrecognized SQL construct");
             }
             const start = i;
-            while (i < sql.length && sql[i] !== "\n" && sql[i] !== "\r") { i++; }
+            while (i < sql.length && sql[i] !== "\n" && sql[i] !== "\r") {
+              i++;
+            }
             for (let k = start; k < i; k++) isComment[k] = true;
             i--; // so outer loop processes the newline or carriage return
           } else if (c === "/" && i + 1 < sql.length && sql[i + 1] === "*") {
@@ -487,7 +520,8 @@ export class Policy {
               }
               i++;
             }
-            for (let k = start; k <= i && k < sql.length; k++) isComment[k] = true;
+            for (let k = start; k <= i && k < sql.length; k++)
+              isComment[k] = true;
           }
         }
       }
@@ -541,7 +575,11 @@ export class Policy {
             } else {
               inString = null;
             }
-          } else if (c === "\\" && treatBackslashAsEscape && i + 1 < sql.length) {
+          } else if (
+            c === "\\" &&
+            treatBackslashAsEscape &&
+            i + 1 < sql.length
+          ) {
             isStr[i] = true;
             isStr[i + 1] = true;
             i++;
@@ -552,8 +590,10 @@ export class Policy {
           const end = _dollarQuoteEnd(sql, i);
           const start = i;
           let tagLen = 0;
-          while (start + tagLen < sql.length && sql[start + tagLen] !== "$") tagLen++;
-          if (start + tagLen < sql.length && sql[start + tagLen] === "$") tagLen++;
+          while (start + tagLen < sql.length && sql[start + tagLen] !== "$")
+            tagLen++;
+          if (start + tagLen < sql.length && sql[start + tagLen] === "$")
+            tagLen++;
           for (let k = start + tagLen; k < end - tagLen; k++) isStr[k] = true;
           i = end - 1;
         } else {
@@ -581,7 +621,9 @@ export class Policy {
   static _isUnboundedSelect(sql: string): boolean {
     if (!_UNBOUNDED_RE.test(sql)) return false;
     const masked = Policy._maskStringLiterals(sql);
-    return !_BOUNDED_KEYWORDS_RE.test(sql) || !_BOUNDED_KEYWORDS_RE.test(masked);
+    return (
+      !_BOUNDED_KEYWORDS_RE.test(sql) || !_BOUNDED_KEYWORDS_RE.test(masked)
+    );
   }
 
   // ------------------------------------------------------------------
@@ -602,7 +644,10 @@ export class Policy {
   checkQuery(sql: string, driver?: DatabaseDriver): PolicyResult {
     const stripped = sql.trim();
     if (!stripped) {
-      const result: PolicyResult = { decision: "deny", reason: "Empty SQL statement" };
+      const result: PolicyResult = {
+        decision: "deny",
+        reason: "Empty SQL statement",
+      };
       _emitDeny(result.reason, null);
       return result;
     }
@@ -627,7 +672,11 @@ export class Policy {
     }
 
     const statements = _splitStatements(stripped, this._dialect);
-    const perStmt: Array<{ stmt: string; op: OperationType; result: PolicyResult }> = [];
+    const perStmt: Array<{
+      stmt: string;
+      op: OperationType;
+      result: PolicyResult;
+    }> = [];
     for (let i = 0; i < statements.length; i++) {
       const stmt = statements[i]!;
       const op = classifications[i]!;
@@ -638,7 +687,10 @@ export class Policy {
     // reason and op reflect the earliest culprit (predictable messaging).
     let winner = perStmt[0]!;
     for (const entry of perStmt.slice(1)) {
-      if (_DECISION_RANK[entry.result.decision] > _DECISION_RANK[winner.result.decision]) {
+      if (
+        _DECISION_RANK[entry.result.decision] >
+        _DECISION_RANK[winner.result.decision]
+      ) {
         winner = entry;
       }
     }
@@ -648,7 +700,8 @@ export class Policy {
     // write/delete/admin half.
     let final = winner.result;
     if (statements.length > 1 && final.decision === "present_only") {
-      const combined = perStmt.map((e) => _formatStatement(e.stmt)).join("; ") + ";";
+      const combined =
+        perStmt.map((e) => _formatStatement(e.stmt)).join("; ") + ";";
       final = { ...final, formatted_sql: combined };
     }
 
@@ -686,16 +739,22 @@ export class Policy {
     const unrecognizedAdmin =
       op === OperationType.ADMIN && _isUnrecognizedLeading(stmt, this._dialect);
     if (rule === "deny") {
-      const reason = unrecognizedAdmin ? _unrecognizedReason() : _denyReason(op);
+      const reason = unrecognizedAdmin
+        ? _unrecognizedReason()
+        : _denyReason(op);
       return { decision: "deny", reason };
     }
     if (rule === "escalate") {
-      const reason = unrecognizedAdmin ? _unrecognizedReason() : _escalateReason(op);
+      const reason = unrecognizedAdmin
+        ? _unrecognizedReason()
+        : _escalateReason(op);
       return { decision: "escalate", reason };
     }
     if (rule === "present") {
       const formatted = _formatStatement(stmt);
-      const reason = unrecognizedAdmin ? _unrecognizedReason() : _presentReason(op);
+      const reason = unrecognizedAdmin
+        ? _unrecognizedReason()
+        : _presentReason(op);
       return { decision: "present_only", reason, formatted_sql: formatted };
     }
     // rule === "allow"
@@ -704,7 +763,10 @@ export class Policy {
     }
     // Config validation prevents "allow" from reaching ADMIN/PRIVILEGE; only
     // WRITE/DELETE remain.
-    return { decision: "allow", reason: `${op.toUpperCase()} allowed by policy` };
+    return {
+      decision: "allow",
+      reason: `${op.toUpperCase()} allowed by policy`,
+    };
   }
 
   /**
@@ -727,7 +789,8 @@ export class Policy {
     const result = this._decideOne(stmt, op);
     if (result.decision === "deny") _emitDeny(result.reason, op);
     else if (result.decision === "escalate") _emitEscalate(result.reason, op);
-    else if (result.decision === "present_only") _emitPresentOnly(result.reason, op, result.formatted_sql);
+    else if (result.decision === "present_only")
+      _emitPresentOnly(result.reason, op, result.formatted_sql);
     else if (op !== OperationType.READ) _emitAllow(op);
     return result;
   }
@@ -892,7 +955,8 @@ function _emitEscalate(reason: string, op: OperationType | null): void {
 /** Default deny reason per operation type (stable strings used by evals). */
 function _denyReason(op: OperationType): string {
   if (op === OperationType.ADMIN) return "ADMIN statements are never allowed";
-  if (op === OperationType.PRIVILEGE) return "PRIVILEGE statements are never allowed";
+  if (op === OperationType.PRIVILEGE)
+    return "PRIVILEGE statements are never allowed";
   if (op === OperationType.WRITE) return "WRITE statements are not allowed";
   if (op === OperationType.DELETE) return "DELETE statements are not allowed";
   return "READ statements are not allowed";
@@ -918,7 +982,9 @@ function _unrecognizedReason(): string {
  * real ADMIN keyword.
  */
 function _isUnrecognizedLeading(stmt: string, dialect: SqlDialect): boolean {
-  const w = (Policy._stripComments(stmt, dialect).trim().split(/\s+/)[0] ?? "").toUpperCase();
+  const w = (
+    Policy._stripComments(stmt, dialect).trim().split(/\s+/)[0] ?? ""
+  ).toUpperCase();
   return !(
     _READ_KEYWORDS.has(w) ||
     _WRITE_KEYWORDS.has(w) ||
@@ -973,9 +1039,7 @@ function _emitPresentOnly(
   // can't leak. Same helper used by audit.logQuery.
   const scrubbed = scrubSqlSecrets(formattedSql);
   const truncated =
-    scrubbed.length > 500
-      ? scrubbed.slice(0, 500) + "\u2026"
-      : scrubbed;
+    scrubbed.length > 500 ? scrubbed.slice(0, 500) + "\u2026" : scrubbed;
   const details: Record<string, unknown> = {
     reason,
     formatted_sql: truncated,
