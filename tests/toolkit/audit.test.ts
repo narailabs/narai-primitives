@@ -39,6 +39,21 @@ describe("scrubSecrets", () => {
     expect(scrubSecrets(raw)).toBe(raw);
   });
 
+  it("consumes backslash-escaped quotes inside the value", () => {
+    // Pins the `\\.` branch of the quoted-value bodies. These are written in
+    // the loop-unrolled form `[^'\\]*(?:\\.[^'\\]*)*`; the equivalent nested
+    // form `(?:[^'\\]|\\.)*` must stay interchangeable with it, because #95
+    // rewrites these same two lines. An escaped quote is part of the value,
+    // so redaction must run to the real closing quote, not stop at the escape.
+    expect(scrubSecrets("password='he\\'s'")).toBe("password='[REDACTED]'");
+    expect(scrubSecrets(`{"password":"a\\"b"}`)).toBe(
+      `{"password":"[REDACTED]"}`,
+    );
+    // Trailing escaped backslash: the `\\` is consumed as one escape pair, so
+    // the following quote still terminates the value.
+    expect(scrubSecrets("password='a\\\\'")).toBe("password='[REDACTED]'");
+  });
+
   it("preserves the matched separator in JSON-shaped payloads", () => {
     // `:` must round-trip (don't rewrite to `=`) so events.jsonl stays
     // parseable as JSON-per-line.

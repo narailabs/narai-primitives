@@ -66,12 +66,23 @@ const SENSITIVE_KEYS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?
  */
 const KEY_START = "(?<![A-Za-z0-9])";
 const KEY_END = "(?![A-Za-z0-9])";
+/**
+ * The quoted-value bodies use the loop-unrolled form `[^'\\]*(?:\\.[^'\\]*)*`
+ * rather than the equivalent `(?:[^'\\]|\\.)*`. Both are linear here — the two
+ * alternatives are disjoint on their first character, so no ambiguous
+ * decomposition exists — but #95 rewrites these same two lines to the unrolled
+ * form, and it edits them off `main`, i.e. without KEY_START/KEY_END. Carrying
+ * the unrolled body here makes this branch a strict superset of #95 on these
+ * lines, so resolving that conflict in either direction keeps the compound-key
+ * boundary fix. Taking #95's side otherwise silently restores `\b` and stops
+ * redacting `secret_access_key` / `session_token`.
+ */
 const SENSITIVE_SQUOTE_RE = new RegExp(
-  `("?${KEY_START}(?:${SENSITIVE_KEYS})${KEY_END}"?)(\\s*[:=]\\s*)'(?:[^'\\\\]|\\\\.)*'`,
+  `("?${KEY_START}(?:${SENSITIVE_KEYS})${KEY_END}"?)(\\s*[:=]\\s*)'[^'\\\\]*(?:\\\\.[^'\\\\]*)*'`,
   "gi",
 );
 const SENSITIVE_DQUOTE_RE = new RegExp(
-  `("?${KEY_START}(?:${SENSITIVE_KEYS})${KEY_END}"?)(\\s*[:=]\\s*)"(?:[^"\\\\]|\\\\.)*"`,
+  `("?${KEY_START}(?:${SENSITIVE_KEYS})${KEY_END}"?)(\\s*[:=]\\s*)"[^"\\\\]*(?:\\\\.[^"\\\\]*)*"`,
   "gi",
 );
 const SENSITIVE_AUTH_QUOTED_RE =
