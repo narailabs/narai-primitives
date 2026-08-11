@@ -227,9 +227,9 @@ function defaultErrorMap(err: unknown): { error_code: ErrorCode; message: string
     const msg = err.issues
       .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
       .join("; ");
-    return { error_code: "VALIDATION_ERROR", message: scrubSecrets(msg) };
+    return { error_code: "VALIDATION_ERROR", message: msg };
   }
-  const message = scrubSecrets(err instanceof Error ? err.message : String(err));
+  const message = err instanceof Error ? err.message : String(err);
   // Heuristic mapping — connectors override via mapError for service-specific codes.
   const lower = message.toLowerCase();
   if (lower.includes("enotfound") || lower.includes("econnrefused") || lower.includes("network")) {
@@ -285,7 +285,7 @@ export function createConnector<TSdk = unknown>(
       });
     } catch (err) {
       // Surface config errors deterministically on first call via fetch.
-      policyLoadError = scrubSecrets(err instanceof Error ? err.message : String(err));
+      policyLoadError = err instanceof Error ? err.message : String(err);
     }
   }
   const rules: PolicyRules = loadedPolicy?.rules ?? cfg.defaultPolicy ?? DEFAULT_POLICY;
@@ -394,7 +394,7 @@ export function createConnector<TSdk = unknown>(
         classification = spec.classify;
       }
     } catch (err) {
-      const message = scrubSecrets(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
       return errorEnvelope(action, "CONFIG_ERROR", `classify() threw: ${message}`, false, start);
     }
 
@@ -411,7 +411,7 @@ export function createConnector<TSdk = unknown>(
           classification,
         });
       } catch (err) {
-        const message = scrubSecrets(err instanceof Error ? err.message : String(err));
+        const message = err instanceof Error ? err.message : String(err);
         return errorEnvelope(action, "CONFIG_ERROR", `extendDecision() threw: ${message}`, false, start);
       }
     }
@@ -576,7 +576,7 @@ export function createConnector<TSdk = unknown>(
     try {
       parsed = parseAgentArgs(argv, { flags: ["action", "params"] });
     } catch (err) {
-      const msg = scrubSecrets(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
       writeArgErrorEnvelope("<unknown>", msg);
       return 2;
     }
@@ -591,7 +591,7 @@ export function createConnector<TSdk = unknown>(
     try {
       params = JSON.parse(paramsRaw);
     } catch (err) {
-      const msg = scrubSecrets(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
       writeArgErrorEnvelope(
         action,
         `--params must be valid JSON (${msg})`,
@@ -729,7 +729,7 @@ function mapAndBuildError<TSdk>(
   const override = cfg.mapError?.(err, action);
   if (override?.error_code !== undefined && override?.message !== undefined) {
     code = override.error_code;
-    message = scrubSecrets(override.message);
+    message = override.message;
     retriable = override.retriable ?? RETRIABLE_CODES.has(code);
   } else {
     const def = defaultErrorMap(err);
