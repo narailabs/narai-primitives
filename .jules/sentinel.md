@@ -33,3 +33,7 @@
 ## 2024-05-18 - Audit Redaction Defense-in-Depth
 **Learning:** The pattern `(?:\\.|[^"\\\\])*` was flagged as a potential Regular Expression Denial of Service (ReDoS) vulnerability. However, because the two alternatives `\\.` and `[^"\\\\]` are disjoint on their first character, matching (including the unterminated-quote failure path) is actually already linear. The ReDoS label was overstated. That said, swapping the alternatives to `(?:[^"\\\\]|\\\\.)*` is a harmless improvement that makes the linear-time guarantee more structural rather than incidental.
 **Prevention:** When dealing with potential ReDoS in quoted string parsing, structural loop unrolling (like `[^'\\]*(?:\\.[^'\\]*)*` or simply prioritizing the non-escaped character class `(?:[^"\\\\]|\\\\.)*`) can provide stronger structural guarantees of linearity, even if the original pattern is practically linear due to disjoint alternatives. Always verify the actual execution time of failure paths (like unterminated quotes) before declaring a catastrophic ReDoS.
+## 2025-02-14 - Fix sensitive data leak in error envelopes
+**Vulnerability:** Zod validation error strings and hook exceptions were not properly scrubbed before being passed to standard output and log envelopes.
+**Learning:** `scrubSecrets` must explicitly sanitize dynamically generated error fields before they bypass audit controls and reach terminal/stdout.
+**Prevention:** Always wrap arbitrary error messages from internal/external exceptions into `scrubSecrets()` when propagating errors up to the user edge.
