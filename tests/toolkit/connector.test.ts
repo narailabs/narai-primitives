@@ -352,6 +352,27 @@ describe("createConnector.fetch — runtime errors", () => {
       expect(env.message).toContain("[REDACTED]");
     }
   });
+
+  it("redacts credentials surfaced through the policy-config load error", async () => {
+    // The remaining unscrubbed exposure path: `loadPolicyConfig` validation
+    // errors echo the offending value (`validateRule` interpolates it via
+    // JSON.stringify), and `policyLoadError` reaches the CONFIG_ERROR envelope
+    // that `main()` writes to stdout.
+    const cfgPath = path.join(tmpCwd, "policy.yaml");
+    fs.writeFileSync(
+      cfgPath,
+      'policy:\n  read: "postgres://admin:hunter2@db.internal:5432/app"\n',
+      "utf-8",
+    );
+    const c = makeAws({ configPath: cfgPath });
+    const env = await c.fetch("list_functions", { region: "us-east-1" });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.error_code).toBe("CONFIG_ERROR");
+      expect(env.message).not.toContain("hunter2");
+      expect(env.message).toContain("[REDACTED]");
+    }
+  });
 });
 
 describe("createConnector.fetch — extendDecision hook", () => {

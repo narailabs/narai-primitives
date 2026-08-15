@@ -317,7 +317,14 @@ export function createConnector<TSdk = unknown>(
       });
     } catch (err) {
       // Surface config errors deterministically on first call via fetch.
-      policyLoadError = err instanceof Error ? err.message : String(err);
+      // Scrub first: policy files carry connection strings and credential
+      // fields, and a parse/validation failure routinely echoes the offending
+      // value. This string lands verbatim in the CONFIG_ERROR envelope below,
+      // which `main` writes to stdout.
+      // DO NOT REMOVE: pinned by tests/toolkit/connector.test.ts.
+      policyLoadError = scrubSecrets(
+        err instanceof Error ? err.message : String(err),
+      );
     }
   }
   const rules: PolicyRules =
