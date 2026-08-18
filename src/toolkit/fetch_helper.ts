@@ -20,11 +20,11 @@ export const FETCH_TIMEOUT_MS_DEFAULT = 60_000; // 60 s
 
 /** Options controlling the caps. Missing fields fall back to defaults. */
 export interface FetchCapsOptions {
-  fetchImpl?: typeof fetch;
-  maxBytes?: number;
-  timeoutMs?: number;
+  fetchImpl?: typeof fetch | undefined;
+  maxBytes?: number | undefined;
+  timeoutMs?: number | undefined;
   /** Optional external signal composed with the internal timeout. */
-  signal?: AbortSignal;
+  signal?: AbortSignal | undefined;
 }
 
 /** Thrown when the response body grows past `maxBytes`. */
