@@ -241,6 +241,22 @@ function defaultErrorMap(err: unknown): {
   error_code: ErrorCode;
   message: string;
 } {
+  const mapped = classifyRawError(err);
+  // Redact *after* classification, not before: a secret whose plaintext happens
+  // to contain a heuristic token ("404", "timeout") must not be able to steer
+  // the error_code. Scrubbing here rather than at each call site covers the zod
+  // validation path in `run()`, which builds its envelope directly and never
+  // reaches the scrub in `mapAndBuildError`.
+  return {
+    error_code: mapped.error_code,
+    message: scrubSecrets(mapped.message),
+  };
+}
+
+function classifyRawError(err: unknown): {
+  error_code: ErrorCode;
+  message: string;
+} {
   // Structural check instead of `instanceof z.ZodError` because consumers
   // may install toolkit via `file:` deps or otherwise end up with their
   // own zod instance — instanceof would return false and the error would
