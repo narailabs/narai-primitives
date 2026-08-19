@@ -201,6 +201,118 @@ describe("createConnector.fetch — validation errors", () => {
   });
 });
 
+describe("createConnector.fetch — secret redaction in error messages", () => {
+  // The zod-validation branch of run() builds its ErrorEnvelope inline and
+  // never reaches the scrub in mapAndBuildError, so the redaction has to sit
+  // inside defaultErrorMap itself.
+  function makeDsnConnector() {
+    return createConnector<{}>({
+      name: "redact-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        connect: {
+          params: z.object({
+            dsn: z.string().refine((v) => v.startsWith("safe://"), (v) => ({
+              message: `unsupported dsn: ${v}`,
+            })),
+          }),
+          classify: { kind: "read" },
+          handler: async () => ({ ok: true }),
+        },
+      },
+    });
+  }
+
+  it("redacts a credential echoed back by a zod issue message", async () => {
+    const c = makeDsnConnector();
+    const env = await c.fetch("connect", {
+      dsn: 'postgres://u@h/db?password="hunter2"',
+    });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.error_code).toBe("VALIDATION_ERROR");
+      expect(env.message).not.toContain("hunter2");
+      expect(env.message).toContain("[REDACTED]");
+      // The non-sensitive part of the issue must survive, or the envelope
+      // stops being actionable.
+      expect(env.message).toContain("unsupported dsn");
+    }
+  });
+
+  it("redacts a credential in a thrown handler error", async () => {
+    const c = createConnector<{}>({
+      name: "redact-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        run: {
+          params: z.object({}),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error('upstream rejected api_key="sk-live-abc123"');
+          },
+        },
+      },
+    });
+    const env = await c.fetch("run", {});
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("sk-live-abc123");
+      expect(env.message).toContain("[REDACTED]");
+    }
+  });
+
+  it("classifies on the raw message, so a secret cannot steer error_code", async () => {
+    // "timeout" appears only inside the redacted value. Scrubbing before the
+    // heuristic would misclassify this as CONNECTION_ERROR.
+    const c = createConnector<{}>({
+      name: "redact-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        run: {
+          params: z.object({}),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error('upstream failed: token="timeout-sentinel"');
+          },
+        },
+      },
+    });
+    const env = await c.fetch("run", {});
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.error_code).toBe("TIMEOUT");
+      expect(env.message).not.toContain("timeout-sentinel");
+      expect(env.message).toContain("[REDACTED]");
+    }
+  });
+
+  it("leaves an error with no credential material untouched", async () => {
+    const c = createConnector<{}>({
+      name: "redact-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        run: {
+          params: z.object({}),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error("ECONNREFUSED 127.0.0.1:5432");
+          },
+        },
+      },
+    });
+    const env = await c.fetch("run", {});
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.error_code).toBe("CONNECTION_ERROR");
+      expect(env.message).toBe("ECONNREFUSED 127.0.0.1:5432");
+    }
+  });
+});
+
 describe("createConnector.fetch — policy gate", () => {
   function writeConfig(name: string, yaml: string): string {
     const configPath = path.join(tmpCwd, "custom.yaml");
