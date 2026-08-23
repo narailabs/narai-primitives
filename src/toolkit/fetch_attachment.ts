@@ -26,7 +26,6 @@ import { validateUrl, sanitizeLabel } from "./security_check.js";
 import {
   FETCH_MAX_BYTES_DEFAULT,
   FETCH_TIMEOUT_MS_DEFAULT,
-  FetchCapExceeded,
   fetchWithCaps,
 } from "./fetch_helper.js";
 import {
@@ -39,7 +38,7 @@ export interface FetchAttachmentOptions {
   maxBytes?: number;
   timeoutMs?: number;
   headers?: Record<string, string>;
-  fetchImpl?: typeof fetch;
+  fetchImpl?: typeof globalThis.fetch | undefined;
 }
 
 export interface FetchAttachmentResult {
@@ -99,7 +98,6 @@ export async function fetchAttachment(
 
   const maxBytes = opts.maxBytes ?? FETCH_MAX_BYTES_DEFAULT;
   const timeoutMs = opts.timeoutMs ?? FETCH_TIMEOUT_MS_DEFAULT;
-  const doFetch = opts.fetchImpl ?? globalThis.fetch;
 
   const init: RequestInit = {};
   if (opts.headers !== undefined) {
