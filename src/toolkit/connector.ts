@@ -561,15 +561,16 @@ export function createConnector<TSdk = unknown>(
     // hit the case where stdout is empty and the failure is text on stderr.
     // Exit code is 2 (CLI misuse), distinct from 1 (handled action-level error).
     const writeArgErrorEnvelope = (action: string, message: string): void => {
+      const scrubbed = scrubSecrets(message);
       const env = {
         status: "error",
         action,
         error_code: "VALIDATION_ERROR",
-        message,
+        message: scrubbed,
         retriable: false,
       };
       process.stdout.write(JSON.stringify(env) + "\n");
-      process.stderr.write(`argument error: ${message}\n`);
+      process.stderr.write(`argument error: ${scrubbed}\n`);
     };
 
     let parsed;
