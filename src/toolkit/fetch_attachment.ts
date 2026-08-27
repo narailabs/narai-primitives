@@ -23,8 +23,16 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { validateUrl, sanitizeLabel } from "./security_check.js";
-import { FETCH_MAX_BYTES_DEFAULT, FETCH_TIMEOUT_MS_DEFAULT, FetchCapExceeded } from "./fetch_helper.js";
-import { extract as extractBinary, FORMAT_MAP, type BinaryFormat } from "./extract_binary.js";
+import {
+  FETCH_MAX_BYTES_DEFAULT,
+  FETCH_TIMEOUT_MS_DEFAULT,
+  FetchCapExceeded,
+} from "./fetch_helper.js";
+import {
+  extract as extractBinary,
+  FORMAT_MAP,
+  type BinaryFormat,
+} from "./extract_binary.js";
 
 export interface FetchAttachmentOptions {
   maxBytes?: number;
@@ -101,29 +109,30 @@ export async function fetchAttachment(
   }
 
   let response: Response;
+  let buffer: ArrayBuffer;
   try {
     response = await doFetch(url, init);
+
+    const contentLength = Number(response.headers.get("content-length") ?? "0");
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+      throw new FetchCapExceeded(maxBytes, contentLength, url);
+    }
+
+    buffer = await response.arrayBuffer();
   } finally {
     clearTimeout(timer);
   }
 
-  const contentLength = Number(response.headers.get("content-length") ?? "0");
-  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
-    throw new FetchCapExceeded(maxBytes, contentLength, url);
-  }
-
-  const buffer = await response.arrayBuffer();
   const rawBytes = new Uint8Array(buffer);
   if (rawBytes.byteLength > maxBytes) {
     throw new FetchCapExceeded(maxBytes, rawBytes.byteLength, url);
   }
 
-  const contentType = (
-    response.headers.get("content-type") ?? "application/octet-stream"
-  )
-    .split(";")[0]
-    ?.trim()
-    .toLowerCase() ?? "application/octet-stream";
+  const contentType =
+    (response.headers.get("content-type") ?? "application/octet-stream")
+      .split(";")[0]
+      ?.trim()
+      .toLowerCase() ?? "application/octet-stream";
 
   const dispositionFilename = parseContentDispositionFilename(
     response.headers.get("content-disposition"),
@@ -164,7 +173,9 @@ export async function fetchAttachment(
   } else if (FORMAT_MAP[path.extname(filename).toLowerCase()]) {
     // Server advertised a generic mime (octet-stream etc.) but the filename
     // extension is one we can extract — still try.
-    const fmt = FORMAT_MAP[path.extname(filename).toLowerCase()] as BinaryFormat;
+    const fmt = FORMAT_MAP[
+      path.extname(filename).toLowerCase()
+    ] as BinaryFormat;
     const tmp = path.join(
       os.tmpdir(),
       `toolkit-attach-${randomUUID()}${formatExtension(fmt)}`,
