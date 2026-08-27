@@ -526,7 +526,8 @@ export class Policy {
 
   /** Return true if the SELECT appears to lack a bounding clause. */
   static _maskStringLiterals(sql: string): string {
-    const isString = new Array<boolean>(sql.length).fill(false);
+    const isString1 = new Array<boolean>(sql.length).fill(false);
+    const isString2 = new Array<boolean>(sql.length).fill(false);
 
     function scan(isStr: boolean[], treatBackslashAsEscape: boolean) {
       let inString: string | null = null;
@@ -564,11 +565,23 @@ export class Policy {
       }
     }
 
-    scan(isString, false);
+    // Scan under both escape conventions and fail closed when they disagree,
+    // the same contract _boundarySemicolons and _stripComments already use.
+    // A single backslash-as-literal scan let a MySQL query hide a bounding
+    // clause: in `SELECT '\' WHERE fake=', col FROM users` MySQL escapes the
+    // quote, so WHERE is literal text and the read is unbounded, while this
+    // mask left WHERE outside the string and _isUnboundedSelect called it
+    // bounded. Neither reading can be trusted on its own, so refuse to
+    // classify — checkQuery turns the throw into a deny.
+    scan(isString1, false);
+    scan(isString2, true);
 
     let out = "";
     for (let i = 0; i < sql.length; i++) {
-      if (isString[i]) {
+      if (isString1[i] !== isString2[i]) {
+        throw new Error("Ambiguous SQL string boundaries");
+      }
+      if (isString1[i]) {
         out += " ";
       } else {
         out += sql[i];
@@ -618,20 +631,28 @@ export class Policy {
     // strictest-wins (deny > escalate > present_only > allow). A compound of
     // all-allowed statements stays allowed.
     let classifications: OperationType[];
+    let statements: string[];
+    const perStmt: Array<{ stmt: string; op: OperationType; result: PolicyResult }> = [];
+
     try {
+      // _splitStatements, classifyStatements and _decideOne (via
+      // _formatStatement) all reach Policy._stripComments, which throws
+      // "Ambiguous or unrecognized SQL construct" on dialect-disputed input.
+      // Keep all three inside this try so such a throw becomes a controlled
+      // deny: _preCheckPolicy (dispatcher.ts) calls checkQuery without its
+      // own catch, so an escaping throw surfaces as an unhandled error
+      // rather than a policy denial. Do not hoist any of them above the try.
+      statements = _splitStatements(stripped, this._dialect);
       classifications = classifyStatements(stripped, this._dialect);
+      for (let i = 0; i < statements.length; i++) {
+        const stmt = statements[i]!;
+        const op = classifications[i]!;
+        perStmt.push({ stmt, op, result: this._decideOne(stmt, op) });
+      }
     } catch (exc) {
       const reason = (exc as Error).message;
       _emitDeny(reason, null);
       return { decision: "deny", reason };
-    }
-
-    const statements = _splitStatements(stripped, this._dialect);
-    const perStmt: Array<{ stmt: string; op: OperationType; result: PolicyResult }> = [];
-    for (let i = 0; i < statements.length; i++) {
-      const stmt = statements[i]!;
-      const op = classifications[i]!;
-      perStmt.push({ stmt, op, result: this._decideOne(stmt, op) });
     }
 
     // Pick the strictest decision; break ties by first occurrence so the
@@ -648,7 +669,8 @@ export class Policy {
     // write/delete/admin half.
     let final = winner.result;
     if (statements.length > 1 && final.decision === "present_only") {
-      const combined = perStmt.map((e) => _formatStatement(e.stmt)).join("; ") + ";";
+      const combined =
+        perStmt.map((e) => _formatStatement(e.stmt, this._dialect)).join("; ") + ";";
       final = { ...final, formatted_sql: combined };
     }
 
@@ -694,7 +716,7 @@ export class Policy {
       return { decision: "escalate", reason };
     }
     if (rule === "present") {
-      const formatted = _formatStatement(stmt);
+      const formatted = _formatStatement(stmt, this._dialect);
       const reason = unrecognizedAdmin ? _unrecognizedReason() : _presentReason(op);
       return { decision: "present_only", reason, formatted_sql: formatted };
     }
@@ -935,9 +957,15 @@ function _presentReason(op: OperationType): string {
 /**
  * Strip comments and uppercase the leading keyword for readability when
  * echoing a statement back to the caller in a `present_only` response.
+ *
+ * `dialect` is required: `_stripComments` fails closed on constructs it
+ * cannot disambiguate (`[` under sqlserver/generic), so formatting under a
+ * dialect other than the policy's own would reject SQL the policy just
+ * accepted — a postgres `ARRAY[1,2]` became a bogus ambiguous-construct
+ * throw out of checkQuery.
  */
-function _formatStatement(sql: string): string {
-  let formatted = Policy._stripComments(sql.trim());
+function _formatStatement(sql: string, dialect: SqlDialect): string {
+  let formatted = Policy._stripComments(sql.trim(), dialect);
   const parts = formatted.split(/\s+/);
   const first = parts[0];
   if (first !== undefined) {

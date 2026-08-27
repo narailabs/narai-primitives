@@ -110,6 +110,106 @@ describe("SQL policy parser security", () => {
     expect(r.decision).toBe(Decision.ALLOW);
   });
 
+  it("checkQuery returns a controlled deny (never throws) on fail-closed ambiguous SQL", () => {
+    // Regression: _splitStatements / _maskStringLiterals throw on dialect-
+    // disputed constructs. checkQuery must catch those and return a deny,
+    // because _preCheckPolicy (dispatcher.ts) calls checkQuery without its
+    // own try/catch — an escaping throw would surface as an unhandled error
+    // instead of a policy denial.
+    const p = new Policy("auto", undefined, undefined, "postgres");
+
+    const execComment = p.checkQuery("SELECT 1 /*!50000 */; DROP TABLE users;");
+    expect(execComment.decision).toBe(Decision.DENY);
+    expect(execComment.reason).toMatch(/Ambiguous or unrecognized SQL construct/);
+
+    // Backslash dialect-differential. This one is caught by the statement
+    // splitter, not the string mask — its semicolon lands at different
+    // offsets under the two escape modes. Kept because it pins the deny,
+    // but see the semicolon-free case below for the mask itself.
+    const ambiguousString = p.checkQuery("SELECT 1 '\\'; DROP TABLE users;");
+    expect(ambiguousString.decision).toBe(Decision.DENY);
+    expect(ambiguousString.reason).toMatch(/Ambiguous SQL statement boundaries/);
+  });
+
+  it("denies a semicolon-free string-mask differential instead of allowing it", () => {
+    // The statement splitter cannot see this one: with no semicolon, both
+    // escape modes agree on (zero) boundaries. It reaches _maskStringLiterals,
+    // which scanned backslash-as-literal only.
+    //
+    // Under that single reading the string is just `\`, so `WHERE fake=` sits
+    // outside it and _isUnboundedSelect called the read bounded — decision
+    // `allow`. MySQL reads `\'` as an escaped quote, making ` WHERE fake=`
+    // literal text, so what actually executes is an unbounded read of `users`.
+    //
+    // Both scans now run and disagreement fails closed.
+    const p = new Policy("auto", undefined, undefined, "mysql");
+    const sql = "SELECT '\\' WHERE fake=', col FROM users";
+
+    let result: ReturnType<Policy["checkQuery"]> | null = null;
+    expect(() => {
+      result = p.checkQuery(sql);
+    }).not.toThrow();
+    expect(result!.decision).toBe(Decision.DENY);
+    expect(result!.reason).toMatch(/Ambiguous SQL string boundaries/);
+
+    // And the mask itself refuses rather than returning one dialect's reading.
+    expect(() => Policy._maskStringLiterals(sql)).toThrow(
+      /Ambiguous SQL string boundaries/,
+    );
+  });
+
+  it("still masks literals when the two escape modes agree", () => {
+    // The fail-closed path must not swallow ordinary SQL. No backslash here,
+    // so both scans mark the same span and masking proceeds as before.
+    const masked = Policy._maskStringLiterals("SELECT 'WHERE x' FROM t");
+    expect(masked).toBe("SELECT '       ' FROM t");
+    expect(Policy._isUnboundedSelect("SELECT 'WHERE x' FROM t")).toBe(true);
+  });
+
+  it("formats present_only statements under the policy dialect, not `generic`", () => {
+    // `_formatStatement` re-strips comments before echoing the statement back.
+    // It must do so under the policy's own dialect: for postgres, `[` opens an
+    // array literal, while `generic`/sqlserver fail closed on it as an
+    // ambiguous identifier quote. Formatting under the wrong dialect turned a
+    // legitimate postgres DELETE into a bogus "ambiguous construct" deny.
+    const p = new Policy("auto", undefined, undefined, "postgres");
+    const r = p.checkQuery("DELETE FROM t WHERE ids = ARRAY[1,2]");
+    expect(r.decision).toBe(Decision.PRESENT_ONLY);
+    if (r.decision === Decision.PRESENT_ONLY) {
+      expect(r.formatted_sql).toBe("DELETE FROM t WHERE ids = ARRAY[1,2]");
+    }
+  });
+
+  it("formats a present_only compound under the policy dialect", () => {
+    // The compound branch re-formats *every* statement, including ones whose
+    // own decision was `allow`. A postgres array literal in the leading SELECT
+    // must not blow up the formatter for the trailing ADMIN statement.
+    const p = new Policy("auto", undefined, undefined, "postgres");
+    const r = p.checkQuery(
+      "SELECT ARRAY[1,2,3] FROM t WHERE id=1; DROP TABLE users",
+    );
+    expect(r.decision).toBe(Decision.PRESENT_ONLY);
+    if (r.decision === Decision.PRESENT_ONLY) {
+      expect(r.formatted_sql).toContain("ARRAY[1,2,3]");
+      expect(r.formatted_sql).toContain("DROP TABLE users");
+    }
+  });
+
+  it("keeps the bracket defense on a present_only compound under sqlserver", () => {
+    // Mirror of the postgres compound above on a dialect where `[` *is*
+    // ambiguous. The statement is rejected at classification (inside
+    // checkQuery's fail-closed try), so the caller sees a controlled deny and
+    // never an escaping throw — _preCheckPolicy (dispatcher.ts) invokes
+    // checkQuery without its own try/catch.
+    const p = new Policy("auto", undefined, undefined, "sqlserver");
+    let result: ReturnType<Policy["checkQuery"]> | null = null;
+    expect(() => {
+      result = p.checkQuery("SELECT [c] FROM t WHERE id=1; DROP TABLE users");
+    }).not.toThrow();
+    expect(result!.decision).toBe(Decision.DENY);
+    expect(result!.reason).toMatch(/Ambiguous or unrecognized SQL construct/);
+  });
+
   it("throws error for SQL Server nested block comments", () => {
     // Nested block comments are treated as a single comment in T-SQL
     // but the inner `/*` is treated as comment text in MySQL/Postgres/SQLite.
