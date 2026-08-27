@@ -122,9 +122,48 @@ describe("SQL policy parser security", () => {
     expect(execComment.decision).toBe(Decision.DENY);
     expect(execComment.reason).toMatch(/Ambiguous or unrecognized SQL construct/);
 
-    // Backslash dialect-differential trips the dual-mode string scanner.
+    // Backslash dialect-differential. This one is caught by the statement
+    // splitter, not the string mask — its semicolon lands at different
+    // offsets under the two escape modes. Kept because it pins the deny,
+    // but see the semicolon-free case below for the mask itself.
     const ambiguousString = p.checkQuery("SELECT 1 '\\'; DROP TABLE users;");
     expect(ambiguousString.decision).toBe(Decision.DENY);
+    expect(ambiguousString.reason).toMatch(/Ambiguous SQL statement boundaries/);
+  });
+
+  it("denies a semicolon-free string-mask differential instead of allowing it", () => {
+    // The statement splitter cannot see this one: with no semicolon, both
+    // escape modes agree on (zero) boundaries. It reaches _maskStringLiterals,
+    // which scanned backslash-as-literal only.
+    //
+    // Under that single reading the string is just `\`, so `WHERE fake=` sits
+    // outside it and _isUnboundedSelect called the read bounded — decision
+    // `allow`. MySQL reads `\'` as an escaped quote, making ` WHERE fake=`
+    // literal text, so what actually executes is an unbounded read of `users`.
+    //
+    // Both scans now run and disagreement fails closed.
+    const p = new Policy("auto", undefined, undefined, "mysql");
+    const sql = "SELECT '\\' WHERE fake=', col FROM users";
+
+    let result: ReturnType<Policy["checkQuery"]> | null = null;
+    expect(() => {
+      result = p.checkQuery(sql);
+    }).not.toThrow();
+    expect(result!.decision).toBe(Decision.DENY);
+    expect(result!.reason).toMatch(/Ambiguous SQL string boundaries/);
+
+    // And the mask itself refuses rather than returning one dialect's reading.
+    expect(() => Policy._maskStringLiterals(sql)).toThrow(
+      /Ambiguous SQL string boundaries/,
+    );
+  });
+
+  it("still masks literals when the two escape modes agree", () => {
+    // The fail-closed path must not swallow ordinary SQL. No backslash here,
+    // so both scans mark the same span and masking proceeds as before.
+    const masked = Policy._maskStringLiterals("SELECT 'WHERE x' FROM t");
+    expect(masked).toBe("SELECT '       ' FROM t");
+    expect(Policy._isUnboundedSelect("SELECT 'WHERE x' FROM t")).toBe(true);
   });
 
   it("formats present_only statements under the policy dialect, not `generic`", () => {

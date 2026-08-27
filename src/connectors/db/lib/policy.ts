@@ -526,7 +526,8 @@ export class Policy {
 
   /** Return true if the SELECT appears to lack a bounding clause. */
   static _maskStringLiterals(sql: string): string {
-    const isString = new Array<boolean>(sql.length).fill(false);
+    const isString1 = new Array<boolean>(sql.length).fill(false);
+    const isString2 = new Array<boolean>(sql.length).fill(false);
 
     function scan(isStr: boolean[], treatBackslashAsEscape: boolean) {
       let inString: string | null = null;
@@ -564,11 +565,23 @@ export class Policy {
       }
     }
 
-    scan(isString, false);
+    // Scan under both escape conventions and fail closed when they disagree,
+    // the same contract _boundarySemicolons and _stripComments already use.
+    // A single backslash-as-literal scan let a MySQL query hide a bounding
+    // clause: in `SELECT '\' WHERE fake=', col FROM users` MySQL escapes the
+    // quote, so WHERE is literal text and the read is unbounded, while this
+    // mask left WHERE outside the string and _isUnboundedSelect called it
+    // bounded. Neither reading can be trusted on its own, so refuse to
+    // classify — checkQuery turns the throw into a deny.
+    scan(isString1, false);
+    scan(isString2, true);
 
     let out = "";
     for (let i = 0; i < sql.length; i++) {
-      if (isString[i]) {
+      if (isString1[i] !== isString2[i]) {
+        throw new Error("Ambiguous SQL string boundaries");
+      }
+      if (isString1[i]) {
         out += " ";
       } else {
         out += sql[i];
