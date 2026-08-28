@@ -97,6 +97,34 @@ describe("fetchWithCaps", () => {
     ).rejects.toThrow();
   });
 
+  it("aborts when the body streams slower than the timeout (Slowloris)", async () => {
+    globalThis.fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      let cancelled = false;
+      init?.signal?.addEventListener("abort", () => {
+        cancelled = true;
+      });
+      const stream = new ReadableStream({
+        async pull(controller) {
+          if (cancelled) {
+            controller.error(init?.signal?.reason ?? new Error("aborted"));
+            return;
+          }
+          await new Promise((r) => setTimeout(r, 20)); // Slow stream
+          if (cancelled) {
+            controller.error(init?.signal?.reason ?? new Error("aborted"));
+            return;
+          }
+          controller.enqueue(new Uint8Array([1]));
+        },
+      });
+      return new Response(stream, { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    await expect(
+      fetchWithCaps("https://example.com/slowloris", {}, { timeoutMs: 10 }),
+    ).rejects.toThrow("fetch_helper timeout");
+  });
+
   it("composes an external AbortSignal with the internal timeout", async () => {
     mockFetchAwaitsAbort();
     const ctl = new AbortController();
