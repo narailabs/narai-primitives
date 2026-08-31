@@ -57,6 +57,29 @@ describe("SQL policy parser security", () => {
     expect(Policy._isUnboundedSelect(sql)).toBe(true);
   });
 
+  it("rejects a boundary disagreement even when both modes find the same count", () => {
+    // Pins the parity check in `_splitStatements` at the *position* level, not
+    // just the count. Both escape modes find exactly one semicolon here, but at
+    // different offsets: without backslash-as-escape the boundary is the `;`
+    // inside `'a\\';x'`, with it the string runs on and the boundary is the `;`
+    // after `x'`. A length-only comparison would let this through and split the
+    // statement at the attacker-chosen offset.
+    const sql = "SELECT 'a\\';x'; SELECT 2";
+    expect(() => classifyStatements(sql)).toThrow(/Ambiguous SQL statement boundaries/);
+  });
+
+  it("splits a multi-statement script at every boundary in order", () => {
+    // The boundary scan is a single forward pass, so the indices it collects
+    // are already ascending and duplicate-free. This pins that the split still
+    // walks all four boundaries in order.
+    expect(classifyStatements("SELECT 1; INSERT INTO t VALUES (1); DELETE FROM t; DROP TABLE t")).toEqual([
+      "read",
+      "write",
+      "delete",
+      "admin",
+    ]);
+  });
+
   it("throws error for ambiguous dialect-specific escapes", () => {
     // Escape `\'` is ambiguous between MySQL and SQLite
     const sql2 = "SELECT 1 '\\''; DROP TABLE users;";
