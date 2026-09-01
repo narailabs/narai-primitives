@@ -144,4 +144,32 @@ describe("fetchWithCaps", () => {
     const res = await fetchWithCaps("https://example.com/nobody");
     expect(res.status).toBe(204);
   });
+
+  it("aborts when the stream is too slow (Slowloris)", async () => {
+    globalThis.fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      let aborted = false;
+      const abortHandler = () => {
+        aborted = true;
+      };
+      if (init?.signal) {
+        init.signal.addEventListener("abort", abortHandler);
+      }
+      const stream = new ReadableStream({
+        async pull(controller) {
+          if (aborted) {
+            controller.error(new Error("aborted"));
+            return;
+          }
+          // Enqueue one byte, then wait
+          controller.enqueue(new Uint8Array([1]));
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        },
+      });
+      return new Response(stream, { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    await expect(
+      fetchWithCaps("https://example.com/slowloris", {}, { timeoutMs: 25 }),
+    ).rejects.toThrow();
+  });
 });
