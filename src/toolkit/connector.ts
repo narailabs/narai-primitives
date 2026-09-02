@@ -20,6 +20,7 @@ import { z } from "zod";
 import { parseAgentArgs } from "./agent_cli.js";
 import {
   createAuditWriter,
+  isSensitiveFieldPath,
   scrubSecrets,
   type AuditWriter,
 } from "./audit/writer.js";
@@ -249,7 +250,16 @@ function defaultErrorMap(err: unknown): {
   // of module identity.
   if (isZodErrorLike(err)) {
     const msg = err.issues
-      .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+      .map((i) => {
+        const path = i.path.join(".") || "<root>";
+        // Issue text is author-controlled prose and can name the rejected
+        // value without any `key = value` shape for `scrubSecrets` to find
+        // (`password: rejected value hunter2` scrubbed to
+        // `password: "[REDACTED]" value hunter2`). When the path itself says
+        // the field is a credential, drop the message instead of scrubbing
+        // it. The path is kept, so the caller still learns which field failed.
+        return `${path}: ${isSensitiveFieldPath(path) ? "[REDACTED]" : i.message}`;
+      })
       .join("; ");
     return { error_code: "VALIDATION_ERROR", message: msg };
   }

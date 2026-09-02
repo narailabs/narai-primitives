@@ -127,6 +127,52 @@ describe("createConnector.fetch — validation errors", () => {
     }
   });
 
+  it("does not echo a rejected credential from a custom Zod message", async () => {
+    // `superRefine` messages are author-controlled prose. This one names the
+    // value without any `key = value` shape, so `scrubSecrets` had nothing to
+    // key off and redacted only the first word after the colon, leaving
+    // `password: "[REDACTED]" value hunter2`. The issue path says the field
+    // is a credential, so the whole message is dropped instead.
+    const c = createConnector({
+      name: "cred-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.object({
+            password: z.string().superRefine((v, ctx) => {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: `rejected value ${v}`,
+              });
+            }),
+          }),
+          classify: { kind: "read" },
+          handler: async () => ({ ok: true }),
+        },
+      },
+    });
+    const env = await c.fetch("login", { password: "hunter2" });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.error_code).toBe("VALIDATION_ERROR");
+      expect(env.message).not.toContain("hunter2");
+      expect(env.message).toContain("password");
+    }
+  });
+
+  it("keeps the diagnostic message for a non-credential field", async () => {
+    // The other half of the trade: dropping every message would make
+    // validation errors useless, so only sensitive paths lose theirs.
+    const c = makeAws();
+    const env = await c.fetch("list_functions", { region: 123 });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).toContain("region");
+      expect(env.message).not.toBe("region: [REDACTED]");
+    }
+  });
+
   it("malformed params type returns VALIDATION_ERROR", async () => {
     const c = makeAws();
     const env = await c.fetch("list_functions", { region: 123 });

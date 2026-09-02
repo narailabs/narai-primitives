@@ -169,11 +169,33 @@ const SENSITIVE_AUTH_INLINE_RE =
  * *begins* with one (`{"password":)hunter2}`) failed to match at all and
  * leaked whole.
  *
+ * The first position also excludes `\`, because a backslash-led value is the
+ * escaped-quote form that SENSITIVE_ESCAPED_QUOTE_RE consumes just above.
+ * Without that exclusion this pattern re-matched the `\` in that pattern's own
+ * output and stacked a second marker on it.
+ *
  * The replacement is quoted (`"[REDACTED]"`) so redacting a bare JSON literal
  * (`{"token":12345}`) leaves events.jsonl parseable as JSON-per-line.
  */
+/**
+ * Backslash-escaped quoted value (`password=\"hunter2\"`). A JSON string that
+ * was itself serialized into another string arrives with its quotes escaped,
+ * so the quoted patterns above never fire — their quote must follow the
+ * separator directly, and here a backslash sits in between. The unquoted
+ * pattern then matched the lone backslash and stopped at the quote, emitting
+ * `password="[REDACTED]""hunter2\"` with the credential still present.
+ *
+ * Runs before the unquoted pattern so that partial match can no longer happen.
+ * The closing `\"` is captured, so the same terminator rule the other value
+ * patterns use holds here too: consume to the terminator, fall back to end of
+ * line, and re-emit a closer only when the source had one.
+ */
+const SENSITIVE_ESCAPED_QUOTE_RE = new RegExp(
+  `("?${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}"?)(\\s*[:=]\\s*)\\\\(["'])(?:(?!\\\\\\3)[^\\r\\n])*(\\\\\\3)?`,
+  "gi",
+);
 const SENSITIVE_UNQUOTED_RE = new RegExp(
-  `("?${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}"?)(\\s*[:=]\\s*)(?:[^\\s"'{\\[][^\\s"',;)\\]}]*)`,
+  `("?${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}"?)(\\s*[:=]\\s*)(?:[^\\s"'{\\[\\\\][^\\s"',;)\\]}]*)`,
   "gi",
 );
 /**
@@ -197,6 +219,26 @@ const SENSITIVE_UNQUOTED_RE = new RegExp(
  * myuser@localhost/db`) than a token, and this repo never generates it.
  */
 const URL_USERINFO_RE = /([a-z][a-z0-9+.-]*:\/\/[^\s:/?#@"']+:)[^\s/@"']+@/gi;
+
+/**
+ * True when a field path names a credential — `password`, `api_key`,
+ * `secretAccessKey`, `auth.token`, and the rest of the same vocabulary the
+ * scrubbing patterns use.
+ *
+ * Exists because `scrubSecrets` cannot help with author-controlled free text.
+ * It finds a secret by its `key = value` shape, so a message that names the
+ * field and the value in prose — a Zod `superRefine` producing
+ * `rejected value hunter2` — has no shape to key off and survives scrubbing.
+ * When the *path* says the field is a credential, the caller should drop the
+ * whole message rather than try to scrub it.
+ */
+const SENSITIVE_PATH_RE = new RegExp(
+  `(?:^|[.\\[\\]])${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}`,
+  "i",
+);
+export function isSensitiveFieldPath(path: string): boolean {
+  return SENSITIVE_PATH_RE.test(path);
+}
 
 export function scrubSecrets(text: string): string {
   return text
@@ -251,6 +293,16 @@ export function scrubSecrets(text: string): string {
         }
         return `${kw}${sep}${schemeOutside || ""}[REDACTED]`;
       },
+    )
+    .replace(
+      SENSITIVE_ESCAPED_QUOTE_RE,
+      (
+        _m,
+        key: string,
+        sep: string,
+        quote: string,
+        close: string | undefined,
+      ) => `${key}${sep}\\${quote}[REDACTED]${close ?? ""}`,
     )
     .replace(
       SENSITIVE_UNQUOTED_RE,

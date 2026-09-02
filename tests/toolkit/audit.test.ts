@@ -2,7 +2,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createAuditWriter, scrubSecrets } from "../../src/toolkit/audit/writer.js";
+import {
+  createAuditWriter,
+  isSensitiveFieldPath,
+  scrubSecrets,
+} from "../../src/toolkit/audit/writer.js";
 
 let tmpDir: string;
 
@@ -72,6 +76,22 @@ describe("scrubSecrets", () => {
     );
     expect(scrubSecrets("Authorization: Basic dXNlcjpwYXNz")).toBe(
       "Authorization: Basic [REDACTED]",
+    );
+  });
+
+  it("redacts a backslash-escaped quoted value", () => {
+    // A JSON string serialized into another string arrives with its quotes
+    // escaped, so the quoted patterns never fire (their quote must follow the
+    // separator directly) and the unquoted one matched the lone backslash and
+    // stopped, emitting `password="[REDACTED]""hunter2\\"`.
+    expect(scrubSecrets(String.raw`password=\"hunter2\"`)).toBe(
+      String.raw`password=\"[REDACTED]\"`,
+    );
+    expect(scrubSecrets(String.raw`token=\"abc123\"`)).toBe(
+      String.raw`token=\"[REDACTED]\"`,
+    );
+    expect(scrubSecrets(String.raw`password=\'hunter2\'`)).toBe(
+      String.raw`password=\'[REDACTED]\'`,
     );
   });
 
@@ -500,5 +520,37 @@ describe("AuditWriter", () => {
   it("generates a random sessionId when not provided", () => {
     const w = createAuditWriter({ enabled: false });
     expect(w.sessionId).toMatch(/^[0-9a-f]{12}$/);
+  });
+});
+
+describe("isSensitiveFieldPath", () => {
+  it("recognises credential field paths in every spelling", () => {
+    for (const path of [
+      "password",
+      "api_key",
+      "apiKey",
+      "secretAccessKey",
+      "auth.token",
+      "creds.password",
+      "a.b.sessionToken",
+    ]) {
+      expect(isSensitiveFieldPath(path)).toBe(true);
+    }
+  });
+
+  it("does not match benign paths that merely contain a key word", () => {
+    // `passwordless` is the one that matters: the key boundary has to hold
+    // here or every schema field starting with a credential word gets its
+    // diagnostic message thrown away.
+    for (const path of [
+      "name",
+      "mytoken",
+      "notpassword",
+      "passwordless",
+      "user.email",
+      "limit",
+    ]) {
+      expect(isSensitiveFieldPath(path)).toBe(false);
+    }
   });
 });
