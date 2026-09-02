@@ -554,3 +554,65 @@ describe("isSensitiveFieldPath", () => {
     }
   });
 });
+
+describe("scrubSecrets — credential leak matrix", () => {
+  // Four rounds of review each reported one more shape of the same bug, and
+  // each fix covered one pattern family and missed its siblings. Enumerating
+  // the cross-product instead of hand-picking examples is what closed it: the
+  // first run of this matrix found 567 leaking combinations across 1440, from
+  // two root causes, where the two reported cases were single cells.
+  const SECRET = "hunter2XYZ";
+  const KEYS = ["password", "token", "api_key", "secretAccessKey", "authorization"];
+  const KEY_FORMS: Array<(k: string) => string> = [
+    (k) => k,
+    (k) => `"${k}"`,
+    (k) => `\\"${k}\\"`,
+  ];
+  const VALUE_FORMS: Array<(v: string) => string> = [
+    (v) => v,
+    (v) => `"${v}"`,
+    (v) => `'${v}'`,
+    (v) => `\\"${v}\\"`,
+    (v) => `\\'${v}\\'`,
+    (v) => `"${v}`,
+    (v) => `'${v}`,
+    (v) => `\\"${v}`,
+  ];
+  const CONTEXTS: Array<(b: string) => string> = [
+    (b) => b,
+    (b) => `request failed: ${b}`,
+    (b) => `{${b}}`,
+    (b) => `request payload: {${b}}`,
+  ];
+  const SEPARATORS = [": ", "=", ":"];
+
+  function everyShape(): string[] {
+    const out: string[] = [];
+    for (const key of KEYS) {
+      const value = key === "authorization" ? `Bearer ${SECRET}` : SECRET;
+      for (const kf of KEY_FORMS) {
+        for (const vf of VALUE_FORMS) {
+          for (const sep of SEPARATORS) {
+            for (const ctx of CONTEXTS) {
+              out.push(ctx(`${kf(key)}${sep}${vf(value)}`));
+            }
+          }
+        }
+      }
+    }
+    return out;
+  }
+
+  it("leaks no credential in any key/value/separator/context combination", () => {
+    const leaked = everyShape().filter((s) => scrubSecrets(s).includes(SECRET));
+    expect(leaked).toEqual([]);
+  });
+
+  it("is idempotent over every combination", () => {
+    const unstable = everyShape().filter((s) => {
+      const once = scrubSecrets(s);
+      return scrubSecrets(once) !== once;
+    });
+    expect(unstable).toEqual([]);
+  });
+});

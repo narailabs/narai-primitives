@@ -83,6 +83,14 @@ const SENSITIVE_WORDS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]
  * falls through to KEY_START and is still rejected.
  */
 const KEY_PREFIX = "(?:(?:secret|session|access|refresh|client|api|auth|private)[_-]?)?";
+/**
+ * Optional quote around the key, escaped or not. A serialized object embedded
+ * in another string arrives with its key quotes escaped as well
+ * (`request payload: {\\"password\\":\\"hunter2\\"}`), and a key group that
+ * accepted only a bare `"` matched none of it — so the escaped *value* branch
+ * never got a chance to run and the whole object leaked.
+ */
+const KQ = '(?:\\\\?")?';
 const KEY_START = "(?<![A-Za-z0-9])";
 const KEY_END = "(?![A-Za-z0-9])";
 /**
@@ -97,15 +105,26 @@ const KEY_END = "(?![A-Za-z0-9])";
  * redacting `secret_access_key` / `session_token`.
  */
 const SENSITIVE_SQUOTE_RE = new RegExp(
-  `("?${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}"?)(\\s*[:=]\\s*)'(?:[^'\\\\]*(?:\\\\.[^'\\\\]*)*(')|[^\\r\\n]*)`,
+  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)'(?:[^'\\\\]*(?:\\\\.[^'\\\\]*)*(')|[^\\r\\n]*)`,
   "gi",
 );
 const SENSITIVE_DQUOTE_RE = new RegExp(
-  `("?${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}"?)(\\s*[:=]\\s*)"(?:[^"\\\\]*(?:\\\\.[^"\\\\]*)*(")|[^\\r\\n]*)`,
+  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)"(?:[^"\\\\]*(?:\\\\.[^"\\\\]*)*(")|[^\\r\\n]*)`,
   "gi",
 );
+/**
+ * Authorization with a backslash-escaped quoted value, and optionally an
+ * escaped quote around the keyword too — the nested-serialization form, same
+ * as SENSITIVE_ESCAPED_QUOTE_RE handles for the other credential keys.
+ *
+ * This exists because the escaped form had to be added to each pattern family
+ * separately, and the Authorization family was missed twice. Runs first, so
+ * the balanced and unquoted branches below only ever see unescaped text.
+ */
+const SENSITIVE_AUTH_ESCAPED_RE =
+  /(\\?"?)(\bauthorization\b)(\\?"?)(\s*[:=]\s*)\\(["'])((?:bearer|basic)\s+)?(?:(?!\\\5)[^\r\n])*(\\\5)?/gi;
 const SENSITIVE_AUTH_QUOTED_RE =
-  /(?<=["'])(\bauthorization\b)("?)(\s*[:=]\s*)(?:(["'])((?:bearer|basic)\s+)?(?:\\.|[^\r\n\\])*?\4|((?:bearer|basic)\s+)?[^"'\r\n]+)/gi;
+  /(?<=["'])(\bauthorization\b)(\\?"?)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\5)[^\r\n\\])*(\5)|[^\r\n]*)|[^"'\r\n]+)/gi;
 const SENSITIVE_AUTH_LINE_RE =
   /(?:^|(?<=[\r\n]))(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?[^\r\n]+/gi;
 /**
@@ -191,11 +210,11 @@ const SENSITIVE_AUTH_INLINE_RE =
  * line, and re-emit a closer only when the source had one.
  */
 const SENSITIVE_ESCAPED_QUOTE_RE = new RegExp(
-  `("?${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}"?)(\\s*[:=]\\s*)\\\\(["'])(?:(?!\\\\\\3)[^\\r\\n])*(\\\\\\3)?`,
+  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)\\\\(["'])(?:(?!\\\\\\3)[^\\r\\n])*(\\\\\\3)?`,
   "gi",
 );
 const SENSITIVE_UNQUOTED_RE = new RegExp(
-  `("?${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}"?)(\\s*[:=]\\s*)(?:[^\\s"'{\\[\\\\][^\\s"',;)\\]}]*)`,
+  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)(?:[^\\s"'{\\[\\\\][^\\s"',;)\\]}]*)`,
   "gi",
 );
 /**
@@ -253,20 +272,38 @@ export function scrubSecrets(text: string): string {
         `${key}${sep}"[REDACTED]${close ?? ""}`,
     )
     .replace(
+      SENSITIVE_AUTH_ESCAPED_RE,
+      (
+        _m,
+        kq1: string,
+        kw: string,
+        kq2: string,
+        sep: string,
+        quote: string,
+        scheme: string | undefined,
+        close: string | undefined,
+      ) =>
+        `${kq1}${kw}${kq2}${sep}\\${quote}${scheme ?? ""}[REDACTED]${close ?? ""}`,
+    )
+    .replace(
       SENSITIVE_AUTH_QUOTED_RE,
       (
         _m,
         kw: string,
         keyQuote: string,
         sep: string,
+        schemeOutside: string | undefined,
         valQuote: string | undefined,
-        schemeQ: string | undefined,
-        schemeU: string | undefined,
+        schemeInside: string | undefined,
+        closeQuote: string | undefined,
       ) => {
         if (valQuote !== undefined) {
-          return `${kw}${keyQuote}${sep}${valQuote}${schemeQ || ""}[REDACTED]${valQuote}`;
+          // Same terminator rule as everywhere else: re-emit the closer only
+          // when the source had one.
+          const close = closeQuote === undefined ? "" : valQuote;
+          return `${kw}${keyQuote}${sep}${schemeOutside ?? ""}${valQuote}${schemeInside ?? ""}[REDACTED]${close}`;
         }
-        return `${kw}${keyQuote}${sep}${schemeU || ""}[REDACTED]`;
+        return `${kw}${keyQuote}${sep}${schemeOutside ?? ""}[REDACTED]`;
       },
     )
     .replace(
