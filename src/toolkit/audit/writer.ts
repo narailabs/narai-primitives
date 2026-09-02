@@ -111,10 +111,19 @@ const SENSITIVE_AUTH_LINE_RE =
  * because it appears in both `Authorization: "Bearer x"` and
  * `Authorization: Bearer "x"`.
  *
- * Re-running over already-redacted text is a no-op in either branch.
+ * The rule the quoted branch encodes, stated once so it does not need another
+ * narrower case bolted on: **the value runs to its terminator, and an absent
+ * terminator is the end of the line.** A truncated message
+ * (`Authorization: "Bearer abc123` — no closing quote) has nothing structured
+ * after it to protect, because everything that follows is inside the unclosed
+ * string. So the balanced form is preferred when it exists, and end-of-line is
+ * the fallback. The closing quote is captured rather than assumed, so the
+ * replacement re-emits one only when the source actually had one.
+ *
+ * Re-running over already-redacted text is a no-op in every branch.
  */
 const SENSITIVE_AUTH_INLINE_RE =
-  /(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:\\.|(?!\4)[^\r\n\\])*\4|[^"'\r\n]+)/gi;
+  /(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\4)[^\r\n\\])*(\4)|[^\r\n]*)|[^"'\r\n]+)/gi;
 /**
  * Unquoted-value form (`password:hunter2`). Parser errors echo the offending
  * source fragment, so `--params '{"password":hunter2}'` surfaces the raw
@@ -211,9 +220,13 @@ export function scrubSecrets(text: string): string {
         schemeOutside: string | undefined,
         valQuote: string | undefined,
         schemeInside: string | undefined,
+        closeQuote: string | undefined,
       ) => {
         if (valQuote !== undefined) {
-          return `${kw}${sep}${schemeOutside || ""}${valQuote}${schemeInside || ""}[REDACTED]${valQuote}`;
+          // Re-emit the closing quote only when the source had one; a
+          // truncated message must not gain a quote it never contained.
+          const close = closeQuote === undefined ? "" : valQuote;
+          return `${kw}${sep}${schemeOutside || ""}${valQuote}${schemeInside || ""}[REDACTED]${close}`;
         }
         return `${kw}${sep}${schemeOutside || ""}[REDACTED]`;
       },

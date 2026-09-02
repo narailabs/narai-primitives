@@ -102,6 +102,30 @@ describe("scrubSecrets", () => {
     ).toBe('ctx {"a":"b","authorization":"Bearer [REDACTED]","z":"w"}');
   });
 
+  it("redacts an unterminated quoted Authorization value to end of line", () => {
+    // The rule: the value runs to its terminator, and an absent terminator is
+    // the end of the line. A truncated message has nothing structured after
+    // the opening quote to protect — everything following it is inside the
+    // unclosed string.
+    expect(scrubSecrets('request failed: Authorization: "Bearer abc123')).toBe(
+      'request failed: Authorization: "Bearer [REDACTED]',
+    );
+    expect(scrubSecrets("request failed: Authorization: 'Basic zzz999")).toBe(
+      "request failed: Authorization: 'Basic [REDACTED]",
+    );
+    expect(scrubSecrets('request failed: Authorization: Bearer "abc123')).toBe(
+      'request failed: Authorization: Bearer "[REDACTED]',
+    );
+  });
+
+  it("does not invent a closing quote the source never had", () => {
+    // The closing quote is captured, not assumed, so a truncated value stays
+    // truncated rather than gaining a terminator that changes the text shape.
+    expect(scrubSecrets('Authorization: "Bearer abc123')).not.toContain(
+      '[REDACTED]"',
+    );
+  });
+
   it("is idempotent over an already-redacted quoted Authorization value", () => {
     const once = scrubSecrets('request failed: Authorization: "Bearer abc123"');
     expect(scrubSecrets(once)).toBe(once);
