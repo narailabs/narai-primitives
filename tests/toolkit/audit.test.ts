@@ -75,6 +75,38 @@ describe("scrubSecrets", () => {
     );
   });
 
+  it("redacts a quoted Authorization value embedded mid-string", () => {
+    // The inline pattern's value class excluded `"` and `'`, so it stopped at
+    // the opening quote and redacted the separator whitespace instead of the
+    // token: `Authorization:[REDACTED]"Bearer abc123"` shipped the credential
+    // intact into the error envelope and CLI output.
+    expect(scrubSecrets('request failed: Authorization: "Bearer abc123"')).toBe(
+      'request failed: Authorization: "Bearer [REDACTED]"',
+    );
+    // Scheme outside the quotes.
+    expect(scrubSecrets('request failed: Authorization: Bearer "abc123"')).toBe(
+      'request failed: Authorization: Bearer "[REDACTED]"',
+    );
+    // Single-quoted Basic credential.
+    expect(scrubSecrets("request failed: Authorization: 'Basic zzz999'")).toBe(
+      "request failed: Authorization: 'Basic [REDACTED]'",
+    );
+  });
+
+  it("does not consume past a quoted Authorization value into the outer payload", () => {
+    // The reason the inline class excluded quotes in the first place. The
+    // quoted branch is balanced, so it stops at its own closing quote and the
+    // surrounding JSON keys survive.
+    expect(
+      scrubSecrets('ctx {"a":"b","authorization":"Bearer tok","z":"w"}'),
+    ).toBe('ctx {"a":"b","authorization":"Bearer [REDACTED]","z":"w"}');
+  });
+
+  it("is idempotent over an already-redacted quoted Authorization value", () => {
+    const once = scrubSecrets('request failed: Authorization: "Bearer abc123"');
+    expect(scrubSecrets(once)).toBe(once);
+  });
+
   it("redacts the full Authorization value for non-Bearer/Basic schemes", () => {
     // Regression: previously `[^"'\s\\]+` stopped at the first space so
     // `Authorization: Token abc123` left `abc123` in the log.

@@ -96,14 +96,25 @@ const SENSITIVE_AUTH_LINE_RE =
  * start, so neither fires and the token reached stdout intact.
  *
  * Runs after both, so by this point the only `authorization` occurrences
- * left are the unanchored ones. The value class excludes `"` and `'` — that
- * is what makes an unanchored pattern safe here, and is precisely what the
- * original single-unanchored-pattern regression lacked: it could not consume
- * past a JSON value's closing quote and mangle the outer payload. Re-running
- * over already-redacted text is a no-op.
+ * left are the unanchored ones.
+ *
+ * The value is an alternation, not one class. A *balanced* quoted run comes
+ * first: it stops at its own closing quote, so it cannot consume past a JSON
+ * value's end and mangle the outer payload — the safety property the original
+ * single-unanchored-pattern regression lacked. The unquoted class (excluding
+ * `"` and `'`) is the fallback.
+ *
+ * An unquoted-only class was not enough. `Authorization: "Bearer abc123"`
+ * stopped at the opening quote and redacted the separator whitespace instead
+ * of the token, yielding `Authorization:[REDACTED]"Bearer abc123"` with the
+ * credential intact. The scheme is captured on both sides of the quote,
+ * because it appears in both `Authorization: "Bearer x"` and
+ * `Authorization: Bearer "x"`.
+ *
+ * Re-running over already-redacted text is a no-op in either branch.
  */
 const SENSITIVE_AUTH_INLINE_RE =
-  /(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?[^"'\r\n]+/gi;
+  /(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:\\.|(?!\4)[^\r\n\\])*\4|[^"'\r\n]+)/gi;
 /**
  * Unquoted-value form (`password:hunter2`). Parser errors echo the offending
  * source fragment, so `--params '{"password":hunter2}'` surfaces the raw
@@ -193,8 +204,19 @@ export function scrubSecrets(text: string): string {
     )
     .replace(
       SENSITIVE_AUTH_INLINE_RE,
-      (_m, kw: string, sep: string, scheme: string | undefined) =>
-        `${kw}${sep}${scheme || ""}[REDACTED]`,
+      (
+        _m,
+        kw: string,
+        sep: string,
+        schemeOutside: string | undefined,
+        valQuote: string | undefined,
+        schemeInside: string | undefined,
+      ) => {
+        if (valQuote !== undefined) {
+          return `${kw}${sep}${schemeOutside || ""}${valQuote}${schemeInside || ""}[REDACTED]${valQuote}`;
+        }
+        return `${kw}${sep}${schemeOutside || ""}[REDACTED]`;
+      },
     )
     .replace(
       SENSITIVE_UNQUOTED_RE,
