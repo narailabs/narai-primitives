@@ -578,6 +578,10 @@ describe("scrubSecrets — credential leak matrix", () => {
     (k) => k,
     (k) => `"${k}"`,
     (k) => `\\"${k}\\"`,
+    // Single-quoted keys: a Python-style repr of a credential object reaches
+    // these logs as readily as JSON does.
+    (k) => `'${k}'`,
+    (k) => `\\'${k}\\'`,
   ];
   const VALUE_FORMS: Array<(v: string) => string> = [
     (v) => v,
@@ -615,6 +619,14 @@ describe("scrubSecrets — credential leak matrix", () => {
               // the second was unhandled for the escaped forms.
               if (isAuth) {
                 out.push(ctx(`${kf(key)}${sep}Bearer ${vf(SECRET)}`));
+                // A parameterised scheme is a third shape: the value is a list
+                // of `key="value"` pairs, so every single-token branch stopped
+                // at the first quote and left `response` standing.
+                out.push(
+                  ctx(
+                    `${kf(key)}${sep}Digest username="alice", response="${SECRET}"`,
+                  ),
+                );
               }
             }
           }

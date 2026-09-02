@@ -84,13 +84,15 @@ const SENSITIVE_WORDS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]
  */
 const KEY_PREFIX = "(?:(?:secret|session|access|refresh|client|api|auth|private)[_-]?)?";
 /**
- * Optional quote around the key, escaped or not. A serialized object embedded
+ * Optional quote around the key: single or double, escaped or not. Single
+ * quotes matter because a Python-style repr of a credential object
+ * (`{'password': 'hunter2'}`) reaches these logs as readily as JSON does. A serialized object embedded
  * in another string arrives with its key quotes escaped as well
  * (`request payload: {\\"password\\":\\"hunter2\\"}`), and a key group that
  * accepted only a bare `"` matched none of it — so the escaped *value* branch
  * never got a chance to run and the whole object leaked.
  */
-const KQ = '(?:\\\\?")?';
+const KQ = '(?:\\\\?["\'])?';
 const KEY_START = "(?<![A-Za-z0-9])";
 const KEY_END = "(?![A-Za-z0-9])";
 /**
@@ -121,10 +123,28 @@ const SENSITIVE_DQUOTE_RE = new RegExp(
  * separately, and the Authorization family was missed twice. Runs first, so
  * the balanced and unquoted branches below only ever see unescaped text.
  */
+/**
+ * A parameterised auth header (`Authorization: Digest username="alice",
+ * response="…"`). The value is a comma-separated list of `key="value"` pairs
+ * rather than one token, so every other branch stopped at the first quote and
+ * left the `response` credential standing.
+ *
+ * The line-anchored pattern already covered this by consuming to end of line,
+ * which is why the gap only ever showed up mid-string. This branch is the
+ * bounded equivalent: it consumes only well-formed `key="value"` pairs joined
+ * by commas, so it cannot run past the header into a surrounding payload the
+ * way an end-of-line rule would.
+ *
+ * The whole parameter list is redacted, including `username` and `nonce`.
+ * Over-redacting a header whose interesting field is the credential is the
+ * safe direction, and it matches what the line-anchored branch already does.
+ */
+const SENSITIVE_AUTH_PARAMS_RE =
+  /(\\?["']?)(\bauthorization\b)(\\?["']?)(\s*[:=]\s*)([A-Za-z]+\s+)?\w+\s*=\s*(["'])[^\r\n]*?\6(?:\s*,\s*\w+\s*=\s*(["'])[^\r\n]*?\7)+/gi;
 const SENSITIVE_AUTH_ESCAPED_RE =
-  /(\\?"?)(\bauthorization\b)(\\?"?)(\s*[:=]\s*)((?:bearer|basic)\s+)?\\(["'])((?:bearer|basic)\s+)?(?:\\\\.|(?!\\\6)[^\r\n])*(\\\6)?/gi;
+  /(\\?["']?)(\bauthorization\b)(\\?["']?)(\s*[:=]\s*)((?:bearer|basic)\s+)?\\(["'])((?:bearer|basic)\s+)?(?:\\\\.|(?!\\\6)[^\r\n])*(\\\6)?/gi;
 const SENSITIVE_AUTH_QUOTED_RE =
-  /(?<=["'])(\bauthorization\b)(\\?"?)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\5)[^\r\n\\])*(\5)|[^\r\n]*)|[^"'\r\n\\]+)/gi;
+  /(?<=["'])(\bauthorization\b)(\\?["']?)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\5)[^\r\n\\])*(\5)|[^\r\n]*)|[^"'\r\n\\]+)/gi;
 const SENSITIVE_AUTH_LINE_RE =
   /(?:^|(?<=[\r\n]))(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?[^\r\n]+/gi;
 /**
@@ -270,6 +290,17 @@ export function scrubSecrets(text: string): string {
       SENSITIVE_DQUOTE_RE,
       (_m, key: string, sep: string, close: string | undefined) =>
         `${key}${sep}"[REDACTED]${close ?? ""}`,
+    )
+    .replace(
+      SENSITIVE_AUTH_PARAMS_RE,
+      (
+        _m,
+        kq1: string,
+        kw: string,
+        kq2: string,
+        sep: string,
+        scheme: string | undefined,
+      ) => `${kq1}${kw}${kq2}${sep}${scheme ?? ""}[REDACTED]`,
     )
     .replace(
       SENSITIVE_AUTH_ESCAPED_RE,
