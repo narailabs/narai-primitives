@@ -75,6 +75,52 @@ describe("scrubSecrets", () => {
     );
   });
 
+  it("redacts a credential field whose quote is never closed", () => {
+    // Same terminator rule as the Authorization patterns: the value runs to
+    // its terminator, and an absent terminator is the end of the line. A
+    // truncated error message previously matched neither the quoted patterns
+    // (no closing quote) nor the unquoted one (which rejects a leading quote),
+    // so the value came back verbatim.
+    expect(scrubSecrets('request failed: password="hunter2')).toBe(
+      'request failed: password="[REDACTED]',
+    );
+    expect(scrubSecrets("request failed: password='hunter2")).toBe(
+      "request failed: password='[REDACTED]",
+    );
+    expect(scrubSecrets('request failed: token="abc123')).toBe(
+      'request failed: token="[REDACTED]',
+    );
+  });
+
+  it("redacts camelCase compound credential keys", () => {
+    // `src/connectors/aws/lib/aws_client.ts` holds credentials as
+    // `{ accessKeyId, secretAccessKey }`, so an SDK or custom error renders
+    // the camelCase spelling while the CLI writes snake_case. Both reduce to
+    // a known prefix plus a known key.
+    expect(scrubSecrets('secretAccessKey="hunter2"')).toBe(
+      'secretAccessKey="[REDACTED]"',
+    );
+    expect(scrubSecrets('sessionToken="token"')).toBe(
+      'sessionToken="[REDACTED]"',
+    );
+    // Not named in the report — found by checking the whole prefix class.
+    expect(scrubSecrets('accessToken="t1"')).toBe('accessToken="[REDACTED]"');
+    expect(scrubSecrets('refreshToken="r"')).toBe('refreshToken="[REDACTED]"');
+    expect(scrubSecrets('{"secretAccessKey":"hunter2"}')).toBe(
+      '{"secretAccessKey":"[REDACTED]"}',
+    );
+  });
+
+  it("still refuses to redact run-on words that merely contain a key", () => {
+    // The reason camelCase is handled by an enumerated prefix list and not by
+    // loosening KEY_START to a lowercase-to-uppercase transition: these
+    // patterns are built with `i`, which case-folds `[A-Z]` and would degrade
+    // that rule to "letter followed by letter".
+    expect(scrubSecrets('mytoken="x"')).toBe('mytoken="x"');
+    expect(scrubSecrets('notpassword="y"')).toBe('notpassword="y"');
+    expect(scrubSecrets('xsecret="z"')).toBe('xsecret="z"');
+  });
+
   it("redacts a quoted Authorization value embedded mid-string", () => {
     // The inline pattern's value class excluded `"` and `'`, so it stopped at
     // the opening quote and redacted the separator whitespace instead of the

@@ -52,7 +52,7 @@ export interface AuditWriterOptions {
  * matched mid-string and the greedy unquoted value class swallowed the
  * trailing `"}`, producing unterminated JSON.
  */
-const SENSITIVE_KEYS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth";
+const SENSITIVE_WORDS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth";
 /**
  * Key boundaries. Plain `\b` is wrong here because `_` is a word character,
  * so `\btoken\b` misses `session_token` and `\bsecret\b` /
@@ -63,7 +63,26 @@ const SENSITIVE_KEYS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?
  * compound forms while still rejecting the run-on words `\b` was added to
  * protect (`mytoken`, `notpassword`, `xsecret`), where the neighbour is a
  * letter.
+ *
+ * camelCase compounds are handled by KEY_PREFIX rather than by loosening these
+ * boundaries. Widening KEY_START to admit a lowercase-to-uppercase transition
+ * looks like the general rule, but these patterns are built with `i`: the `i`
+ * flag case-folds `[A-Z]`, so `(?<=[a-z0-9])(?=[A-Z])` degrades to "letter
+ * followed by letter" and starts redacting `mytoken` and `notpassword` — the
+ * exact run-on words the boundary exists to reject. Measured, not assumed.
  */
+/**
+ * Credential-word prefixes, so a compound key matches whichever way it is
+ * spelled: `secret_access_key` (CLI/env), `secretAccessKey` (JS objects) and
+ * `secret-access-key` all reduce to a known prefix plus a known key.
+ *
+ * SDK and custom errors render JavaScript credential objects, so the same
+ * fields that `src/connectors/aws/cli.ts` writes as snake_case arrive from the
+ * SDK as camelCase. Enumerating the prefixes keeps the run-on protection that
+ * a case-based rule loses: `my` is not a credential word, so `mytoken` still
+ * falls through to KEY_START and is still rejected.
+ */
+const KEY_PREFIX = "(?:(?:secret|session|access|refresh|client|api|auth|private)[_-]?)?";
 const KEY_START = "(?<![A-Za-z0-9])";
 const KEY_END = "(?![A-Za-z0-9])";
 /**
@@ -78,11 +97,11 @@ const KEY_END = "(?![A-Za-z0-9])";
  * redacting `secret_access_key` / `session_token`.
  */
 const SENSITIVE_SQUOTE_RE = new RegExp(
-  `("?${KEY_START}(?:${SENSITIVE_KEYS})${KEY_END}"?)(\\s*[:=]\\s*)'[^'\\\\]*(?:\\\\.[^'\\\\]*)*'`,
+  `("?${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}"?)(\\s*[:=]\\s*)'(?:[^'\\\\]*(?:\\\\.[^'\\\\]*)*(')|[^\\r\\n]*)`,
   "gi",
 );
 const SENSITIVE_DQUOTE_RE = new RegExp(
-  `("?${KEY_START}(?:${SENSITIVE_KEYS})${KEY_END}"?)(\\s*[:=]\\s*)"[^"\\\\]*(?:\\\\.[^"\\\\]*)*"`,
+  `("?${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}"?)(\\s*[:=]\\s*)"(?:[^"\\\\]*(?:\\\\.[^"\\\\]*)*(")|[^\\r\\n]*)`,
   "gi",
 );
 const SENSITIVE_AUTH_QUOTED_RE =
@@ -154,7 +173,7 @@ const SENSITIVE_AUTH_INLINE_RE =
  * (`{"token":12345}`) leaves events.jsonl parseable as JSON-per-line.
  */
 const SENSITIVE_UNQUOTED_RE = new RegExp(
-  `("?${KEY_START}(?:${SENSITIVE_KEYS})${KEY_END}"?)(\\s*[:=]\\s*)(?:[^\\s"'{\\[][^\\s"',;)\\]}]*)`,
+  `("?${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}"?)(\\s*[:=]\\s*)(?:[^\\s"'{\\[][^\\s"',;)\\]}]*)`,
   "gi",
 );
 /**
@@ -183,11 +202,13 @@ export function scrubSecrets(text: string): string {
   return text
     .replace(
       SENSITIVE_SQUOTE_RE,
-      (_m, key: string, sep: string) => `${key}${sep}'[REDACTED]'`,
+      (_m, key: string, sep: string, close: string | undefined) =>
+        `${key}${sep}'[REDACTED]${close ?? ""}`,
     )
     .replace(
       SENSITIVE_DQUOTE_RE,
-      (_m, key: string, sep: string) => `${key}${sep}"[REDACTED]"`,
+      (_m, key: string, sep: string, close: string | undefined) =>
+        `${key}${sep}"[REDACTED]${close ?? ""}`,
     )
     .replace(
       SENSITIVE_AUTH_QUOTED_RE,
