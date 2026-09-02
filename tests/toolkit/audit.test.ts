@@ -538,6 +538,17 @@ describe("isSensitiveFieldPath", () => {
     }
   });
 
+  it("does not match a key word that is only a prefix of the segment", () => {
+    // The path check throws away a whole diagnostic message, so over-matching
+    // costs information rather than erring safe. `access_key_id` and
+    // `password_hint` are not credentials, and the scrubber already leaves
+    // them alone because no separator follows the key word — the path check
+    // has no separator to anchor on, so it anchors on the segment end.
+    for (const path of ["access_key_id", "password_hint", "token_count"]) {
+      expect(isSensitiveFieldPath(path)).toBe(false);
+    }
+  });
+
   it("does not match benign paths that merely contain a key word", () => {
     // `passwordless` is the one that matters: the key boundary has to hold
     // here or every schema field starting with a credential word gets its
@@ -577,6 +588,10 @@ describe("scrubSecrets — credential leak matrix", () => {
     (v) => `"${v}`,
     (v) => `'${v}`,
     (v) => `\\"${v}`,
+    // An escaped quote *inside* the value, not merely around it. Review found
+    // this axis after the first matrix shipped: the escaped branch treated the
+    // inner quote as its terminator and returned the tail of the credential.
+    (v) => `\\"pre\\\\\\"${v}\\"`,
   ];
   const CONTEXTS: Array<(b: string) => string> = [
     (b) => b,
@@ -589,12 +604,18 @@ describe("scrubSecrets — credential leak matrix", () => {
   function everyShape(): string[] {
     const out: string[] = [];
     for (const key of KEYS) {
-      const value = key === "authorization" ? `Bearer ${SECRET}` : SECRET;
+      const isAuth = key === "authorization";
       for (const kf of KEY_FORMS) {
         for (const vf of VALUE_FORMS) {
           for (const sep of SEPARATORS) {
             for (const ctx of CONTEXTS) {
-              out.push(ctx(`${kf(key)}${sep}${vf(value)}`));
+              out.push(ctx(`${kf(key)}${sep}${vf(isAuth ? `Bearer ${SECRET}` : SECRET)}`));
+              // Scheme placement is its own axis: `Authorization: "Bearer x"`
+              // and `Authorization: Bearer "x"` reach different branches, and
+              // the second was unhandled for the escaped forms.
+              if (isAuth) {
+                out.push(ctx(`${kf(key)}${sep}Bearer ${vf(SECRET)}`));
+              }
             }
           }
         }

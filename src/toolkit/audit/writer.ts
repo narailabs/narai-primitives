@@ -122,9 +122,9 @@ const SENSITIVE_DQUOTE_RE = new RegExp(
  * the balanced and unquoted branches below only ever see unescaped text.
  */
 const SENSITIVE_AUTH_ESCAPED_RE =
-  /(\\?"?)(\bauthorization\b)(\\?"?)(\s*[:=]\s*)\\(["'])((?:bearer|basic)\s+)?(?:(?!\\\5)[^\r\n])*(\\\5)?/gi;
+  /(\\?"?)(\bauthorization\b)(\\?"?)(\s*[:=]\s*)((?:bearer|basic)\s+)?\\(["'])((?:bearer|basic)\s+)?(?:\\\\.|(?!\\\6)[^\r\n])*(\\\6)?/gi;
 const SENSITIVE_AUTH_QUOTED_RE =
-  /(?<=["'])(\bauthorization\b)(\\?"?)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\5)[^\r\n\\])*(\5)|[^\r\n]*)|[^"'\r\n]+)/gi;
+  /(?<=["'])(\bauthorization\b)(\\?"?)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\5)[^\r\n\\])*(\5)|[^\r\n]*)|[^"'\r\n\\]+)/gi;
 const SENSITIVE_AUTH_LINE_RE =
   /(?:^|(?<=[\r\n]))(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?[^\r\n]+/gi;
 /**
@@ -161,7 +161,7 @@ const SENSITIVE_AUTH_LINE_RE =
  * Re-running over already-redacted text is a no-op in every branch.
  */
 const SENSITIVE_AUTH_INLINE_RE =
-  /(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\4)[^\r\n\\])*(\4)|[^\r\n]*)|[^"'\r\n]+)/gi;
+  /(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\4)[^\r\n\\])*(\4)|[^\r\n]*)|[^"'\r\n\\]+)/gi;
 /**
  * Unquoted-value form (`password:hunter2`). Parser errors echo the offending
  * source fragment, so `--params '{"password":hunter2}'` surfaces the raw
@@ -210,7 +210,7 @@ const SENSITIVE_AUTH_INLINE_RE =
  * line, and re-emit a closer only when the source had one.
  */
 const SENSITIVE_ESCAPED_QUOTE_RE = new RegExp(
-  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)\\\\(["'])(?:(?!\\\\\\3)[^\\r\\n])*(\\\\\\3)?`,
+  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)\\\\(["'])(?:\\\\\\\\.|(?!\\\\\\3)[^\\r\\n])*(\\\\\\3)?`,
   "gi",
 );
 const SENSITIVE_UNQUOTED_RE = new RegExp(
@@ -252,7 +252,7 @@ const URL_USERINFO_RE = /([a-z][a-z0-9+.-]*:\/\/[^\s:/?#@"']+:)[^\s/@"']+@/gi;
  * whole message rather than try to scrub it.
  */
 const SENSITIVE_PATH_RE = new RegExp(
-  `(?:^|[.\\[\\]])${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}`,
+  `(?:^|[.\\[\\]])${KEY_PREFIX}(?:${SENSITIVE_WORDS})(?=$|[.\\[\\]])`,
   "i",
 );
 export function isSensitiveFieldPath(path: string): boolean {
@@ -279,11 +279,12 @@ export function scrubSecrets(text: string): string {
         kw: string,
         kq2: string,
         sep: string,
+        schemeOutside: string | undefined,
         quote: string,
-        scheme: string | undefined,
+        schemeInside: string | undefined,
         close: string | undefined,
       ) =>
-        `${kq1}${kw}${kq2}${sep}\\${quote}${scheme ?? ""}[REDACTED]${close ?? ""}`,
+        `${kq1}${kw}${kq2}${sep}${schemeOutside ?? ""}\\${quote}${schemeInside ?? ""}[REDACTED]${close ?? ""}`,
     )
     .replace(
       SENSITIVE_AUTH_QUOTED_RE,
