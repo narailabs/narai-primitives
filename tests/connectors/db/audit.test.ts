@@ -234,6 +234,8 @@ describe("wiki_db.audit", () => {
       "password",
       "token",
       "secret",
+      "private_key",
+      "privateKey",
     ];
     const leaked: string[] = [];
     for (const k of keys) {
@@ -253,6 +255,15 @@ describe("wiki_db.audit", () => {
     // SQL, and redacting it destroys the query the audit log exists to record.
     for (const k of ["mytoken", "notpassword", "xsecret", "tokenizer", "authority", "passwords"]) {
       expect(scrubSqlSecrets(`${k}='hunter2'`)).toContain("hunter2");
+    }
+  });
+
+  it("scrubSqlSecrets does not redact ordinary *_key columns", () => {
+    // Why `private[_-]?key` is named rather than a bare `key` alternative:
+    // these are everyday SQL identifiers, and redacting them would destroy
+    // the query the audit log exists to record.
+    for (const k of ["primary_key", "sort_key", "partition_key", "foreign_key", "key"]) {
+      expect(scrubSqlSecrets(`${k}='not-a-secret'`)).toContain("not-a-secret");
     }
   });
 

@@ -142,7 +142,18 @@ export interface LogQueryParams {
 // Anchoring avoids the regression where a mid-string match on
 // `{"message":"authorization: …"}` swallowed the trailing `"}` and
 // produced unterminated JSON.
-const _SENSITIVE_KEYS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth";
+/**
+ * `private[_-]?key` is named explicitly rather than by adding a bare `key`
+ * alternative: `_KEY_PREFIX` can consume `private`, but with no `key` word to
+ * complete it a service-account credential rendered as `private_key='…'`
+ * passed through intact. A bare `key` would also redact `primary_key`,
+ * `sort_key` and `partition_key` — ordinary SQL, and redacting them would
+ * destroy the query this audit log exists to record.
+ *
+ * Kept in step with `SENSITIVE_WORDS` in `src/toolkit/audit/writer.ts`.
+ */
+const _SENSITIVE_KEYS =
+  "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|private[_-]?key|auth";
 /** Credential-word prefixes, so `secret_access_key` and `secretAccessKey` both reduce to a known prefix plus a known key. */
 const _KEY_PREFIX = "(?:(?:secret|session|access|refresh|client|api|auth|private)[_-]?)?";
 /** A non-alphanumeric neighbour, or the string edge — `\b`'s job without treating `_` as a letter. */
