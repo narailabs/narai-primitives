@@ -188,7 +188,7 @@ const AUTH_SCHEME = "[A-Za-z0-9!#$%&*+^_~|.-]+";
 const AUTH_PARAM_VALUE =
   "[^\\s,\"'\\r\\n\\]}]*'[^\\s,\"'\\r\\n\\]}]*'[^\\s,\"'\\r\\n\\]}]*|[^\\s,\"'\\r\\n\\]}]+";
 const SENSITIVE_AUTH_PARAMS_RE = new RegExp(
-  `(\\\\*["']?)(\\bauthorization\\b)(\\\\*["']?)(\\s*[:=]\\s*)(${AUTH_SCHEME}\\s+)?${AUTH_PARAM_NAME}\\s*=\\s*(?:(\\\\*["'])(?:[^\\r\\n]*?\\6|[^\\r\\n]*)|${AUTH_PARAM_VALUE})(?:\\s*,\\s*${AUTH_PARAM_NAME}\\s*=\\s*(?:(\\\\*["'])[^\\r\\n]*?\\7|${AUTH_PARAM_VALUE}))*`,
+  `(\\\\*["']?)(\\bauthorization\\b)(\\\\*["']?)(\\s*[:=]\\s*)(${AUTH_SCHEME}\\s+)?${AUTH_PARAM_NAME}\\s*=\\s*(?:(\\\\*["'])(?:[^\\r\\n]*?\\6|[^\\r\\n]*)|${AUTH_PARAM_VALUE})(?:\\s*,\\s*${AUTH_PARAM_NAME}\\s*=\\s*(?:(\\\\*["'])(?:[^\\r\\n]*?\\7|[^\\r\\n]*)|${AUTH_PARAM_VALUE}))*`,
   "gi",
 );
 const SENSITIVE_AUTH_ESCAPED_RE =

@@ -853,3 +853,58 @@ describe("scrubSecrets — auth header grammar and scan cost", () => {
     expect(large).toBeLessThan(small * 8);
   });
 });
+
+describe("scrubSecrets — unterminated values, every family", () => {
+  // Round 7 added the end-of-line fallback to the FIRST quoted parameter and
+  // not to the repeated one, so `username="alice", response="hunter2` (no
+  // closing quote on the later parameter) still leaked. A per-instance test
+  // would have missed it exactly the way the fix did.
+  //
+  // So this covers the CLASS: every pattern family in this file that ends a
+  // value at a delimiter, fed an input whose delimiter never arrives. Two
+  // families solve it with an optional closing group rather than a fallback
+  // alternative, which is why they are listed here rather than assumed.
+  const cases: Array<[string, string]> = [
+    ["squote", "password='hunter2"],
+    ["dquote", 'password="hunter2'],
+    ["escaped quote", 'password=\\"hunter2'],
+    ["auth escaped", 'ctx "authorization": \\"Bearer hunter2'],
+    ["auth quoted", 'ctx "authorization": "Bearer hunter2'],
+    ["auth inline", 'req failed: Authorization: "Bearer hunter2'],
+    ["params, first parameter", 'ctx Authorization: Digest response="hunter2'],
+    ["params, later parameter", 'ctx Authorization: Digest username="alice", response="hunter2'],
+    ["params, later, with a bare parameter between", 'ctx Authorization: Digest username="alice", algorithm=MD5, response="hunter2'],
+  ];
+
+  for (const [name, input] of cases) {
+    it(`redacts an unterminated value: ${name}`, () => {
+      expect(scrubSecrets(input)).not.toContain("hunter2");
+    });
+  }
+
+  it("leaves the surrounding payload intact and stays idempotent", () => {
+    // An end-of-line fallback inside a REPEATED group is the shape most able
+    // to run away, so the guard is checked rather than assumed.
+    const payloads = [
+      '{"a":1,"authorization":"Digest username=\\"alice\\", response=\\"hunter2\\"","z":2}',
+      '{"a":1,"authorization":"Digest username=alice, response=hunter2","z":2}',
+      '[{"authorization":"Digest a=1, b=hunter2"},{"user":"bob"}]',
+    ];
+    for (const p of payloads) {
+      const once = scrubSecrets(p);
+      expect(once).not.toContain("hunter2");
+      expect(scrubSecrets(once)).toBe(once);
+      // Count structure on the marker-free text: `[REDACTED]` contributes its
+      // own bracket pair, so counting them raw compares the payload against
+      // the redaction marker rather than against the payload.
+      const structural = (text: string): string => text.split("[REDACTED]").join("");
+      for (const ch of ["{", "}", "[", "]"]) {
+        expect(structural(once).split(ch).length).toBe(structural(p).split(ch).length);
+      }
+      // The sibling key must survive: over-consumption is the failure mode an
+      // end-of-line fallback inside a repeated group can produce.
+      if (p.includes('"z":2')) expect(once).toContain('"z":2');
+      if (p.includes('"user":"bob"')) expect(once).toContain('"user":"bob"');
+    }
+  });
+});
