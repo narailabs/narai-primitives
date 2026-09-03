@@ -239,7 +239,47 @@ function isZodErrorLike(
   );
 }
 
-function defaultErrorMap(err: unknown): {
+/**
+ * Minimum length of an input string before its presence in a message counts as
+ * an echo. One- and two-character values ("5", "id") occur incidentally in
+ * ordinary prose, and redacting on those would blank almost every diagnostic.
+ * Nothing shorter than three characters is a credential.
+ */
+const MIN_ECHOED_INPUT_LEN = 3;
+
+/**
+ * Every string appearing as a value anywhere in the action's params.
+ *
+ * This is the signal that actually distinguishes a dangerous issue message
+ * from a safe one: a message is a leak exactly when it echoes what the caller
+ * passed in. Keying off the issue `code` instead was a proxy, and it was wrong
+ * in both directions — it missed a `custom` issue raised at a nested path, and
+ * it blanked constant `.refine` diagnostics that never touch the input.
+ *
+ * Depth-limited because params are caller-supplied and may be deeply nested or
+ * cyclic; six levels covers every action schema in this repo.
+ */
+function collectInputStrings(input: unknown, out: Set<string>, depth = 0): void {
+  if (depth > 6) return;
+  if (typeof input === "string") {
+    if (input.length >= MIN_ECHOED_INPUT_LEN) out.add(input);
+    return;
+  }
+  if (Array.isArray(input)) {
+    for (const v of input) collectInputStrings(v, out, depth + 1);
+    return;
+  }
+  if (input !== null && typeof input === "object") {
+    for (const v of Object.values(input as Record<string, unknown>)) {
+      collectInputStrings(v, out, depth + 1);
+    }
+  }
+}
+
+function defaultErrorMap(
+  err: unknown,
+  params?: unknown,
+): {
   error_code: ErrorCode;
   message: string;
 } {
@@ -250,6 +290,25 @@ function defaultErrorMap(err: unknown): {
   // `name === "ZodError"` + shape catches every zod instance regardless
   // of module identity.
   if (isZodErrorLike(err)) {
+    const inputStrings = new Set<string>();
+    collectInputStrings(params, inputStrings);
+    // True only when the message echoes an input value AND `scrubSecrets`
+    // cannot remove it. The shape-based scrubber gets first refusal, because
+    // when it CAN find the credential the caller keeps the useful half of the
+    // message: `unsupported dsn: postgres://u@h/db?password="hunter2"` becomes
+    // `unsupported dsn: postgres://u@h/db?password="[REDACTED]"` rather than
+    // `[REDACTED]`, and the operator still learns which field failed and why.
+    //
+    // Dropping the whole message is reserved for the case that motivated this
+    // at all: prose with no `key = value` shape for the scrubber to key on
+    // (`rejected password hunter2`), where nothing else can save it.
+    const echoesInput = (message: string): boolean => {
+      for (const value of inputStrings) {
+        if (!message.includes(value)) continue;
+        if (scrubSecrets(message).includes(value)) return true;
+      }
+      return false;
+    };
     const msg = err.issues
       .map((i) => {
         const joined = i.path.join(".");
@@ -261,22 +320,29 @@ function defaultErrorMap(err: unknown): {
         // the field is a credential, drop the message instead of scrubbing
         // it. The path is kept, so the caller still learns which field failed.
         //
-        // An issue raised on the object rather than on one of its fields has
-        // an empty path, so the test above is blind to it — `superRefine` on
-        // the object emits exactly that shape, and it is the most common way
-        // a rejected credential reaches a message with no path naming it.
+        // The path test above is blind to an issue raised on the object
+        // rather than on one of its fields, and to a `custom` issue raised at
+        // a nested but non-sensitive path (`credentials`, say) — both carry
+        // author prose that can name the rejected value.
         //
-        // Two rules cover the pathless case. `custom` is the only zod code
-        // that places no constraint on message content: every built-in
-        // message is templated from the *schema*, never from the input, so a
-        // pathless `custom` message is dropped outright. Any other pathless
-        // issue is dropped only when the prose itself names a credential
-        // field, which keeps zod's own `Expected object, received string`
-        // reaching the caller instead of blanking every root-level failure.
+        // `echoesInput` is the rule that actually decides it: a message is a
+        // leak exactly when it contains something the caller passed in. That
+        // replaced an earlier `code === "custom"` test, which was a proxy and
+        // wrong in both directions — it missed a custom issue at any nested
+        // path, and it blanked constant `.refine` diagnostics that never touch
+        // the input at all (the `query_logs` schema in
+        // `src/connectors/gcp/index.ts` lost its "exactly one filter"
+        // instruction that way). Keying on the input needs no guess about what
+        // an author's message might contain, and it works at every depth.
+        //
+        // The pathless `mentionsSensitiveField` check stays as a backstop for
+        // a message naming a credential whose value did not come through
+        // params — read from the environment, say — where there is nothing to
+        // match against.
         const drop =
           isSensitiveFieldPath(path) ||
-          (joined === "" &&
-            (i.code === "custom" || mentionsSensitiveField(i.message)));
+          echoesInput(i.message) ||
+          (joined === "" && mentionsSensitiveField(i.message));
         return `${path}: ${drop ? "[REDACTED]" : i.message}`;
       })
       .join("; ");
@@ -429,7 +495,7 @@ export function createConnector<TSdk = unknown>(
     // 1. Validate params via Zod.
     const parsed = spec.params.safeParse(params);
     if (!parsed.success) {
-      const mapped = defaultErrorMap(parsed.error);
+      const mapped = defaultErrorMap(parsed.error, params);
       // Zod issue text is author-controlled and routinely interpolates the
       // rejected value (`superRefine` with a custom message, enum/literal
       // mismatches). `defaultErrorMap` concatenates every issue message, so a
@@ -859,7 +925,7 @@ function mapAndBuildError<TSdk>(
     message = override.message;
     retriable = override.retriable ?? RETRIABLE_CODES.has(code);
   } else {
-    const def = defaultErrorMap(err);
+    const def = defaultErrorMap(err, params);
     code = def.error_code;
     message = def.message;
     retriable = RETRIABLE_CODES.has(code);

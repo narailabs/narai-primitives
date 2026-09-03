@@ -636,6 +636,16 @@ describe("scrubSecrets — credential leak matrix", () => {
     (s) => `username=\\"alice\\", response=\\"${s}\\"`,
     (s) => `username=\\"alice\\", algorithm=MD5, response=\\"${s}\\"`,
     (s) => `username=\\'alice\\', algorithm=MD5, response=\\'${s}\\'`,
+    // Parameter NAMES are an HTTP token, not `\w+`. RFC 7616 defines
+    // `username*` for the RFC 5987 extended encoding, whose value carries
+    // apostrophes (`charset'language'value`) that the plain token class
+    // excludes — so both the name and the value needed widening, and a
+    // token-only rule stopped at `UTF-8`.
+    (s) => `username*=UTF-8''alice, response="${s}"`,
+    (s) => `username*=UTF-8'en'alice, algorithm=MD5, response="${s}"`,
+    // Other token characters the old `\w+` rejected.
+    (s) => `user-name="alice", x.y=1, response="${s}"`,
+    (s) => `username="alice", algorithm=MD5-sess, response="${s}"`,
   ];
 
   function everyShape(): string[] {

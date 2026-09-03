@@ -425,6 +425,102 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     }
   });
 
+  it("redacts a custom issue raised at a nested, non-sensitive path", async () => {
+    // The path is `credentials`, which is not itself a credential name, so the
+    // path test does not fire — and the prose has no `key = value` shape for
+    // `scrubSecrets` either. Only the input-echo rule catches this, and it has
+    // to work at every depth, not only at the root.
+    const c = createConnector<{}>({
+      name: "redact-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.object({
+            credentials: z
+              .object({ user: z.string(), pw: z.string() })
+              .superRefine((v, ctx) => {
+                ctx.addIssue({
+                  code: z.ZodIssueCode.custom,
+                  message: `rejected value ${v.pw}`,
+                });
+              }),
+          }),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const env = await c.fetch("login", {
+      credentials: { user: "alice", pw: "hunter2" },
+    });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("hunter2");
+      expect(env.message).toContain("credentials: [REDACTED]");
+    }
+  });
+
+  it("keeps a constant refinement message that never touches the input", async () => {
+    // The guard against over-correcting, and the reason the rule keys on the
+    // input rather than on `code === "custom"`. Every object-level `.refine`
+    // emits a root-path custom issue, so a code-based test blanked static
+    // diagnostics too — `src/connectors/gcp/index.ts`'s `query_logs` schema
+    // lost the instruction saying exactly one filter is required.
+    const c = createConnector<{}>({
+      name: "redact-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        query: {
+          params: z
+            .object({ filter: z.string().optional(), query: z.string().optional() })
+            .refine((v) => (v.filter === undefined) !== (v.query === undefined), {
+              message: "exactly one of filter or query is required",
+            }),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const env = await c.fetch("query", {});
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).toContain("exactly one of filter or query is required");
+    }
+  });
+
+  it("keeps the useful half when the scrubber can find the credential", async () => {
+    // The input-echo rule defers to `scrubSecrets`: when the echoed value has
+    // a `key = value` shape the scrubber can key on, only the secret goes and
+    // the diagnostic survives. Dropping the whole message is reserved for
+    // prose the scrubber provably cannot clean.
+    const c = createConnector<{}>({
+      name: "redact-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        connect: {
+          params: z.object({
+            dsn: z.string().refine((v) => v.startsWith("safe://"), (v) => ({
+              message: `unsupported dsn: ${v}`,
+            })),
+          }),
+          classify: { kind: "read" },
+          handler: async () => ({ ok: true }),
+        },
+      },
+    });
+    const env = await c.fetch("connect", {
+      dsn: 'postgres://u@h/db?password="hunter2"',
+    });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("hunter2");
+      expect(env.message).toContain("unsupported dsn");
+    }
+  });
+
   it("redacts a credential in a thrown handler error", async () => {
     const c = createConnector<{}>({
       name: "redact-test",

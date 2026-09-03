@@ -148,8 +148,41 @@ const SENSITIVE_DQUOTE_RE = new RegExp(
  * Over-redacting a header whose interesting field is the credential is the
  * safe direction, and it matches what the line-anchored branch already does.
  */
-const SENSITIVE_AUTH_PARAMS_RE =
-  /(\\*["']?)(\bauthorization\b)(\\*["']?)(\s*[:=]\s*)([A-Za-z]+\s+)?\w+\s*=\s*(?:(\\*["'])[^\r\n]*?\6|[^\s,"'\r\n\]}]+)(?:\s*,\s*\w+\s*=\s*(?:(\\*["'])[^\r\n]*?\7|[^\s,"'\r\n\]}]+))+/gi;
+/**
+ * Parameter NAMES are an HTTP token, not `\w+`. RFC 7616 defines `username*`
+ * for the extended (RFC 5987) encoding, and the token set also admits
+ * `- . ! # $ % & + ^ _ ~ |`. `\w+` rejected `username*`, so a header using the
+ * extended form failed this branch and fell through to the inline one, which
+ * stops at the first quote and leaves `response` standing.
+ *
+ * The whole token set is admitted at once rather than adding `*`. This branch
+ * has now been widened three times — for bare values, for escaped quotes, and
+ * for this — and each time the next unhandled character was the next report.
+ * The apostrophe is the one token character deliberately excluded: it is also
+ * a value quote here, and admitting it into the name would let a name run
+ * across a quoted value.
+ */
+const AUTH_PARAM_NAME = "[A-Za-z0-9!#$%&*+^_~|.-]+";
+/**
+ * An unquoted parameter value. Two shapes, and the order matters.
+ *
+ * First the RFC 5987 extended value an `xxx*=` parameter carries —
+ * `charset'language'value`, as in `username*=UTF-8''alice`. It contains
+ * apostrophes by definition, which the plain token below excludes, so a
+ * token-only rule stopped at `UTF-8` and the parameter list failed from
+ * there. Each of its three segments still excludes the double quote, so it
+ * cannot run across a following quoted value.
+ *
+ * Then the plain token. It excludes the quote, comma and whitespace to keep
+ * the parameter boundaries, and `]` and `}` so the branch cannot escape the
+ * header into a surrounding payload.
+ */
+const AUTH_PARAM_VALUE =
+  "[^\\s,\"'\\r\\n\\]}]*'[^\\s,\"'\\r\\n\\]}]*'[^\\s,\"'\\r\\n\\]}]*|[^\\s,\"'\\r\\n\\]}]+";
+const SENSITIVE_AUTH_PARAMS_RE = new RegExp(
+  `(\\\\*["']?)(\\bauthorization\\b)(\\\\*["']?)(\\s*[:=]\\s*)([A-Za-z]+\\s+)?${AUTH_PARAM_NAME}\\s*=\\s*(?:(\\\\*["'])[^\\r\\n]*?\\6|${AUTH_PARAM_VALUE})(?:\\s*,\\s*${AUTH_PARAM_NAME}\\s*=\\s*(?:(\\\\*["'])[^\\r\\n]*?\\7|${AUTH_PARAM_VALUE}))+`,
+  "gi",
+);
 const SENSITIVE_AUTH_ESCAPED_RE =
   /(\\*["']?)(\bauthorization\b)(\\*["']?)(\s*[:=]\s*)((?:bearer|basic)\s+)?\\+(["'])((?:bearer|basic)\s+)?(?:\\\\.|(?!\\+\6)[^\r\n])*(\\+\6)?/gi;
 const SENSITIVE_AUTH_QUOTED_RE =
