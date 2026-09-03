@@ -124,9 +124,15 @@ export interface LogQueryParams {
 // so a `(?<=[a-z0-9])(?=[A-Z])` rule degrades to "letter followed by letter"
 // and starts redacting `mytoken` again.
 //
-// This mirrors `src/toolkit/audit/writer.ts`. The two must stay in step, and
-// the fact that they did not is why this bug existed — see the note above
-// `scrubSqlSecrets`.
+// This matches the boundary `src/toolkit/audit/writer.ts` uses. Note the tense:
+// as of THIS branch the toolkit copy still has the old `\b` form — the matching
+// fix for it is in #207, which is not merged yet. So on `main` today both
+// copies leak; when #207 lands the toolkit is fixed; when this lands the db
+// copy is fixed; and only with both do they actually mirror each other. Do not
+// read this comment as an assertion that they are in step right now.
+//
+// The two must stay in step, and the fact that they did not is why this bug
+// existed — see the note above `scrubSqlSecrets`.
 //
 // Value classes use `(?:\\.|[^Q\\])*` so `\"` and other escape sequences
 // inside JSON-encoded values are skipped — without this, `"abc\"def"`
@@ -150,7 +156,8 @@ export interface LogQueryParams {
  * `sort_key` and `partition_key` — ordinary SQL, and redacting them would
  * destroy the query this audit log exists to record.
  *
- * Kept in step with `SENSITIVE_WORDS` in `src/toolkit/audit/writer.ts`.
+ * The matching change to `SENSITIVE_WORDS` in `src/toolkit/audit/writer.ts`
+ * is in #207; neither copy has it on `main` yet.
  */
 const _SENSITIVE_KEYS =
   "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|private[_-]?key|auth";
