@@ -164,6 +164,14 @@ const SENSITIVE_DQUOTE_RE = new RegExp(
  */
 const AUTH_PARAM_NAME = "[A-Za-z0-9!#$%&*+^_~|.-]+";
 /**
+ * An authentication SCHEME is a token as well, not `[A-Za-z]+`. `AWS4-HMAC-SHA256`
+ * carries digits and hyphens, so a scheme-letters-only rule failed the whole
+ * parameter branch and the fallback stopped at the first quoted value, leaving
+ * `Signature="…"` standing. Same grammar as the parameter names above and the
+ * same exclusion: the apostrophe is a value quote here.
+ */
+const AUTH_SCHEME = "[A-Za-z0-9!#$%&*+^_~|.-]+";
+/**
  * An unquoted parameter value. Two shapes, and the order matters.
  *
  * First the RFC 5987 extended value an `xxx*=` parameter carries —
@@ -180,7 +188,7 @@ const AUTH_PARAM_NAME = "[A-Za-z0-9!#$%&*+^_~|.-]+";
 const AUTH_PARAM_VALUE =
   "[^\\s,\"'\\r\\n\\]}]*'[^\\s,\"'\\r\\n\\]}]*'[^\\s,\"'\\r\\n\\]}]*|[^\\s,\"'\\r\\n\\]}]+";
 const SENSITIVE_AUTH_PARAMS_RE = new RegExp(
-  `(\\\\*["']?)(\\bauthorization\\b)(\\\\*["']?)(\\s*[:=]\\s*)([A-Za-z]+\\s+)?${AUTH_PARAM_NAME}\\s*=\\s*(?:(\\\\*["'])[^\\r\\n]*?\\6|${AUTH_PARAM_VALUE})(?:\\s*,\\s*${AUTH_PARAM_NAME}\\s*=\\s*(?:(\\\\*["'])[^\\r\\n]*?\\7|${AUTH_PARAM_VALUE}))*`,
+  `(\\\\*["']?)(\\bauthorization\\b)(\\\\*["']?)(\\s*[:=]\\s*)(${AUTH_SCHEME}\\s+)?${AUTH_PARAM_NAME}\\s*=\\s*(?:(\\\\*["'])(?:[^\\r\\n]*?\\6|[^\\r\\n]*)|${AUTH_PARAM_VALUE})(?:\\s*,\\s*${AUTH_PARAM_NAME}\\s*=\\s*(?:(\\\\*["'])[^\\r\\n]*?\\7|${AUTH_PARAM_VALUE}))*`,
   "gi",
 );
 const SENSITIVE_AUTH_ESCAPED_RE =
@@ -298,8 +306,17 @@ const SENSITIVE_UNQUOTED_RE = new RegExp(
  * Residual: a colon-less userinfo (`https://<token>@host`) is left alone,
  * because that position is far more often a bare username (`postgres://
  * myuser@localhost/db`) than a token, and this repo never generates it.
+ *
+ * The leading lookbehind is a performance guard, not a correctness one. A
+ * scheme cannot begin part-way through a run of scheme characters, and without
+ * saying so the engine retried the greedy `[a-z0-9+.-]*` from EVERY character
+ * of a long alphabetic message, backtracking each time in search of `://`.
+ * That is quadratic, and it runs synchronously on externally derived exception
+ * text: measured before the guard, 10k characters took 48 ms, 30k took 376 ms
+ * and 60k took 1.6 s, so a large parser error stalled the connector.
  */
-const URL_USERINFO_RE = /([a-z][a-z0-9+.-]*:\/\/[^\s:/?#@"']+:)[^\s/@"']+@/gi;
+const URL_USERINFO_RE =
+  /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/[^\s:/?#@"']+:)[^\s/@"']+@/gi;
 
 /**
  * True when a field path names a credential — `password`, `api_key`,

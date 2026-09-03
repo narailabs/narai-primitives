@@ -799,3 +799,57 @@ describe("scrubSecrets — single-parameter auth headers", () => {
     ).not.toContain("hunter2");
   });
 });
+
+describe("scrubSecrets — auth header grammar and scan cost", () => {
+  it("redacts an unterminated quoted parameter to end of line", () => {
+    // Every other quoted-value branch already documents the rule: the value
+    // runs to its terminator, and an absent terminator is the end of the line.
+    // The parameter branch did not follow it, so a truncated header fell
+    // through to the inline fallback, which stopped at the opening quote.
+    for (const input of [
+      'ctx Authorization: Digest response="hunter2',
+      'ctx "authorization": Digest response="hunter2',
+      "ctx Authorization: Digest response='hunter2",
+    ]) {
+      expect(scrubSecrets(input)).not.toContain("hunter2");
+    }
+  });
+
+  it("redacts a scheme carrying digits and hyphens", () => {
+    // An authentication scheme is an HTTP token too. `[A-Za-z]+` could not
+    // recognise `AWS4-HMAC-SHA256`, so the parameter branch failed entirely
+    // and the fallback stopped at the first quoted value, leaving `Signature`.
+    for (const input of [
+      'ctx Authorization: AWS4-HMAC-SHA256 Credential="AKIA/foo", Signature="hunter2"',
+      'ctx "authorization": AWS4-HMAC-SHA256 Credential="AKIA/foo", Signature="hunter2"',
+    ]) {
+      expect(scrubSecrets(input)).not.toContain("hunter2");
+    }
+  });
+
+  it("scans a long credential-free message in linear time", () => {
+    // `URL_USERINFO_RE` had no left anchor, so the engine retried its greedy
+    // scheme prefix from EVERY character of a long alphabetic message,
+    // backtracking each time in search of `://`. Measured before the fix:
+    // 10k chars 48ms, 30k 376ms, 60k 1633ms — quadratic, on a synchronous
+    // path fed by externally derived exception text.
+    //
+    // Asserts the SHAPE, not a wall-clock budget, so it is not flaky on shared
+    // CI. The input ratio is 4x deliberately: linear predicts ~4x the time and
+    // quadratic ~16x, so a threshold of 8 sits cleanly between them. A 2x
+    // ratio does NOT work here — quadratic predicts only ~4x there, which
+    // slips under any threshold loose enough to be stable, and the test then
+    // passes against the very bug it is written for. Checked by reverting the
+    // fix: at 2x it stayed green, at 4x it fails.
+    const timeFor = (n: number): number => {
+      const text = "a".repeat(n);
+      scrubSecrets(text); // warm
+      const t = process.hrtime.bigint();
+      scrubSecrets(text);
+      return Number(process.hrtime.bigint() - t) / 1e6;
+    };
+    const small = Math.max(timeFor(10_000), 0.2);
+    const large = timeFor(40_000);
+    expect(large).toBeLessThan(small * 8);
+  });
+});
