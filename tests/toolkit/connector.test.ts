@@ -558,6 +558,70 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     }
   });
 
+  it("collects a credential nested deeper than the old depth cap", async () => {
+    // The collector had a depth cap of 6, standing in for "do not loop forever
+    // on a cyclic object". It paid for that with silence: anything deeper
+    // never entered the set, and nothing could tell that from "no credential
+    // present".
+    let inner: z.ZodTypeAny = z.object({ pw: z.string() });
+    for (let i = 0; i < 7; i++) inner = z.object({ n: inner });
+    const c = createConnector<{}>({
+      name: "redact-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.object({ deep: inner }).superRefine((v, ctx) => {
+            let x = v.deep as Record<string, unknown>;
+            while (x["n"] !== undefined) x = x["n"] as Record<string, unknown>;
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `rejected value ${String(x["pw"])}`,
+              path: ["deep"],
+            });
+          }),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    let payload: unknown = { pw: "hunter2" };
+    for (let i = 0; i < 7; i++) payload = { n: payload };
+    const env = await c.fetch("login", { deep: payload });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).toBe("deep: rejected value [REDACTED]");
+    }
+  });
+
+  it("terminates on cyclic params", async () => {
+    // The reason the depth cap existed. A `seen` set stops the cycle for that
+    // reason directly, instead of guessing a depth that also truncates
+    // legitimate nesting.
+    const c = createConnector<{}>({
+      name: "redact-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.any().superRefine((_v, ctx) => {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, message: "rejected value hunter2" });
+          }),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const cyclic: Record<string, unknown> = { pw: "hunter2" };
+    cyclic["self"] = cyclic;
+    cyclic["arr"] = [cyclic, { b: cyclic }];
+    const env = await c.fetch("login", cyclic);
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("hunter2");
+    }
+  });
+
   it("redacts a numeric credential echoed by a nested issue", async () => {
     // The echo collector only walked strings, so a numeric PIN was outside
     // the defence entirely — the parent path is not sensitive and

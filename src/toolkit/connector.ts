@@ -265,11 +265,24 @@ const MIN_ECHOED_INPUT_LEN = 2;
  * in both directions — it missed a `custom` issue raised at a nested path, and
  * it blanked constant `.refine` diagnostics that never touch the input.
  *
- * Depth-limited because params are caller-supplied and may be deeply nested or
- * cyclic; six levels covers every action schema in this repo.
+ * Cycle-guarded rather than depth-limited. The depth cap this replaced was a
+ * proxy for "do not loop forever on a cyclic object", and it paid for that with
+ * silence: a credential nested deeper than the cap simply never entered the
+ * set, and nothing downstream could tell that from "there was no credential".
+ * A `seen` set stops a cycle for the reason the cap was guessing at, and lets
+ * every reachable value be collected.
+ *
+ * `nodes` bounds the work rather than the shape. Params are caller-supplied, so
+ * a pathological structure should cost bounded time — but hitting that ceiling
+ * is a size problem, not a nesting problem, and it takes 50k nodes to reach.
  */
-function collectInputStrings(input: unknown, out: Set<string>, depth = 0): void {
-  if (depth > 6) return;
+function collectInputStrings(
+  input: unknown,
+  out: Set<string>,
+  seen: Set<object> = new Set(),
+  nodes = { n: 0 },
+): void {
+  if (nodes.n++ > 50_000) return;
   if (typeof input === "string") {
     if (input.length >= MIN_ECHOED_INPUT_LEN) out.add(input);
     return;
@@ -286,14 +299,15 @@ function collectInputStrings(input: unknown, out: Set<string>, depth = 0): void 
     if (text.length >= MIN_ECHOED_INPUT_LEN) out.add(text);
     return;
   }
+  if (input === null || typeof input !== "object") return;
+  if (seen.has(input)) return;
+  seen.add(input);
   if (Array.isArray(input)) {
-    for (const v of input) collectInputStrings(v, out, depth + 1);
+    for (const v of input) collectInputStrings(v, out, seen, nodes);
     return;
   }
-  if (input !== null && typeof input === "object") {
-    for (const v of Object.values(input as Record<string, unknown>)) {
-      collectInputStrings(v, out, depth + 1);
-    }
+  for (const v of Object.values(input as Record<string, unknown>)) {
+    collectInputStrings(v, out, seen, nodes);
   }
 }
 

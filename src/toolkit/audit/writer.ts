@@ -303,6 +303,14 @@ const SENSITIVE_UNQUOTED_RE = new RegExp(
  * greedy-consumption guard the AUTH patterns document above. Re-running over
  * already-redacted text is a no-op (`[REDACTED]` re-matches to itself).
  *
+ * They do NOT exclude the apostrophe. `encodeURIComponent` leaves `'` alone,
+ * so `_buildUri` emits `mongodb://user:abc'def@host` for a password containing
+ * one — and excluding it meant the class stopped early, the required trailing
+ * `@` was never reached, and the whole credential survived. The double quote
+ * still is excluded, which is what keeps the match inside a JSON string value;
+ * `@` and `/` are what bound it within the authority. The apostrophe was doing
+ * no work here that those three do not already do.
+ *
  * Residual: a colon-less userinfo (`https://<token>@host`) is left alone,
  * because that position is far more often a bare username (`postgres://
  * myuser@localhost/db`) than a token, and this repo never generates it.
@@ -316,7 +324,7 @@ const SENSITIVE_UNQUOTED_RE = new RegExp(
  * and 60k took 1.6 s, so a large parser error stalled the connector.
  */
 const URL_USERINFO_RE =
-  /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/[^\s:/?#@"']+:)[^\s/@"']+@/gi;
+  /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/[^\s:/?#@"]+:)[^\s/@"]+@/gi;
 
 /**
  * True when a field path names a credential — `password`, `api_key`,

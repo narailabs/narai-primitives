@@ -908,3 +908,40 @@ describe("scrubSecrets — unterminated values, every family", () => {
     }
   });
 });
+
+describe("scrubSecrets — URL userinfo character classes", () => {
+  it("redacts a password containing an apostrophe", () => {
+    // `encodeURIComponent` leaves `'` alone, so `_buildUri` emits this shape
+    // for a MongoDB password containing one. The class excluded `'`, so it
+    // stopped early, the required trailing `@` was never reached, and the
+    // whole credential survived untouched.
+    for (const input of [
+      "mongodb://user:abc'def@host/db",
+      "failed: mongodb://user:abc'def@host/db",
+      "mongodb://us'er:abcdef@host/db",
+      `{"u":"mongodb://user:abc'def@host/db","z":2}`,
+    ]) {
+      expect(scrubSecrets(input)).toContain("[REDACTED]");
+      expect(scrubSecrets(input)).not.toMatch(/:abc'?def@/);
+    }
+  });
+
+  it("stays inside the surrounding payload after admitting apostrophes", () => {
+    // The double quote is what keeps the match inside a JSON string value, and
+    // `@` / `/` are what bound it within the authority — so a Python-style
+    // repr, where `'` IS the string delimiter, is the case to check.
+    const strip = (t: string): string => t.split("[REDACTED]").join("");
+    for (const p of [
+      `{"u":"mongodb://user:pw@host/db","z":2}`,
+      `{'u': 'mongodb://user:pw@host/db', 'z': 2}`,
+      `[{"u":"postgres://a:b@h/d"},{"user":"bob"}]`,
+    ]) {
+      const once = scrubSecrets(p);
+      expect(scrubSecrets(once)).toBe(once);
+      for (const ch of ["{", "}", "[", "]"]) {
+        expect(strip(once).split(ch).length).toBe(strip(p).split(ch).length);
+      }
+    }
+    expect(scrubSecrets(`[{"u":"postgres://a:b@h/d"},{"user":"bob"}]`)).toContain('"user":"bob"');
+  });
+});
