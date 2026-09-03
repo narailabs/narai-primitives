@@ -604,6 +604,22 @@ describe("scrubSecrets — credential leak matrix", () => {
     (b) => `request payload: {${b}}`,
   ];
   const SEPARATORS = [": ", "=", ":"];
+  /**
+   * Digest parameter lists, varying which parameters are quoted. `q` marks a
+   * quoted value, `t` a bare token; RFC 7616 allows both in one list and only
+   * requires quoting for `username`, `realm`, `nonce`, `uri`, `response`,
+   * `cnonce` and `opaque` — `algorithm`, `qop` and `nc` are sent bare.
+   */
+  const DIGEST_PARAM_SHAPES: Array<(secret: string) => string> = [
+    (s) => `username="alice", response="${s}"`,
+    (s) => `username=alice, response=${s}`,
+    (s) => `username="alice", algorithm=MD5, response="${s}"`,
+    (s) => `username=alice, algorithm="MD5", response=${s}`,
+    (s) => `algorithm=MD5, response="${s}"`,
+    (s) => `username="alice", nc=00000001, qop=auth, response="${s}", opaque="x"`,
+    (s) => `username="alice",response="${s}"`,
+    (s) => `username="alice" , response="${s}"`,
+  ];
 
   function everyShape(): string[] {
     const out: string[] = [];
@@ -622,11 +638,17 @@ describe("scrubSecrets — credential leak matrix", () => {
                 // A parameterised scheme is a third shape: the value is a list
                 // of `key="value"` pairs, so every single-token branch stopped
                 // at the first quote and left `response` standing.
-                out.push(
-                  ctx(
-                    `${kf(key)}${sep}Digest username="alice", response="${SECRET}"`,
-                  ),
-                );
+                //
+                // Parameter *quoting* is its own axis. The first matrix only
+                // ever built all-quoted lists, and the params branch required
+                // every parameter to be quoted — so a real header mixing
+                // quoted and token values (`username="alice", algorithm=MD5,
+                // response="…"`, which RFC 7616 permits and servers send)
+                // failed that branch, fell through to the quoted branch, and
+                // stopped at the first quote with `response` still standing.
+                for (const shape of DIGEST_PARAM_SHAPES) {
+                  out.push(ctx(`${kf(key)}${sep}Digest ${shape(SECRET)}`));
+                }
               }
             }
           }

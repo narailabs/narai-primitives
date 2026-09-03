@@ -140,7 +140,7 @@ const SENSITIVE_DQUOTE_RE = new RegExp(
  * safe direction, and it matches what the line-anchored branch already does.
  */
 const SENSITIVE_AUTH_PARAMS_RE =
-  /(\\?["']?)(\bauthorization\b)(\\?["']?)(\s*[:=]\s*)([A-Za-z]+\s+)?\w+\s*=\s*(["'])[^\r\n]*?\6(?:\s*,\s*\w+\s*=\s*(["'])[^\r\n]*?\7)+/gi;
+  /(\\?["']?)(\bauthorization\b)(\\?["']?)(\s*[:=]\s*)([A-Za-z]+\s+)?\w+\s*=\s*(?:(["'])[^\r\n]*?\6|[^\s,"'\r\n\]}]+)(?:\s*,\s*\w+\s*=\s*(?:(["'])[^\r\n]*?\7|[^\s,"'\r\n\]}]+))+/gi;
 const SENSITIVE_AUTH_ESCAPED_RE =
   /(\\?["']?)(\bauthorization\b)(\\?["']?)(\s*[:=]\s*)((?:bearer|basic)\s+)?\\(["'])((?:bearer|basic)\s+)?(?:\\\\.|(?!\\\6)[^\r\n])*(\\\6)?/gi;
 const SENSITIVE_AUTH_QUOTED_RE =
@@ -277,6 +277,28 @@ const SENSITIVE_PATH_RE = new RegExp(
 );
 export function isSensitiveFieldPath(path: string): boolean {
   return SENSITIVE_PATH_RE.test(path);
+}
+
+/**
+ * Does free-text prose *name* a credential field?
+ *
+ * `isSensitiveFieldPath` above keys off a structured path (`auth.token`,
+ * `creds[0].password`). A validation issue raised on the object rather than on
+ * one of its fields has no path at all, so that test is blind to it, and the
+ * message is author prose rather than a `key = value` literal `scrubSecrets`
+ * can find. This is the same credential vocabulary applied with prose
+ * boundaries: any non-alphanumeric neighbour instead of a path separator.
+ *
+ * The lookahead still rejects run-on words, so `authorization failed` does not
+ * match on `auth` (the next character is a letter) while `auth failed` does.
+ * Over-matching here only ever costs a dropped message, never a leak.
+ */
+const SENSITIVE_MENTION_RE = new RegExp(
+  `(?:^|[^A-Za-z0-9])${KEY_PREFIX}(?:${SENSITIVE_WORDS})(?=$|[^A-Za-z0-9])`,
+  "i",
+);
+export function mentionsSensitiveField(text: string): boolean {
+  return SENSITIVE_MENTION_RE.test(text);
 }
 
 export function scrubSecrets(text: string): string {

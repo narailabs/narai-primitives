@@ -286,6 +286,145 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     }
   });
 
+  it("redacts a root-level issue whose prose names a credential", async () => {
+    // An issue raised on the object rather than on one of its fields has an
+    // empty path, so the `isSensitiveFieldPath` test is blind to it. The
+    // message here is prose with no `key = value` shape either, so
+    // `scrubSecrets` cannot find the credential — both existing defences miss
+    // it and `hunter2` reached the envelope verbatim.
+    const c = createConnector<{}>({
+      name: "redact-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z
+            .object({ user: z.string(), password: z.string() })
+            .superRefine((v, ctx) => {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: `rejected password ${v.password}`,
+              });
+            }),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const env = await c.fetch("login", { user: "alice", password: "hunter2" });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.error_code).toBe("VALIDATION_ERROR");
+      expect(env.message).not.toContain("hunter2");
+      expect(env.message).toContain("<root>: [REDACTED]");
+    }
+  });
+
+  it("redacts a root-level custom issue even when the prose names no field", async () => {
+    // `custom` is the only zod code that places no constraint on message
+    // content, so a pathless custom message is dropped on the code alone —
+    // there is no vocabulary to key off here, and the value is still the
+    // input.
+    const c = createConnector<{}>({
+      name: "redact-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z
+            .object({ secret_value: z.string() })
+            .superRefine((v, ctx) => {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: `the value ${v.secret_value} is not acceptable`,
+              });
+            }),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const env = await c.fetch("login", { secret_value: "hunter2" });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("hunter2");
+      expect(env.message).toContain("<root>: [REDACTED]");
+    }
+  });
+
+  it("keeps a root-level message zod generated itself", async () => {
+    // The guard against over-correcting: zod's own root messages are
+    // templated from the schema, never from the input, and blanking them
+    // would leave the caller with `<root>: [REDACTED]` for an ordinary type
+    // mismatch. A foreign ZodError-shaped object is used because the toolkit
+    // parses params before a real zod root type error can surface here.
+    const foreignZodError = Object.assign(new Error("invalid input"), {
+      name: "ZodError",
+      issues: [
+        {
+          path: [],
+          code: "invalid_type",
+          message: "Expected object, received string",
+        },
+      ],
+    });
+    const c = createConnector<{}>({
+      name: "redact-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        run: {
+          params: z.object({}),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw foreignZodError;
+          },
+        },
+      },
+    });
+    const env = await c.fetch("run", {});
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.error_code).toBe("VALIDATION_ERROR");
+      expect(env.message).toContain("<root>: Expected object, received string");
+    }
+  });
+
+  it("still redacts a non-custom root issue whose message names a credential", async () => {
+    // The complement of the test above: same pathless shape, same non-custom
+    // code, but the prose names the field — so the message goes.
+    const foreignZodError = Object.assign(new Error("invalid input"), {
+      name: "ZodError",
+      issues: [
+        {
+          path: [],
+          code: "too_small",
+          message: "api_key hunter2 is too short",
+        },
+      ],
+    });
+    const c = createConnector<{}>({
+      name: "redact-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        run: {
+          params: z.object({}),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw foreignZodError;
+          },
+        },
+      },
+    });
+    const env = await c.fetch("run", {});
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("hunter2");
+      expect(env.message).toContain("<root>: [REDACTED]");
+    }
+  });
+
   it("redacts a credential in a thrown handler error", async () => {
     const c = createConnector<{}>({
       name: "redact-test",

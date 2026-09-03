@@ -21,6 +21,7 @@ import { parseAgentArgs } from "./agent_cli.js";
 import {
   createAuditWriter,
   isSensitiveFieldPath,
+  mentionsSensitiveField,
   scrubSecrets,
   type AuditWriter,
 } from "./audit/writer.js";
@@ -221,7 +222,7 @@ function isZodErrorLike(
   err: unknown,
 ): err is {
   name: string;
-  issues: Array<{ path: unknown[]; message: string }>;
+  issues: Array<{ path: unknown[]; message: string; code?: unknown }>;
 } {
   if (err === null || typeof err !== "object") return false;
   const e = err as Record<string, unknown>;
@@ -251,14 +252,32 @@ function defaultErrorMap(err: unknown): {
   if (isZodErrorLike(err)) {
     const msg = err.issues
       .map((i) => {
-        const path = i.path.join(".") || "<root>";
+        const joined = i.path.join(".");
+        const path = joined || "<root>";
         // Issue text is author-controlled prose and can name the rejected
         // value without any `key = value` shape for `scrubSecrets` to find
         // (`password: rejected value hunter2` scrubbed to
         // `password: "[REDACTED]" value hunter2`). When the path itself says
         // the field is a credential, drop the message instead of scrubbing
         // it. The path is kept, so the caller still learns which field failed.
-        return `${path}: ${isSensitiveFieldPath(path) ? "[REDACTED]" : i.message}`;
+        //
+        // An issue raised on the object rather than on one of its fields has
+        // an empty path, so the test above is blind to it — `superRefine` on
+        // the object emits exactly that shape, and it is the most common way
+        // a rejected credential reaches a message with no path naming it.
+        //
+        // Two rules cover the pathless case. `custom` is the only zod code
+        // that places no constraint on message content: every built-in
+        // message is templated from the *schema*, never from the input, so a
+        // pathless `custom` message is dropped outright. Any other pathless
+        // issue is dropped only when the prose itself names a credential
+        // field, which keeps zod's own `Expected object, received string`
+        // reaching the caller instead of blanking every root-level failure.
+        const drop =
+          isSensitiveFieldPath(path) ||
+          (joined === "" &&
+            (i.code === "custom" || mentionsSensitiveField(i.message)));
+        return `${path}: ${drop ? "[REDACTED]" : i.message}`;
       })
       .join("; ");
     return { error_code: "VALIDATION_ERROR", message: msg };
