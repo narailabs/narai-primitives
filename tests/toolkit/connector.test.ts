@@ -348,7 +348,7 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     expect(env.status).toBe("error");
     if (env.status === "error") {
       expect(env.message).not.toContain("hunter2");
-      expect(env.message).toContain("<root>: [REDACTED]");
+      expect(env.message).toContain("the value [REDACTED] is not acceptable");
     }
   });
 
@@ -457,7 +457,10 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     expect(env.status).toBe("error");
     if (env.status === "error") {
       expect(env.message).not.toContain("hunter2");
-      expect(env.message).toContain("credentials: [REDACTED]");
+      // Redacted in place, so the author's own words survive and only the
+      // caller's input goes. Dropping the whole message here was the earlier
+      // behaviour and it took the diagnostic with it.
+      expect(env.message).toContain("credentials: rejected value [REDACTED]");
     }
   });
 
@@ -518,6 +521,76 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     if (env.status === "error") {
       expect(env.message).not.toContain("hunter2");
       expect(env.message).toContain("unsupported dsn");
+    }
+  });
+
+  it("redacts a two-character echoed credential", async () => {
+    // The old rule ignored input strings under three characters, on the
+    // assumption that something that short is not a credential. It is not a
+    // safe assumption, and in-place redaction makes the cutoff cheap enough
+    // that it does not need to be made: `pw: "xy"` at a non-sensitive parent
+    // path leaked as `credentials: rejected value xy`.
+    const c = createConnector<{}>({
+      name: "redact-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.object({
+            credentials: z
+              .object({ user: z.string(), pw: z.string() })
+              .superRefine((v, ctx) => {
+                ctx.addIssue({
+                  code: z.ZodIssueCode.custom,
+                  message: `rejected value ${v.pw}`,
+                });
+              }),
+          }),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const env = await c.fetch("login", { credentials: { user: "alice", pw: "xy" } });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).toBe("credentials: rejected value [REDACTED]");
+    }
+  });
+
+  it("keeps a constant diagnostic that merely contains an input string", async () => {
+    // The other end of the same dial, and the reason it stopped being a dial.
+    // `filter: "query_logs"` occurs inside the schema's own static message, so
+    // a boolean substring test read the constant diagnostic as an echo and
+    // blanked it. Redacting in place removes the echoed token and leaves the
+    // instruction the caller needs.
+    const c = createConnector<{}>({
+      name: "redact-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        query: {
+          params: z
+            .object({
+              filter: z.string().optional(),
+              structured_filter: z.string().optional(),
+            })
+            .refine(
+              (v) => (v.filter === undefined) !== (v.structured_filter === undefined),
+              { message: "exactly one of filter or structured_filter is required for query_logs" },
+            ),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const env = await c.fetch("query", {
+      filter: "query_logs",
+      structured_filter: "x",
+    });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).toContain("exactly one of filter or structured_filter is required");
     }
   });
 

@@ -240,12 +240,21 @@ function isZodErrorLike(
 }
 
 /**
- * Minimum length of an input string before its presence in a message counts as
- * an echo. One- and two-character values ("5", "id") occur incidentally in
- * ordinary prose, and redacting on those would blank almost every diagnostic.
- * Nothing shorter than three characters is a credential.
+ * Minimum length of an input string before it is redacted out of a message.
+ *
+ * This was 3 while an echo dropped the WHOLE message, and that made the number
+ * a dial with a bad value at both ends: too high and a two-character
+ * credential survived, too low and any message containing a common short input
+ * was blanked. Review pushed it in both directions in the same round, which is
+ * what a mistuned threshold never does and a wrong mechanism always does.
+ *
+ * Now that an echo is redacted IN PLACE, being over-inclusive costs one
+ * substring instead of the entire diagnostic, so the number can drop to the
+ * point where it only excludes what is genuinely noise. A single character
+ * collides constantly ("-", "a") and is not a credential in any realistic
+ * sense; two characters is the shortest thing worth protecting.
  */
-const MIN_ECHOED_INPUT_LEN = 3;
+const MIN_ECHOED_INPUT_LEN = 2;
 
 /**
  * Every string appearing as a value anywhere in the action's params.
@@ -292,22 +301,32 @@ function defaultErrorMap(
   if (isZodErrorLike(err)) {
     const inputStrings = new Set<string>();
     collectInputStrings(params, inputStrings);
-    // True only when the message echoes an input value AND `scrubSecrets`
-    // cannot remove it. The shape-based scrubber gets first refusal, because
-    // when it CAN find the credential the caller keeps the useful half of the
-    // message: `unsupported dsn: postgres://u@h/db?password="hunter2"` becomes
-    // `unsupported dsn: postgres://u@h/db?password="[REDACTED]"` rather than
-    // `[REDACTED]`, and the operator still learns which field failed and why.
+    // Replace what the caller passed in, in place, rather than deciding
+    // whether to drop the message around it.
     //
-    // Dropping the whole message is reserved for the case that motivated this
-    // at all: prose with no `key = value` shape for the scrubber to key on
-    // (`rejected password hunter2`), where nothing else can save it.
-    const echoesInput = (message: string): boolean => {
-      for (const value of inputStrings) {
-        if (!message.includes(value)) continue;
-        if (scrubSecrets(message).includes(value)) return true;
+    // Dropping-on-echo was wrong in kind, not in degree: it lost a constant
+    // diagnostic whenever an input string happened to occur inside it
+    // (`filter: "query_logs"` blanked the `query_logs` schema's own
+    // exactly-one-filter instruction), while a value below the length cutoff
+    // still escaped entirely. Those are opposite failures of one substring
+    // test used as a boolean.
+    //
+    // Redacting the occurrences keeps every word the author wrote that is not
+    // the caller's own input, so `rejected value xy` becomes `rejected value
+    // [REDACTED]` and the exactly-one-filter instruction survives with only
+    // the echoed token removed. It also makes the length cutoff cheap: an
+    // over-inclusive match now costs one substring, not the diagnostic.
+    //
+    // Longest first — a short value can be a substring of a longer one, and
+    // replacing the short one first would leave the longer one's remainder
+    // standing.
+    const byLengthDesc = [...inputStrings].sort((a, b) => b.length - a.length);
+    const redactEchoedInput = (message: string): string => {
+      let out = message;
+      for (const value of byLengthDesc) {
+        if (out.includes(value)) out = out.split(value).join("[REDACTED]");
       }
-      return false;
+      return out;
     };
     const msg = err.issues
       .map((i) => {
@@ -341,9 +360,8 @@ function defaultErrorMap(
         // match against.
         const drop =
           isSensitiveFieldPath(path) ||
-          echoesInput(i.message) ||
           (joined === "" && mentionsSensitiveField(i.message));
-        return `${path}: ${drop ? "[REDACTED]" : i.message}`;
+        return `${path}: ${drop ? "[REDACTED]" : redactEchoedInput(i.message)}`;
       })
       .join("; ");
     return { error_code: "VALIDATION_ERROR", message: msg };
