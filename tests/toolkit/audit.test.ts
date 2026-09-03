@@ -708,3 +708,55 @@ describe("scrubSecrets — private-key vocabulary", () => {
     }
   });
 });
+
+describe("scrubSecrets — serialization depth", () => {
+  // Rounds 1-3 of review on this PR each reported the same predicate with one
+  // more escaping layer: an escaped value, then an escaped Digest parameter
+  // list, then a doubly-serialized object. The patterns had been widened by
+  // one layer each time (`\\?` — an OPTIONAL single backslash), so each fix
+  // moved the boundary rather than removing it, and depth 3 leaked again.
+  //
+  // Every quote in this file now accepts a RUN of backslashes (`\\*` / `\\+`)
+  // instead of at most one, so depth is no longer a dimension the patterns
+  // can be behind. This test walks it rather than pinning the one depth that
+  // was reported.
+  const KEYS = [
+    { password: "hunter2", user: "bob" },
+    { api_key: "hunter2", z: 1 },
+    { authorization: "Bearer hunter2", z: 1 },
+    { secretAccessKey: "hunter2" },
+    { private_key: "hunter2" },
+  ];
+
+  it("leaks nothing at any serialization depth up to 7", () => {
+    const leaked: string[] = [];
+    for (const seed of KEYS) {
+      let v: string = JSON.stringify(seed);
+      for (let depth = 1; depth <= 7; depth++) {
+        if (scrubSecrets(v).includes("hunter2")) leaked.push(`depth ${depth}: ${v}`);
+        v = JSON.stringify(v);
+      }
+    }
+    expect(leaked).toEqual([]);
+  });
+
+  it("is idempotent at any serialization depth up to 7", () => {
+    const unstable: string[] = [];
+    for (const seed of KEYS) {
+      let v: string = JSON.stringify(seed);
+      for (let depth = 1; depth <= 7; depth++) {
+        const once = scrubSecrets(v);
+        if (scrubSecrets(once) !== once) unstable.push(`depth ${depth}: ${once}`);
+        v = JSON.stringify(v);
+      }
+    }
+    expect(unstable).toEqual([]);
+  });
+
+  it("still leaves non-credential fields in the payload", () => {
+    // The escape runs must not let a pattern swallow the rest of the object.
+    const out = scrubSecrets(JSON.stringify({ password: "hunter2", user: "bob" }));
+    expect(out).not.toContain("hunter2");
+    expect(out).toContain('"user":"bob"');
+  });
+});

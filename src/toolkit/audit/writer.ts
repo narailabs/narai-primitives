@@ -101,7 +101,7 @@ const KEY_PREFIX = "(?:(?:secret|session|access|refresh|client|api|auth|private)
  * accepted only a bare `"` matched none of it — so the escaped *value* branch
  * never got a chance to run and the whole object leaked.
  */
-const KQ = '(?:\\\\?["\'])?';
+const KQ = '(?:\\\\*["\'])?';
 const KEY_START = "(?<![A-Za-z0-9])";
 const KEY_END = "(?![A-Za-z0-9])";
 /**
@@ -149,11 +149,11 @@ const SENSITIVE_DQUOTE_RE = new RegExp(
  * safe direction, and it matches what the line-anchored branch already does.
  */
 const SENSITIVE_AUTH_PARAMS_RE =
-  /(\\?["']?)(\bauthorization\b)(\\?["']?)(\s*[:=]\s*)([A-Za-z]+\s+)?\w+\s*=\s*(?:(\\?["'])[^\r\n]*?\6|[^\s,"'\r\n\]}]+)(?:\s*,\s*\w+\s*=\s*(?:(\\?["'])[^\r\n]*?\7|[^\s,"'\r\n\]}]+))+/gi;
+  /(\\*["']?)(\bauthorization\b)(\\*["']?)(\s*[:=]\s*)([A-Za-z]+\s+)?\w+\s*=\s*(?:(\\*["'])[^\r\n]*?\6|[^\s,"'\r\n\]}]+)(?:\s*,\s*\w+\s*=\s*(?:(\\*["'])[^\r\n]*?\7|[^\s,"'\r\n\]}]+))+/gi;
 const SENSITIVE_AUTH_ESCAPED_RE =
-  /(\\?["']?)(\bauthorization\b)(\\?["']?)(\s*[:=]\s*)((?:bearer|basic)\s+)?\\(["'])((?:bearer|basic)\s+)?(?:\\\\.|(?!\\\6)[^\r\n])*(\\\6)?/gi;
+  /(\\*["']?)(\bauthorization\b)(\\*["']?)(\s*[:=]\s*)((?:bearer|basic)\s+)?\\+(["'])((?:bearer|basic)\s+)?(?:\\\\.|(?!\\+\6)[^\r\n])*(\\+\6)?/gi;
 const SENSITIVE_AUTH_QUOTED_RE =
-  /(?<=["'])(\bauthorization\b)(\\?["']?)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\5)[^\r\n\\])*(\5)|[^\r\n]*)|[^"'\r\n\\]+)/gi;
+  /(?<=["'])(\bauthorization\b)(\\*["']?)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\5)[^\r\n\\])*(\5)|[^\r\n]*)|[^"'\r\n\\]+)/gi;
 const SENSITIVE_AUTH_LINE_RE =
   /(?:^|(?<=[\r\n]))(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?[^\r\n]+/gi;
 /**
@@ -239,7 +239,7 @@ const SENSITIVE_AUTH_INLINE_RE =
  * line, and re-emit a closer only when the source had one.
  */
 const SENSITIVE_ESCAPED_QUOTE_RE = new RegExp(
-  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)\\\\(["'])(?:\\\\\\\\.|(?!\\\\\\3)[^\\r\\n])*(\\\\\\3)?`,
+  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)\\\\+(["'])(?:\\\\\\\\.|(?!\\\\+\\3)[^\\r\\n])*(\\\\+\\3)?`,
   "gi",
 );
 const SENSITIVE_UNQUOTED_RE = new RegExp(
