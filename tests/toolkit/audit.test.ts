@@ -573,7 +573,17 @@ describe("scrubSecrets — credential leak matrix", () => {
   // first run of this matrix found 567 leaking combinations across 1440, from
   // two root causes, where the two reported cases were single cells.
   const SECRET = "hunter2XYZ";
-  const KEYS = ["password", "token", "api_key", "secretAccessKey", "authorization"];
+  const KEYS = [
+    "password",
+    "token",
+    "api_key",
+    "secretAccessKey",
+    // A service-account credential. `KEY_PREFIX` could consume `private`, but
+    // with no `key` word to complete it the value passed through intact.
+    "private_key",
+    "privateKey",
+    "authorization",
+  ];
   const KEY_FORMS: Array<(k: string) => string> = [
     (k) => k,
     (k) => `"${k}"`,
@@ -619,6 +629,13 @@ describe("scrubSecrets — credential leak matrix", () => {
     (s) => `username="alice", nc=00000001, qop=auth, response="${s}", opaque="x"`,
     (s) => `username="alice",response="${s}"`,
     (s) => `username="alice" , response="${s}"`,
+    // Escaped quoting, which is how a Digest header arrives once the error
+    // carrying it has been serialized into another string. The params branch
+    // required a bare quote, so these fell through to the inline branch and
+    // stopped at the first quote with `response` still standing.
+    (s) => `username=\\"alice\\", response=\\"${s}\\"`,
+    (s) => `username=\\"alice\\", algorithm=MD5, response=\\"${s}\\"`,
+    (s) => `username=\\'alice\\', algorithm=MD5, response=\\'${s}\\'`,
   ];
 
   function everyShape(): string[] {
@@ -669,5 +686,25 @@ describe("scrubSecrets — credential leak matrix", () => {
       return scrubSecrets(once) !== once;
     });
     expect(unstable).toEqual([]);
+  });
+});
+
+describe("scrubSecrets — private-key vocabulary", () => {
+  it("redacts compound private-key fields", () => {
+    for (const k of ["private_key", "privateKey", "private-key", "PRIVATE_KEY"]) {
+      for (const q of ["'", '"']) {
+        expect(scrubSecrets(`${k}=${q}hunter2${q}`)).not.toContain("hunter2");
+      }
+      expect(scrubSecrets(`{"${k}":"hunter2"}`)).not.toContain("hunter2");
+    }
+  });
+
+  it("does not redact ordinary *_key columns", () => {
+    // Why the compound is named rather than adding a bare `key` alternative:
+    // these are ordinary SQL and config fields, and redacting them would
+    // destroy the message the log exists to carry.
+    for (const k of ["primary_key", "sort_key", "partition_key", "foreign_key", "key"]) {
+      expect(scrubSecrets(`${k}="not-a-secret"`)).toContain("not-a-secret");
+    }
   });
 });

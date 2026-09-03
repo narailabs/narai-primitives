@@ -52,7 +52,16 @@ export interface AuditWriterOptions {
  * matched mid-string and the greedy unquoted value class swallowed the
  * trailing `"}`, producing unterminated JSON.
  */
-const SENSITIVE_WORDS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth";
+/**
+ * `private[_-]?key` is listed explicitly rather than by adding a bare `key`
+ * alternative. `KEY_PREFIX` can already consume `private`, but with no `key`
+ * word to complete it a service-account credential rendered as
+ * `private_key="…"` (or `privateKey`, as SDKs emit it) passed through intact.
+ * A bare `key` would fix that and also redact `primary_key`, `sort_key` and
+ * every other ordinary `*_key` column, which is why the compound is named.
+ */
+const SENSITIVE_WORDS =
+  "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|private[_-]?key|auth";
 /**
  * Key boundaries. Plain `\b` is wrong here because `_` is a word character,
  * so `\btoken\b` misses `session_token` and `\bsecret\b` /
@@ -140,7 +149,7 @@ const SENSITIVE_DQUOTE_RE = new RegExp(
  * safe direction, and it matches what the line-anchored branch already does.
  */
 const SENSITIVE_AUTH_PARAMS_RE =
-  /(\\?["']?)(\bauthorization\b)(\\?["']?)(\s*[:=]\s*)([A-Za-z]+\s+)?\w+\s*=\s*(?:(["'])[^\r\n]*?\6|[^\s,"'\r\n\]}]+)(?:\s*,\s*\w+\s*=\s*(?:(["'])[^\r\n]*?\7|[^\s,"'\r\n\]}]+))+/gi;
+  /(\\?["']?)(\bauthorization\b)(\\?["']?)(\s*[:=]\s*)([A-Za-z]+\s+)?\w+\s*=\s*(?:(\\?["'])[^\r\n]*?\6|[^\s,"'\r\n\]}]+)(?:\s*,\s*\w+\s*=\s*(?:(\\?["'])[^\r\n]*?\7|[^\s,"'\r\n\]}]+))+/gi;
 const SENSITIVE_AUTH_ESCAPED_RE =
   /(\\?["']?)(\bauthorization\b)(\\?["']?)(\s*[:=]\s*)((?:bearer|basic)\s+)?\\(["'])((?:bearer|basic)\s+)?(?:\\\\.|(?!\\\6)[^\r\n])*(\\\6)?/gi;
 const SENSITIVE_AUTH_QUOTED_RE =
