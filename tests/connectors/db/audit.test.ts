@@ -215,6 +215,64 @@ describe("wiki_db.audit", () => {
   });
 
   // ---------- scrubSqlSecrets unit tests ----------
+
+  it("scrubSqlSecrets redacts compound credential keys", () => {
+    // `\b` treats `_` as a word character, so `\btoken\b` never matched
+    // `session_token` and `\bsecret\b` / `\baccess[_-]?key\b` both missed
+    // `secret_access_key` — the field names `src/connectors/aws/cli.ts`
+    // writes. Measured before the fix: every key below passed the credential
+    // through untouched, while the toolkit's own `scrubSecrets` redacted it.
+    const keys = [
+      "secret_access_key",
+      "session_token",
+      "secretAccessKey",
+      "refresh_token",
+      "client_secret",
+      "access_key",
+      "api_key",
+      "apiKey",
+      "password",
+      "token",
+      "secret",
+    ];
+    const leaked: string[] = [];
+    for (const k of keys) {
+      for (const q of ["'", '"']) {
+        for (const sep of ["=", " = ", ":", ": "]) {
+          const input = `${k}${sep}${q}hunter2${q}`;
+          if (scrubSqlSecrets(input).includes("hunter2")) leaked.push(input);
+        }
+      }
+    }
+    expect(leaked).toEqual([]);
+  });
+
+  it("scrubSqlSecrets still refuses run-on words", () => {
+    // What the `\b` boundary was there to protect. Widening it must not cost
+    // this: a column literally named `authority` or `tokenizer` is ordinary
+    // SQL, and redacting it destroys the query the audit log exists to record.
+    for (const k of ["mytoken", "notpassword", "xsecret", "tokenizer", "authority", "passwords"]) {
+      expect(scrubSqlSecrets(`${k}='hunter2'`)).toContain("hunter2");
+    }
+  });
+
+  it("scrubSqlSecrets leaves the surrounding payload intact and is idempotent", () => {
+    // The unrolled value class must still stop at its own closing quote —
+    // consuming past it would mangle events.jsonl for every downstream reader.
+    const payloads = [
+      `{"a":1,"secret_access_key":"hunter2","user":"bob"}`,
+      `INSERT INTO t VALUES ('x', session_token='hunter2', 'y')`,
+      `{"session_token":"a\\"bhunter2","z":2}`,
+    ];
+    for (const p of payloads) {
+      const once = scrubSqlSecrets(p);
+      expect(once).not.toContain("hunter2");
+      expect(scrubSqlSecrets(once)).toBe(once);
+      expect(once.split("{").length).toBe(p.split("{").length);
+      expect(once.split("}").length).toBe(p.split("}").length);
+    }
+  });
+
   it("scrubSqlSecrets masks single-quoted credential literals", () => {
     expect(
       scrubSqlSecrets("SELECT * FROM u WHERE password = 'p4ss' AND id = 1"),

@@ -107,8 +107,26 @@ export interface LogQueryParams {
 // `=` would mangle `{"password":"x"}` into `{"password"='[REDACTED]'}` and
 // break downstream consumers parsing events.jsonl as JSON-per-line.
 //
-// Leading/trailing `\b` keeps `mytoken='x'` and `notpassword='x'` from being
-// spuriously redacted just because they end in a sensitive keyword.
+// Key boundaries are NOT plain `\b`. `_` is a word character, so `\btoken\b`
+// never matches `session_token` and `\bsecret\b` / `\baccess[_-]?key\b` both
+// miss `secret_access_key` — the exact field names `src/connectors/aws/cli.ts`
+// writes. Measured on this function before the fix: `secret_access_key`,
+// `session_token`, `secretAccessKey`, `refresh_token` and `client_secret` all
+// passed through with the credential intact, while the toolkit's own
+// `scrubSecrets` redacted every one of them. Two copies of the same redaction
+// drifted, and only one got the fix.
+//
+// Requiring a non-alphanumeric neighbour instead admits the `_`/`-` compound
+// forms while still rejecting the run-on words `\b` was there to protect
+// (`mytoken`, `notpassword`, `xsecret`), where the neighbour is a letter.
+// camelCase compounds are handled by the prefix list rather than by loosening
+// the boundary: these patterns are built with `i`, which case-folds `[A-Z]`,
+// so a `(?<=[a-z0-9])(?=[A-Z])` rule degrades to "letter followed by letter"
+// and starts redacting `mytoken` again.
+//
+// This mirrors `src/toolkit/audit/writer.ts`. The two must stay in step, and
+// the fact that they did not is why this bug existed — see the note above
+// `scrubSqlSecrets`.
 //
 // Value classes use `(?:\\.|[^Q\\])*` so `\"` and other escape sequences
 // inside JSON-encoded values are skipped — without this, `"abc\"def"`
@@ -125,12 +143,17 @@ export interface LogQueryParams {
 // `{"message":"authorization: …"}` swallowed the trailing `"}` and
 // produced unterminated JSON.
 const _SENSITIVE_KEYS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth";
+/** Credential-word prefixes, so `secret_access_key` and `secretAccessKey` both reduce to a known prefix plus a known key. */
+const _KEY_PREFIX = "(?:(?:secret|session|access|refresh|client|api|auth|private)[_-]?)?";
+/** A non-alphanumeric neighbour, or the string edge — `\b`'s job without treating `_` as a letter. */
+const _KEY_START = "(?<![A-Za-z0-9])";
+const _KEY_END = "(?![A-Za-z0-9])";
 const _SENSITIVE_LITERAL_SQUOTE_RE = new RegExp(
-  `("?\\b(?:${_SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)'(?:[^'\\\\]|\\\\.)*'`,
+  `("?${_KEY_START}${_KEY_PREFIX}(?:${_SENSITIVE_KEYS})${_KEY_END}"?)(\\s*[:=]\\s*)'[^'\\\\]*(?:\\\\.[^'\\\\]*)*'`,
   "gi",
 );
 const _SENSITIVE_LITERAL_DQUOTE_RE = new RegExp(
-  `("?\\b(?:${_SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)"(?:[^"\\\\]|\\\\.)*"`,
+  `("?${_KEY_START}${_KEY_PREFIX}(?:${_SENSITIVE_KEYS})${_KEY_END}"?)(\\s*[:=]\\s*)"[^"\\\\]*(?:\\\\.[^"\\\\]*)*"`,
   "gi",
 );
 const _SENSITIVE_AUTH_QUOTED_RE =
