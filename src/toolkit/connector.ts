@@ -274,6 +274,18 @@ function collectInputStrings(input: unknown, out: Set<string>, depth = 0): void 
     if (input.length >= MIN_ECHOED_INPUT_LEN) out.add(input);
     return;
   }
+  // Non-string primitives count too. A message interpolating them renders
+  // their string form, so that is what has to be matched — and a credential
+  // is not always a string. A numeric PIN (`{ password: 123456 }`) was
+  // outside this defence entirely: the path need not be sensitive, and
+  // `scrubSecrets` has no `key = value` shape to find in `rejected value
+  // 123456`. Booleans are collected for consistency but the length rule
+  // drops nothing useful there.
+  if (typeof input === "number" || typeof input === "bigint") {
+    const text = String(input);
+    if (text.length >= MIN_ECHOED_INPUT_LEN) out.add(text);
+    return;
+  }
   if (Array.isArray(input)) {
     for (const v of input) collectInputStrings(v, out, depth + 1);
     return;

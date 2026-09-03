@@ -770,3 +770,32 @@ describe("scrubSecrets — serialization depth", () => {
     expect(out).toContain('"user":"bob"');
   });
 });
+
+describe("scrubSecrets — single-parameter auth headers", () => {
+  it("redacts a one-parameter quoted auth value", () => {
+    // The parameter-list branch required `(?:, name=value)+` — at least one
+    // REPEAT — so a header carrying exactly one parameter fell through to the
+    // inline branch and stopped at the first quote. A single auth-param is
+    // valid, and a truncated Digest header can carry only `response=`.
+    //
+    // The reported example (`OAuth oauth_token="…"`) was already clean, but
+    // for an unrelated reason: `oauth_token` matches the credential
+    // vocabulary, so the key/value patterns caught it before the auth family
+    // ran. `response` is not a credential word, which is what exposes the
+    // arity gap.
+    for (const input of [
+      'request failed: Authorization: Digest response="hunter2"',
+      'request failed: Authorization: OAuth oauth_token="hunter2"',
+      'ctx "authorization": Digest response="hunter2"',
+      'Authorization: Digest response="hunter2"',
+    ]) {
+      expect(scrubSecrets(input)).not.toContain("hunter2");
+    }
+  });
+
+  it("still redacts multi-parameter lists after the arity change", () => {
+    expect(
+      scrubSecrets('ctx "authorization": Digest username="alice", response="hunter2"'),
+    ).not.toContain("hunter2");
+  });
+});

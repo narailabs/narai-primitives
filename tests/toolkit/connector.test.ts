@@ -558,6 +558,39 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     }
   });
 
+  it("redacts a numeric credential echoed by a nested issue", async () => {
+    // The echo collector only walked strings, so a numeric PIN was outside
+    // the defence entirely — the parent path is not sensitive and
+    // `scrubSecrets` has no `key = value` shape to find in the prose. A
+    // credential is not always a string.
+    const c = createConnector<{}>({
+      name: "redact-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.object({
+            credentials: z
+              .object({ password: z.number() })
+              .superRefine((v, ctx) => {
+                ctx.addIssue({
+                  code: z.ZodIssueCode.custom,
+                  message: `rejected value ${v.password}`,
+                });
+              }),
+          }),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const env = await c.fetch("login", { credentials: { password: 123456 } });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).toBe("credentials: rejected value [REDACTED]");
+    }
+  });
+
   it("keeps a constant diagnostic that merely contains an input string", async () => {
     // The other end of the same dial, and the reason it stopped being a dial.
     // `filter: "query_logs"` occurs inside the schema's own static message, so
