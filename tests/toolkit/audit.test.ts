@@ -735,6 +735,54 @@ describe("scrubSecrets — private-key vocabulary", () => {
   });
 });
 
+describe("scrubSecrets — PEM private keys", () => {
+  // Every value pattern treats whitespace as a terminator, which is right for
+  // a token and wrong for PEM: the body is newline-separated, so
+  // `private_key=-----BEGIN PRIVATE KEY-----\nMIIE...` redacted the first
+  // token and left the key material standing.
+  const BODY = "MIIEhunter2secret";
+  const pem = (kind: string): string =>
+    `-----BEGIN ${kind}-----\n${BODY}\n-----END ${kind}-----`;
+
+  it("redacts armored key material in every context", () => {
+    const key = pem("PRIVATE KEY");
+    for (const input of [
+      `private_key=${key}`,
+      `private_key="${key}"`,
+      key,
+      pem("RSA PRIVATE KEY"),
+      pem("EC PRIVATE KEY"),
+      `failed to parse: ${key} (bad)`,
+      JSON.stringify({ private_key: key, user: "bob" }),
+      JSON.stringify(JSON.stringify({ private_key: key })),
+    ]) {
+      expect(scrubSecrets(input)).not.toContain(BODY);
+    }
+  });
+
+  it("keeps a certificate, which is published by design", () => {
+    // Redacting one would remove the most useful thing in a TLS diagnostic.
+    const cert = "-----BEGIN CERTIFICATE-----\nMIIEpublicdata\n-----END CERTIFICATE-----";
+    expect(scrubSecrets(cert)).toContain("MIIEpublicdata");
+  });
+
+  it("scans a malformed block in linear time", () => {
+    // An unbounded body ran to the end of the input from every unterminated
+    // `-----BEGIN`, which measured 0.8ms at 10k chars and 12.6ms at 80k.
+    const cost = (n: number): number => {
+      const s = "-----BEGIN PRIVATE KEY-----\n".repeat(Math.floor(n / 28));
+      const t = Date.now();
+      scrubSecrets(s);
+      return Date.now() - t;
+    };
+    cost(20_000);
+    const small = cost(40_000);
+    const large = cost(160_000);
+    // 4x the input; linear predicts ~4x, quadratic ~16x.
+    expect(large).toBeLessThan(Math.max(small, 1) * 8);
+  });
+});
+
 describe("scrubSecrets — serialization depth", () => {
   // Rounds 1-3 of review on this PR each reported the same predicate with one
   // more escaping layer: an escaped value, then an escaped Digest parameter
@@ -788,6 +836,60 @@ describe("scrubSecrets — serialization depth", () => {
       }
     }
     expect(unstable).toEqual([]);
+  });
+
+  it("leaks nothing past the unwrap ceiling", () => {
+    // The first cap stopped decoding and handed the still-escaped remainder to
+    // the escape-counting patterns — restoring the exact ambiguity the unwrap
+    // exists to remove, so 11 layers leaked where 8 did not. Depth beyond the
+    // ceiling now fails closed instead of falling through.
+    //
+    // Depth stops at 16 because each layer roughly doubles the text — the
+    // escape run is re-escaped every time — so this is already ~500x the
+    // original and 64 layers would not fit in memory. That is the same
+    // arithmetic that makes the ceiling unreachable for a real message, which
+    // is why it can afford to fail closed rather than fall through.
+    let v: string = JSON.stringify({ password: 'pre"hunter2' });
+    for (let depth = 1; depth <= 16; depth++) {
+      expect(scrubSecrets(v)).not.toContain("hunter2");
+      v = JSON.stringify(v);
+    }
+  });
+
+  it("fails closed at the unwrap ceiling instead of falling through", () => {
+    // The first cap stopped decoding and handed the still-escaped remainder to
+    // the escape-counting patterns, restoring the exact ambiguity the unwrap
+    // removes — 11 layers leaked where 8 did not.
+    //
+    // The real ceiling cannot be reached from a test: each layer roughly
+    // doubles the text, so 64 would not fit in memory. That is also why it can
+    // afford to fail closed. Passing the limit explicitly makes the branch
+    // reachable, which is the only way to show it is not decorative.
+    //
+    // The residual depth matters. One layer left over still scrubs correctly,
+    // so a test built on that passes with the fail-closed branch removed and
+    // proves nothing. Three or more residual layers is where the escape run
+    // becomes ambiguous — which is the same threshold as the original finding,
+    // eleven layers against a cap of eight.
+    const nest = (n: number): string => {
+      let v: string = JSON.stringify({ password: 'pre"hunter2' });
+      for (let i = 1; i < n; i++) v = JSON.stringify(v);
+      return v;
+    };
+    for (const [total, limit] of [
+      [4, 1],
+      [5, 2],
+      [6, 3],
+      [8, 1],
+    ] as const) {
+      const out = scrubSecrets(nest(total), limit);
+      expect(out).not.toContain("hunter2");
+      expect(out).toContain("REDACTED");
+    }
+    // With room to finish, the payload is scrubbed normally rather than blanked.
+    const full = scrubSecrets(nest(3), 8);
+    expect(full).not.toContain("hunter2");
+    expect(JSON.parse(JSON.parse(JSON.parse(full)))).toMatchObject({});
   });
 
   it("still leaves non-credential fields in the payload", () => {

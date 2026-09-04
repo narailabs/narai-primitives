@@ -293,6 +293,38 @@ const SENSITIVE_AUTH_INLINE_RE =
  * patterns use holds here too: consume to the terminator, fall back to end of
  * line, and re-emit a closer only when the source had one.
  */
+/**
+ * PEM armor, redacted as one unit wherever it appears.
+ *
+ * Every value pattern in this file treats whitespace as a value terminator,
+ * which is correct for a token and wrong for a PEM block: the body is
+ * newline-separated, so `private_key=-----BEGIN PRIVATE KEY-----\nMIIE...`
+ * redacted the first token and left the key material standing. That became
+ * reachable the moment the `private_key` vocabulary was added.
+ *
+ * Armor does not need a terminator guessed for it — it carries its own. The
+ * match runs from `-----BEGIN` to the first `-----END ...-----`, so it is
+ * bounded by the document rather than by the end of the line, and it needs no
+ * field name in front of it: a PEM private key echoed on its own is a
+ * credential whether or not something labelled it.
+ *
+ * Scoped to key material. A CERTIFICATE is published by design, and redacting
+ * one would remove the most useful thing in a TLS diagnostic.
+ *
+ * Runs FIRST so the value patterns never see the inside of a block.
+ *
+ * The body is base64 and whitespace, and bounded. An unconstrained `[\\s\\S]*?`
+ * was measurably superlinear — a message of repeated unterminated `-----BEGIN`
+ * headers went 0.8ms at 10k chars to 13.4ms at 80k, because each header
+ * rescans to the end looking for a terminator that is not there. Restricting
+ * the class makes a non-PEM continuation fail at the first character (`-` is
+ * not base64), and the length cap covers the rest: 8192 base64 characters is
+ * comfortably above a 4096-bit key. Round 7 made linear scan cost a standing
+ * requirement for this file.
+ */
+const PEM_BLOCK_RE =
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[A-Za-z0-9+/=\s]{0,8192}?-----END [A-Z0-9 ]*PRIVATE KEY-----/g;
+
 const SENSITIVE_ESCAPED_QUOTE_RE = new RegExp(
   `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)\\\\+(["'])(?:\\\\\\\\.|(?!\\\\+\\3)[^\\r\\n])*(\\\\+\\3)?`,
   "gi",
@@ -383,12 +415,20 @@ export function mentionsSensitiveField(text: string): boolean {
 }
 
 /**
- * Maximum JSON-string layers `scrubSecrets` will peel. Each layer strictly
- * shrinks the input (a serialized string is always longer than its content),
- * so recursion terminates on its own; the cap only bounds the work a
- * pathological input can buy on an error path that must stay cheap.
+ * Bound on JSON-string layers `scrubSecrets` will peel.
+ *
+ * Each layer strictly shrinks the input, so the loop terminates without a cap
+ * — and the cap that was here did harm rather than good: past it the still
+ * escaped text was handed to the very patterns whose ambiguity the unwrap
+ * exists to avoid, so eleven layers leaked where eight did not. A defensive
+ * limit that silently restores the failure mode is not a defence.
+ *
+ * The bound remains only as a work ceiling, and it is now unreachable in
+ * practice: serializing doubles the escape run, so depth grows as log2 of the
+ * length and a 1 MB message tops out around 20. Reaching 64 means the input is
+ * adversarial, so it fails closed rather than falling through.
  */
-const MAX_UNWRAP_DEPTH = 8;
+const MAX_UNWRAP_DEPTH = 64;
 
 /**
  * Peel JSON-string layers before matching, and re-serialize afterwards.
@@ -420,14 +460,42 @@ function unwrapJsonString(text: string): string | null {
   return typeof parsed === "string" ? parsed : null;
 }
 
-export function scrubSecrets(text: string, _depth = 0): string {
-  if (_depth < MAX_UNWRAP_DEPTH) {
-    const inner = unwrapJsonString(text);
-    if (inner !== null) {
-      return JSON.stringify(scrubSecrets(inner, _depth + 1));
-    }
+/**
+ * @param maxUnwrapDepth How many JSON-string layers to peel before failing
+ * closed. The default is unreachable for a real message (see
+ * {@link MAX_UNWRAP_DEPTH}); it is a parameter so the ceiling behaviour is
+ * reachable from a test, and so a caller on a memory-constrained path can
+ * trade diagnostic detail for a lower bound.
+ */
+export function scrubSecrets(
+  text: string,
+  maxUnwrapDepth: number = MAX_UNWRAP_DEPTH,
+): string {
+  // Peel iteratively rather than recursively: depth is caller-controlled, and
+  // the recursion this replaces put it on the JavaScript call stack.
+  let payload = text;
+  let depth = 0;
+  while (depth < maxUnwrapDepth) {
+    const inner = unwrapJsonString(payload);
+    if (inner === null) break;
+    payload = inner;
+    depth++;
   }
+  // Still nested at the ceiling. Redact rather than hand the escaped remainder
+  // to the patterns below, which is what made the previous cap a leak.
+  const scrubbed =
+    depth === maxUnwrapDepth && unwrapJsonString(payload) !== null
+      ? "[REDACTED]"
+      : scrubOneLayer(payload);
+  let out = scrubbed;
+  for (let i = 0; i < depth; i++) out = JSON.stringify(out);
+  return out;
+}
+
+/** The pattern chain itself, applied to one fully-decoded layer. */
+function scrubOneLayer(text: string): string {
   return text
+    .replace(PEM_BLOCK_RE, "[REDACTED]")
     .replace(
       SENSITIVE_SQUOTE_RE,
       (_m, key: string, sep: string, close: string | undefined) =>

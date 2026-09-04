@@ -265,6 +265,41 @@ const WHOLE_TOKEN_MATCH_BELOW_LEN = 3;
 const MAX_INPUT_NODES = 50_000;
 
 /**
+ * Bound on (issue x candidate) comparisons while formatting a validation
+ * error. Generous enough that no honest schema reaches it — the schemas here
+ * emit a handful of issues — and low enough that a caller cannot buy
+ * `MAX_INPUT_NODES` squared work on a synchronous error path.
+ */
+const MAX_REDACTION_COMPARISONS = 200_000;
+
+/**
+ * Add a redaction candidate, plus the normalizations a schema is likely to
+ * have applied before the message was written.
+ *
+ * The empty string is refused. It cannot expose anything, and in the
+ * whole-token branch it compiles to a zero-length pattern that matches at
+ * every boundary — one `""` in params turned `Invalid option: use --filter.`
+ * into `Invalid option:[REDACTED] use [REDACTED]-[REDACTED]-filter.`, which
+ * corrupts every diagnostic the connector emits.
+ *
+ * The normalizations exist because a `superRefine` runs on the value AFTER any
+ * `transform` in the chain, so the string it names is not always the string in
+ * `params`: `z.string().transform((v) => v.trim())` given `"  hunter2  "`
+ * reports `rejected value hunter2`, which matched nothing. Trim and case cover
+ * the transforms schemas here actually use. See the limits noted on
+ * `collectInputStrings` — an arbitrary transform is still not derivable.
+ */
+function addCandidate(out: Set<string>, value: string): void {
+  if (value === "") return;
+  out.add(value);
+  const trimmed = value.trim();
+  if (trimmed !== "" && trimmed !== value) out.add(trimmed);
+  for (const variant of [trimmed.toLowerCase(), trimmed.toUpperCase()]) {
+    if (variant !== "" && variant !== value) out.add(variant);
+  }
+}
+
+/**
  * Every string appearing as a value anywhere in the action's params.
  *
  * This is the signal that actually distinguishes a dangerous issue message
@@ -301,7 +336,7 @@ function collectInputStrings(input: unknown, out: Set<string>): boolean {
     if (nodes++ > MAX_INPUT_NODES) return false;
     const cur = stack.pop();
     if (typeof cur === "string") {
-      out.add(cur);
+      addCandidate(out, cur);
       continue;
     }
     // Non-string primitives count too. A message interpolating them renders
@@ -311,7 +346,7 @@ function collectInputStrings(input: unknown, out: Set<string>): boolean {
     // `scrubSecrets` has no `key = value` shape to find in `rejected value
     // 123456`.
     if (typeof cur === "number" || typeof cur === "bigint") {
-      out.add(String(cur));
+      addCandidate(out, String(cur));
       continue;
     }
     if (cur === null || typeof cur !== "object") continue;
@@ -367,9 +402,22 @@ function defaultErrorMap(
     // replacing the short one first would leave the longer one's remainder
     // standing.
     const byLengthDesc = [...inputStrings].sort((a, b) => b.length - a.length);
+    // The node bound limits the WALK, not the formatting that follows it, and
+    // the two are independent in the same way depth and node count were. One
+    // issue per rejected array element against one candidate per element is a
+    // cross-product: 8k elements measured 134ms against 35ms for 4k, which is
+    // the quadratic signature, and the ceiling is the node bound squared.
+    // Budgeting the comparisons makes the existing bound actually bound the
+    // error path; exhausting the budget fails closed, like a partial walk.
+    let comparisons = 0;
+    let budgetExhausted = false;
     const redactEchoedInput = (message: string): string => {
       let out = message;
       for (const value of byLengthDesc) {
+        if (comparisons++ > MAX_REDACTION_COMPARISONS) {
+          budgetExhausted = true;
+          return "[REDACTED]";
+        }
         if (value.length >= WHOLE_TOKEN_MATCH_BELOW_LEN) {
           if (out.includes(value)) out = out.split(value).join("[REDACTED]");
           continue;
@@ -422,6 +470,7 @@ function defaultErrorMap(
         // failed.
         const drop =
           !collected ||
+          budgetExhausted ||
           isSensitiveFieldPath(path) ||
           (joined === "" && mentionsSensitiveField(i.message));
         return `${path}: ${drop ? "[REDACTED]" : redactEchoedInput(i.message)}`;

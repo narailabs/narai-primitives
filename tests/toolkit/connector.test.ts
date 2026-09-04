@@ -524,6 +524,114 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     }
   });
 
+  it("leaves diagnostics intact when a parameter is the empty string", async () => {
+    // `""` cannot expose anything, and in the whole-token branch it compiled
+    // to a zero-length pattern matching at every boundary — one empty
+    // parameter turned `Invalid option: use --filter.` into
+    // `Invalid option:[REDACTED] use [REDACTED]-[REDACTED]-filter.[REDACTED]`.
+    const c = createConnector<{}>({
+      name: "empty-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.object({ q: z.string() }).superRefine((_v, ctx) => {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: "Invalid option: use --filter.",
+            });
+          }),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const env = await c.fetch("login", { q: "" });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).toBe("<root>: Invalid option: use --filter.");
+    }
+  });
+
+  it("redacts a credential a transform rewrote before the refinement saw it", async () => {
+    // `superRefine` runs after `transform`, so the string the message names is
+    // not the string in params. At a non-sensitive path nothing else caught it.
+    for (const transform of [
+      (v: string) => v.trim(),
+      (v: string) => v.toUpperCase(),
+      (v: string) => v.trim().slice(0, 7),
+    ]) {
+      const c = createConnector<{}>({
+        name: "transform-test",
+        credentials: async () => ({}),
+        sdk: async () => ({}),
+        actions: {
+          login: {
+            params: z.object({
+              profile: z.object({
+                nickname: z
+                  .string()
+                  .transform(transform)
+                  .superRefine((v, ctx) => {
+                    ctx.addIssue({
+                      code: z.ZodIssueCode.custom,
+                      message: `rejected value ${v}`,
+                    });
+                  }),
+              }),
+            }),
+            classify: { kind: "read" },
+            handler: async () => ({}),
+          },
+        },
+      });
+      const env = await c.fetch("login", { profile: { nickname: "  hunter2  " } });
+      expect(env.status).toBe("error");
+      if (env.status === "error") {
+        expect(env.message.toLowerCase()).not.toContain("hunter2");
+      }
+    }
+  });
+
+  it("formats a large validation failure in linear time", async () => {
+    // One issue per rejected element against one candidate per element is a
+    // cross-product, and the node bound did not reach it: 8k elements measured
+    // 134ms against 35ms for 4k. Doubling the input must not quadruple the
+    // time. Ratios rather than absolute times, so this is not a CI-speed test.
+    const time = async (n: number): Promise<number> => {
+      const ids = Array.from({ length: n }, (_, i) => `value-number-${i}-abcdefghijklmnop`);
+      const c = createConnector<{}>({
+        name: "wide-test",
+        credentials: async () => ({}),
+        sdk: async () => ({}),
+        actions: {
+          login: {
+            params: z.object({ ids: z.array(z.string()) }).superRefine((v, ctx) => {
+              for (let i = 0; i < v.ids.length; i++) {
+                ctx.addIssue({
+                  code: z.ZodIssueCode.custom,
+                  path: ["ids", i],
+                  message: `bad element ${i}`,
+                });
+              }
+            }),
+            classify: { kind: "read" },
+            handler: async () => ({}),
+          },
+        },
+      });
+      const t = Date.now();
+      await c.fetch("login", { ids });
+      return Date.now() - t;
+    };
+    await time(1000); // warm up the JIT so the ratio measures the algorithm
+    const small = await time(2000);
+    const large = await time(8000);
+    // 4x the input. Linear predicts ~4x, quadratic ~16x. A threshold of 8
+    // separates them with room for noise; the pre-fix code measured ~13x.
+    expect(large).toBeLessThan(Math.max(small, 1) * 8);
+  }, 120_000);
+
   it("redacts a one-character echoed credential", async () => {
     // The length rule used to EXCLUDE short values, so a one-character
     // credential at a non-sensitive path was neither dropped by the path
