@@ -760,6 +760,47 @@ describe("scrubSecrets — PEM private keys", () => {
     }
   });
 
+  it("redacts an unterminated block, which is the parser-error shape", () => {
+    // A truncated key is what an error echoing incomplete material carries,
+    // and the terminated pattern cannot match it — so it fell through to the
+    // field rules, which redacted `-----BEGIN` as the value and left the body
+    // on the next line. Four shapes leaked, not the one reported.
+    const B = "MIIEhunter2AAAAAAAAAAAAAAAAAAAA";
+    for (const input of [
+      `private_key=-----BEGIN PRIVATE KEY-----\n${B}`,
+      `-----BEGIN PRIVATE KEY-----\n${B}`,
+      `-----BEGIN RSA PRIVATE KEY-----\n${B}\n${B}`,
+      `parse failed: -----BEGIN PRIVATE KEY-----\n${B}`,
+      JSON.stringify({ private_key: `-----BEGIN PRIVATE KEY-----\n${B}` }),
+    ]) {
+      expect(scrubSecrets(input)).not.toContain(B);
+    }
+  });
+
+  it("does not eat the message around an unterminated block", () => {
+    // Without a terminator there is nothing to stop at, so the body is matched
+    // as base64 LINES rather than base64 characters. Prose is mostly letters:
+    // a character class would run on and delete the diagnostic.
+    const B = "MIIEhunter2AAAAAAAAAAAAAAAAAAAA";
+    const withProse = scrubSecrets(
+      `-----BEGIN PRIVATE KEY-----\n${B}\nthe request then failed at line 12`,
+    );
+    expect(withProse).not.toContain(B);
+    expect(withProse).toContain("the request then failed at line 12");
+
+    // A header with no body at all must not consume the sentence after it.
+    expect(scrubSecrets("-----BEGIN PRIVATE KEY-----\nplease supply a key")).toContain(
+      "please supply a key",
+    );
+
+    // And the surrounding JSON payload survives.
+    const json = scrubSecrets(
+      JSON.stringify({ private_key: `-----BEGIN PRIVATE KEY-----\n${B}`, user: "bob", n: 7 }),
+    );
+    expect(json).not.toContain(B);
+    expect(JSON.parse(json)).toMatchObject({ user: "bob", n: 7 });
+  });
+
   it("keeps a certificate, which is published by design", () => {
     // Redacting one would remove the most useful thing in a TLS diagnostic.
     const cert = "-----BEGIN CERTIFICATE-----\nMIIEpublicdata\n-----END CERTIFICATE-----";

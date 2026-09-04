@@ -352,11 +352,23 @@ function collectInputStrings(input: unknown, out: Set<string>): boolean {
     if (cur === null || typeof cur !== "object") continue;
     if (seen.has(cur)) continue;
     seen.add(cur);
+    // Budget the ENQUEUE, not just the pop. Checking only on the way out let
+    // a container push its whole contents first, so `new Array(1_000_000_000)`
+    // — cheap to construct, and reachable through a programmatic `fetch()` —
+    // grew the work stack to a billion entries before the bound was consulted
+    // again. Time was never the tell: 8M slots cost 68ms and 311MB, so the
+    // process died of memory while looking fast. The bound now holds for both.
     if (Array.isArray(cur)) {
-      for (const v of cur) stack.push(v);
+      for (const v of cur) {
+        if (nodes++ > MAX_INPUT_NODES) return false;
+        stack.push(v);
+      }
       continue;
     }
-    for (const v of Object.values(cur as Record<string, unknown>)) stack.push(v);
+    for (const v of Object.values(cur as Record<string, unknown>)) {
+      if (nodes++ > MAX_INPUT_NODES) return false;
+      stack.push(v);
+    }
   }
   return true;
 }

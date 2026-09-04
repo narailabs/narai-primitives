@@ -325,6 +325,31 @@ const SENSITIVE_AUTH_INLINE_RE =
 const PEM_BLOCK_RE =
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[A-Za-z0-9+/=\s]{0,8192}?-----END [A-Z0-9 ]*PRIVATE KEY-----/g;
 
+/**
+ * A PEM block whose `-----END` marker never arrived.
+ *
+ * A parser error echoing incomplete key material is the ordinary case, and
+ * {@link PEM_BLOCK_RE} requires the terminator, so a truncated block fell
+ * through to the field patterns — which redacted `-----BEGIN` as the value and
+ * left the body on the following lines. Four shapes leaked: keyed, bare, other
+ * key types, and mid-prose.
+ *
+ * A `-----BEGIN … PRIVATE KEY-----` header is unambiguous on its own, so the
+ * absence of a terminator is a reason to redact more, not less.
+ *
+ * The body is matched as base64 LINES rather than as base64 characters. Prose
+ * is mostly letters, so a character class would run straight on into the rest
+ * of the message and delete the diagnostic around the key — over-matching is
+ * safe for a value and not for the message carrying it. Requiring 16+
+ * unbroken base64 characters per line admits a real PEM body (64 to a line)
+ * and stops at ordinary words.
+ *
+ * Runs immediately after {@link PEM_BLOCK_RE}, so it only ever sees blocks
+ * that genuinely had no terminator.
+ */
+const PEM_TRUNCATED_RE =
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[ \t]*[\r\n]+[A-Za-z0-9+/=]{16,}){0,256}[ \t]*[\r\n]*/g;
+
 const SENSITIVE_ESCAPED_QUOTE_RE = new RegExp(
   `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)\\\\+(["'])(?:\\\\\\\\.|(?!\\\\+\\3)[^\\r\\n])*(\\\\+\\3)?`,
   "gi",
@@ -496,6 +521,7 @@ export function scrubSecrets(
 function scrubOneLayer(text: string): string {
   return text
     .replace(PEM_BLOCK_RE, "[REDACTED]")
+    .replace(PEM_TRUNCATED_RE, "[REDACTED]")
     .replace(
       SENSITIVE_SQUOTE_RE,
       (_m, key: string, sep: string, close: string | undefined) =>

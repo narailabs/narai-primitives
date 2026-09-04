@@ -524,6 +524,40 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     }
   });
 
+  it("holds the node bound while enqueuing, not only while popping", async () => {
+    // The bound was checked on the way out, so a container pushed its whole
+    // contents first: `new Array(100_000_000)` is cheap to construct and
+    // reachable through a programmatic `fetch()`, and it grew the work stack
+    // to 100M entries before the bound was consulted again. Time was never the
+    // tell — 8M slots cost 68ms while taking 311MB — so this asserts the shape
+    // of the cost, not a duration.
+    const c = createConnector<{}>({
+      name: "wide-array-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.any().superRefine((_v, ctx) => {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, message: "rejected" });
+          }),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const cost = async (n: number): Promise<number> => {
+      const before = process.memoryUsage().heapUsed;
+      const env = await c.fetch("login", new Array(n));
+      expect(env.status).toBe("error");
+      return process.memoryUsage().heapUsed - before;
+    };
+    await cost(1_000_000);
+    const wide = await cost(100_000_000);
+    // 100x the slots. Unbounded enqueue allocates one stack entry each, which
+    // is hundreds of MB; a held bound stops at MAX_INPUT_NODES regardless.
+    expect(wide).toBeLessThan(200_000_000);
+  }, 120_000);
+
   it("leaves diagnostics intact when a parameter is the empty string", async () => {
     // `""` cannot expose anything, and in the whole-token branch it compiled
     // to a zero-length pattern matching at every boundary — one empty
