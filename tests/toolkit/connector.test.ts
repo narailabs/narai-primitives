@@ -524,6 +524,164 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     }
   });
 
+  it("redacts a one-character echoed credential", async () => {
+    // The length rule used to EXCLUDE short values, so a one-character
+    // credential at a non-sensitive path was neither dropped by the path
+    // check nor found by `scrubSecrets`, and reached the envelope intact.
+    const c = createConnector<{}>({
+      name: "one-char-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.object({
+            credentials: z
+              .object({ password: z.string() })
+              .superRefine((v, ctx) => {
+                ctx.addIssue({
+                  code: z.ZodIssueCode.custom,
+                  message: `rejected value ${v.password}`,
+                });
+              }),
+          }),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const env = await c.fetch("login", { credentials: { password: "x" } });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).toBe("credentials: rejected value [REDACTED]");
+    }
+  });
+
+  it("does not shred a diagnostic that merely contains a short input", async () => {
+    // The other half of the same rule, and the reason the short value cannot
+    // simply join the substring pass. With `name: "a"` in params, redacting
+    // every "a" would render `Invalid parameter supplied` unreadable. A short
+    // value counts only where it stands as a whole token.
+    const c = createConnector<{}>({
+      name: "short-noise-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z
+            .object({ name: z.string() })
+            .superRefine((_v, ctx) => {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: "Invalid parameter supplied",
+              });
+            }),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const env = await c.fetch("login", { name: "a" });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).toBe("<root>: Invalid parameter supplied");
+    }
+  });
+
+  it("redacts a punctuation-only echoed value at a token boundary", async () => {
+    // `\\b` cannot anchor a punctuation-only value, which is why the boundary
+    // is expressed as non-word neighbours instead.
+    const c = createConnector<{}>({
+      name: "punct-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.object({
+            credentials: z
+              .object({ password: z.string() })
+              .superRefine((v, ctx) => {
+                ctx.addIssue({
+                  code: z.ZodIssueCode.custom,
+                  message: `rejected value ${v.password} here`,
+                });
+              }),
+          }),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const env = await c.fetch("login", { credentials: { password: "-" } });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).toBe("credentials: rejected value [REDACTED] here");
+    }
+  });
+
+  it("survives a deeply nested params tree without exhausting the stack", async () => {
+    // The node bound limits total work, not nesting, and the two are
+    // independent: a few thousand nested arrays blew the call stack long
+    // before 50k nodes were visited, turning a validation failure into a
+    // RangeError escaping as a crash rather than an error envelope.
+    let deep: unknown = "hunter2";
+    for (let i = 0; i < 20_000; i++) deep = [deep];
+    const c = createConnector<{}>({
+      name: "deep-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.any().superRefine((_v, ctx) => {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: "rejected value hunter2",
+            });
+          }),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const env = await c.fetch("login", deep);
+    // The point is that this returns an envelope at all rather than throwing.
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.error_code).toBe("VALIDATION_ERROR");
+      expect(env.message).not.toContain("hunter2");
+    }
+  });
+
+  it("fails closed when the input walk hits its node bound", async () => {
+    // Past the bound the collected set is partial, and a partial set is
+    // indistinguishable from a complete one — so redacting against it would
+    // report success while leaking. The message is dropped; the path stays.
+    const wide: Record<string, unknown> = { password: "hunter2" };
+    for (let i = 0; i < 60_000; i++) wide[`f${i}`] = i;
+    const c = createConnector<{}>({
+      name: "bound-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.any().superRefine((_v, ctx) => {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: "rejected value hunter2",
+            });
+          }),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const env = await c.fetch("login", wide);
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("hunter2");
+      expect(env.message).toContain("[REDACTED]");
+    }
+  });
+
   it("redacts a two-character echoed credential", async () => {
     // The old rule ignored input strings under three characters, on the
     // assumption that something that short is not a credential. It is not a

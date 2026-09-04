@@ -240,21 +240,29 @@ function isZodErrorLike(
 }
 
 /**
- * Minimum length of an input string before it is redacted out of a message.
+ * Below this length, an echoed input is redacted only where it stands as a
+ * whole token, not as a substring.
  *
- * This was 3 while an echo dropped the WHOLE message, and that made the number
- * a dial with a bad value at both ends: too high and a two-character
- * credential survived, too low and any message containing a common short input
- * was blanked. Review pushed it in both directions in the same round, which is
- * what a mistuned threshold never does and a wrong mechanism always does.
+ * This number was a cutoff that EXCLUDED short values, and review was right
+ * that excluding them leaks: a one-character credential is still a
+ * credential. But including them under the same substring rule is worse than
+ * the leak — with `{ name: "a" }` in params, redacting every "a" turns
+ * `Invalid parameter` into `Inv[REDACTED]lid p[REDACTED]r[REDACTED]meter` and
+ * destroys every diagnostic in the connector.
  *
- * Now that an echo is redacted IN PLACE, being over-inclusive costs one
- * substring instead of the entire diagnostic, so the number can drop to the
- * point where it only excludes what is genuinely noise. A single character
- * collides constantly ("-", "a") and is not a credential in any realistic
- * sense; two characters is the shortest thing worth protecting.
+ * Both failures come from one substring test doing two jobs. A long value is
+ * unambiguous wherever it occurs; a short one is only meaningful when it is
+ * the whole word. So the length now selects the MATCHING RULE rather than
+ * deciding inclusion, and nothing is excluded. `rejected value x` still
+ * redacts, `Invalid parameter` still reads.
  */
-const MIN_ECHOED_INPUT_LEN = 2;
+const WHOLE_TOKEN_MATCH_BELOW_LEN = 3;
+
+/**
+ * Bound on nodes visited while collecting input strings. Params are caller
+ * supplied, so a pathological structure must cost bounded time.
+ */
+const MAX_INPUT_NODES = 50_000;
 
 /**
  * Every string appearing as a value anywhere in the action's params.
@@ -272,43 +280,55 @@ const MIN_ECHOED_INPUT_LEN = 2;
  * A `seen` set stops a cycle for the reason the cap was guessing at, and lets
  * every reachable value be collected.
  *
- * `nodes` bounds the work rather than the shape. Params are caller-supplied, so
- * a pathological structure should cost bounded time — but hitting that ceiling
- * is a size problem, not a nesting problem, and it takes 50k nodes to reach.
+ * Traversal is an explicit stack, not recursion. The node bound limits total
+ * work but not nesting, and the two are independent: a few thousand nested
+ * arrays exhaust the JavaScript call stack long before 50k nodes are visited,
+ * which turned an ordinary validation failure into a `RangeError` escaping as
+ * a crash instead of an error envelope. Depth now costs heap, which the same
+ * bound already covers.
+ *
+ * Returns whether the walk COMPLETED. Hitting the bound means the set is
+ * partial, and a partial set is indistinguishable from a complete one to
+ * every caller — which is precisely the silence the depth cap was removed for.
+ * The caller fails closed on `false` rather than redacting against a set that
+ * may be missing the credential.
  */
-function collectInputStrings(
-  input: unknown,
-  out: Set<string>,
-  seen: Set<object> = new Set(),
-  nodes = { n: 0 },
-): void {
-  if (nodes.n++ > 50_000) return;
-  if (typeof input === "string") {
-    if (input.length >= MIN_ECHOED_INPUT_LEN) out.add(input);
-    return;
+function collectInputStrings(input: unknown, out: Set<string>): boolean {
+  const seen = new Set<object>();
+  const stack: unknown[] = [input];
+  let nodes = 0;
+  while (stack.length > 0) {
+    if (nodes++ > MAX_INPUT_NODES) return false;
+    const cur = stack.pop();
+    if (typeof cur === "string") {
+      out.add(cur);
+      continue;
+    }
+    // Non-string primitives count too. A message interpolating them renders
+    // their string form, so that is what has to be matched — and a credential
+    // is not always a string. A numeric PIN (`{ password: 123456 }`) was
+    // outside this defence entirely: the path need not be sensitive, and
+    // `scrubSecrets` has no `key = value` shape to find in `rejected value
+    // 123456`.
+    if (typeof cur === "number" || typeof cur === "bigint") {
+      out.add(String(cur));
+      continue;
+    }
+    if (cur === null || typeof cur !== "object") continue;
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+    if (Array.isArray(cur)) {
+      for (const v of cur) stack.push(v);
+      continue;
+    }
+    for (const v of Object.values(cur as Record<string, unknown>)) stack.push(v);
   }
-  // Non-string primitives count too. A message interpolating them renders
-  // their string form, so that is what has to be matched — and a credential
-  // is not always a string. A numeric PIN (`{ password: 123456 }`) was
-  // outside this defence entirely: the path need not be sensitive, and
-  // `scrubSecrets` has no `key = value` shape to find in `rejected value
-  // 123456`. Booleans are collected for consistency but the length rule
-  // drops nothing useful there.
-  if (typeof input === "number" || typeof input === "bigint") {
-    const text = String(input);
-    if (text.length >= MIN_ECHOED_INPUT_LEN) out.add(text);
-    return;
-  }
-  if (input === null || typeof input !== "object") return;
-  if (seen.has(input)) return;
-  seen.add(input);
-  if (Array.isArray(input)) {
-    for (const v of input) collectInputStrings(v, out, seen, nodes);
-    return;
-  }
-  for (const v of Object.values(input as Record<string, unknown>)) {
-    collectInputStrings(v, out, seen, nodes);
-  }
+  return true;
+}
+
+/** Escape a literal for embedding in a RegExp. */
+function escapeRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function defaultErrorMap(
@@ -326,7 +346,7 @@ function defaultErrorMap(
   // of module identity.
   if (isZodErrorLike(err)) {
     const inputStrings = new Set<string>();
-    collectInputStrings(params, inputStrings);
+    const collected = collectInputStrings(params, inputStrings);
     // Replace what the caller passed in, in place, rather than deciding
     // whether to drop the message around it.
     //
@@ -350,7 +370,18 @@ function defaultErrorMap(
     const redactEchoedInput = (message: string): string => {
       let out = message;
       for (const value of byLengthDesc) {
-        if (out.includes(value)) out = out.split(value).join("[REDACTED]");
+        if (value.length >= WHOLE_TOKEN_MATCH_BELOW_LEN) {
+          if (out.includes(value)) out = out.split(value).join("[REDACTED]");
+          continue;
+        }
+        // A short value only counts where it is the whole token. Anchored on
+        // non-word neighbours rather than `\\b`, so a punctuation-only value
+        // (`-`, `.`) — which `\\b` cannot anchor at all — is still matched.
+        const re = new RegExp(
+          `(^|[^A-Za-z0-9_])${escapeRegExp(value)}(?=[^A-Za-z0-9_]|$)`,
+          "g",
+        );
+        out = out.replace(re, (_m, lead: string) => `${lead}[REDACTED]`);
       }
       return out;
     };
@@ -384,7 +415,13 @@ function defaultErrorMap(
         // a message naming a credential whose value did not come through
         // params — read from the environment, say — where there is nothing to
         // match against.
+        // `!collected` fails closed. The walk stopped early, so `inputStrings`
+        // may be missing the very value this message echoes, and redacting
+        // against a partial set would report success while leaking. A dropped
+        // message keeps the path, so the caller still learns which field
+        // failed.
         const drop =
+          !collected ||
           isSensitiveFieldPath(path) ||
           (joined === "" && mentionsSensitiveField(i.message));
         return `${path}: ${drop ? "[REDACTED]" : redactEchoedInput(i.message)}`;
