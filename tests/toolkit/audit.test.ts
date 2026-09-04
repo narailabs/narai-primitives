@@ -606,6 +606,13 @@ describe("scrubSecrets — credential leak matrix", () => {
     // this axis after the first matrix shipped: the escaped branch treated the
     // inner quote as its terminator and returned the tail of the credential.
     (v) => `\\"pre\\\\\\"${v}\\"`,
+    // No opening delimiter at all, and a quote part-way through the value.
+    // The unquoted branch excluded the quote from its trailing class, so it
+    // consumed `pre` and stopped, emitting `password="[REDACTED]""hunter2`
+    // with the tail intact. An internal quote cannot end a value that never
+    // opened one, so the branch has to run to a real delimiter instead.
+    (v) => `pre"${v}`,
+    (v) => `pre'${v}`,
   ];
   const CONTEXTS: Array<(b: string) => string> = [
     (b) => b,
@@ -646,6 +653,15 @@ describe("scrubSecrets — credential leak matrix", () => {
     // Other token characters the old `\w+` rejected.
     (s) => `user-name="alice", x.y=1, response="${s}"`,
     (s) => `username="alice", algorithm=MD5-sess, response="${s}"`,
+    // A quoted-pair INSIDE a parameter value, rather than escaped delimiters
+    // around it. The params branch matched each value lazily up to the next
+    // bare quote, so the `\"` in a non-final parameter ended that parameter
+    // early, the list walk stopped there, and every parameter after it —
+    // `response` included — stayed in the message.
+    (s) => `username="alice", opaque="a\\"b", response="${s}"`,
+    (s) => `username="a\\"b", response="${s}"`,
+    (s) => `username="alice", opaque="a\\"b", nc=1, response="${s}"`,
+    (s) => `username="alice", opaque="tail\\"", response="${s}"`,
   ];
 
   function everyShape(): string[] {
@@ -736,6 +752,17 @@ describe("scrubSecrets — serialization depth", () => {
     { authorization: "Bearer hunter2", z: 1 },
     { secretAccessKey: "hunter2" },
     { private_key: "hunter2" },
+    // Depth and an embedded quote are independent axes, and each was covered
+    // alone: the shapes above walk depth with clean values, and the matrix
+    // walks embedded quotes at depth 1. Their cross-product was the gap. Past
+    // two layers the backslash run in front of the value's own quote is
+    // indistinguishable from the run in front of the terminator, so matching
+    // stopped early and returned `"[REDACTED]"hunter2`.
+    { password: 'pre"hunter2', user: "bob" },
+    { api_key: "pre'hunter2", z: 1 },
+    { authorization: 'Bearer pre"hunter2', z: 1 },
+    { password: 'hunter2"', user: "bob" },
+    { password: '"hunter2', user: "bob" },
   ];
 
   it("leaks nothing at any serialization depth up to 7", () => {
@@ -768,6 +795,39 @@ describe("scrubSecrets — serialization depth", () => {
     const out = scrubSecrets(JSON.stringify({ password: "hunter2", user: "bob" }));
     expect(out).not.toContain("hunter2");
     expect(out).toContain('"user":"bob"');
+  });
+
+  it("preserves the payload through the JSON unwrap, at every depth", () => {
+    // Peeling a serialization layer and restoring it must round-trip: the
+    // decoded text is scrubbed and re-serialized, so a caller re-parsing the
+    // result has to get an object back with its non-credential fields whole.
+    for (let depth = 1; depth <= 5; depth++) {
+      let v: string = JSON.stringify({ password: 'pre"hunter2', user: "bob", n: 7 });
+      for (let i = 1; i < depth; i++) v = JSON.stringify(v);
+
+      let out: unknown = scrubSecrets(v);
+      expect(out as string).not.toContain("hunter2");
+      // Unwrap the same number of layers the input carried.
+      for (let i = 0; i < depth; i++) out = JSON.parse(out as string);
+
+      expect(out).toMatchObject({ user: "bob", n: 7 });
+      expect((out as Record<string, unknown>)["password"]).not.toContain("hunter2");
+    }
+  });
+
+  it("leaves a payload that is not a JSON string untouched by the unwrap", () => {
+    // The unwrap is a fast path, not a rewrite. Anything that is not a
+    // JSON-encoded string must reach the pattern chain byte-for-byte.
+    for (const s of [
+      "plain prose with no secret",
+      '{"user":"bob"}',
+      '"unterminated',
+      '"not json \\"',
+      "42",
+      '["a","b"]',
+    ]) {
+      expect(scrubSecrets(s)).toBe(s);
+    }
   });
 });
 

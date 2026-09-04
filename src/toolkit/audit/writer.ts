@@ -188,13 +188,13 @@ const AUTH_SCHEME = "[A-Za-z0-9!#$%&*+^_~|.-]+";
 const AUTH_PARAM_VALUE =
   "[^\\s,\"'\\r\\n\\]}]*'[^\\s,\"'\\r\\n\\]}]*'[^\\s,\"'\\r\\n\\]}]*|[^\\s,\"'\\r\\n\\]}]+";
 const SENSITIVE_AUTH_PARAMS_RE = new RegExp(
-  `(\\\\*["']?)(\\bauthorization\\b)(\\\\*["']?)(\\s*[:=]\\s*)(${AUTH_SCHEME}\\s+)?${AUTH_PARAM_NAME}\\s*=\\s*(?:(\\\\*["'])(?:[^\\r\\n]*?\\6|[^\\r\\n]*)|${AUTH_PARAM_VALUE})(?:\\s*,\\s*${AUTH_PARAM_NAME}\\s*=\\s*(?:(\\\\*["'])(?:[^\\r\\n]*?\\7|[^\\r\\n]*)|${AUTH_PARAM_VALUE}))*`,
+  `(\\\\*["']?)(\\bauthorization\\b)(\\\\*["']?)(\\s*[:=]\\s*)(${AUTH_SCHEME}\\s+)?${AUTH_PARAM_NAME}\\s*=\\s*(?:(\\\\*["'])(?:(?:(?!\\6)(?:\\\\.|[^\\r\\n]))*\\6|[^\\r\\n]*)|${AUTH_PARAM_VALUE})(?:\\s*,\\s*${AUTH_PARAM_NAME}\\s*=\\s*(?:(\\\\*["'])(?:(?:(?!\\7)(?:\\\\.|[^\\r\\n]))*\\7|[^\\r\\n]*)|${AUTH_PARAM_VALUE}))*`,
   "gi",
 );
 const SENSITIVE_AUTH_ESCAPED_RE =
   /(\\*["']?)(\bauthorization\b)(\\*["']?)(\s*[:=]\s*)((?:bearer|basic)\s+)?\\+(["'])((?:bearer|basic)\s+)?(?:\\\\.|(?!\\+\6)[^\r\n])*(\\+\6)?/gi;
 const SENSITIVE_AUTH_QUOTED_RE =
-  /(?<=["'])(\bauthorization\b)(\\*["']?)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\5)[^\r\n\\])*(\5)|[^\r\n]*)|[^"'\r\n\\]+)/gi;
+  /(?<=["'])(\bauthorization\b)(\\*["']?)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\5)[^\r\n\\])*(\5)|[^\r\n]*)|(?:[^"'\r\n\\]|["'](?![\s]*(?:[,;)\]}]|$)))+)/gi;
 const SENSITIVE_AUTH_LINE_RE =
   /(?:^|(?<=[\r\n]))(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?[^\r\n]+/gi;
 /**
@@ -211,6 +211,14 @@ const SENSITIVE_AUTH_LINE_RE =
  * value's end and mangle the outer payload — the safety property the original
  * single-unanchored-pattern regression lacked. The unquoted class (excluding
  * `"` and `'`) is the fallback.
+ *
+ * The unquoted fallback admits a quote that is followed by more value, and
+ * stops at one followed by structure (`,;)]}`) or the end of the input. Those
+ * are the two things a quote can be here: part of the credential, or the
+ * closer of the string the message was embedded in. Refusing every quote
+ * leaked `Authorization: Bearer pre"abc123`; accepting every quote consumed
+ * the `"}` of `{"message":"authorization: Bearer abc"}` and broke the
+ * payload. The lookahead is the distinction between those two cases.
  *
  * An unquoted-only class was not enough. `Authorization: "Bearer abc123"`
  * stopped at the opening quote and redacted the separator whitespace instead
@@ -231,14 +239,20 @@ const SENSITIVE_AUTH_LINE_RE =
  * Re-running over already-redacted text is a no-op in every branch.
  */
 const SENSITIVE_AUTH_INLINE_RE =
-  /(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\4)[^\r\n\\])*(\4)|[^\r\n]*)|[^"'\r\n\\]+)/gi;
+  /(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\4)[^\r\n\\])*(\4)|[^\r\n]*)|(?:[^"'\r\n\\]|["'](?![\s]*(?:[,;)\]}]|$)))+)/gi;
 /**
  * Unquoted-value form (`password:hunter2`). Parser errors echo the offending
  * source fragment, so `--params '{"password":hunter2}'` surfaces the raw
  * value in a `JSON.parse` message that the quoted patterns above skip.
  *
- * Runs LAST so already-redacted quoted values are inert: neither position
- * admits `"` or `'`, so `password='[REDACTED]'` no longer matches.
+ * Runs LAST so already-redacted quoted values are inert. That rests on the
+ * FIRST position alone refusing `"` and `'`, so `password='[REDACTED]'` still
+ * does not match. The trailing position deliberately admits them: a value
+ * that never opened a quote cannot be ended by one, and excluding the quote
+ * there meant `password=pre"hunter2` matched only `pre` and emitted
+ * `password="[REDACTED]""hunter2` with the tail intact. Structure (`,;)]}`)
+ * and whitespace still bound the match, so the payload after the field is
+ * untouched.
  *
  * The value is split into two positions rather than one `+` class:
  *
@@ -284,7 +298,7 @@ const SENSITIVE_ESCAPED_QUOTE_RE = new RegExp(
   "gi",
 );
 const SENSITIVE_UNQUOTED_RE = new RegExp(
-  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)(?:[^\\s"'{\\[\\\\][^\\s"',;)\\]}]*)`,
+  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)(?:[^\\s"'{\\[\\\\][^\\s,;)\\]}]*)`,
   "gi",
 );
 /**
@@ -368,7 +382,51 @@ export function mentionsSensitiveField(text: string): boolean {
   return SENSITIVE_MENTION_RE.test(text);
 }
 
-export function scrubSecrets(text: string): string {
+/**
+ * Maximum JSON-string layers `scrubSecrets` will peel. Each layer strictly
+ * shrinks the input (a serialized string is always longer than its content),
+ * so recursion terminates on its own; the cap only bounds the work a
+ * pathological input can buy on an error path that must stay cheap.
+ */
+const MAX_UNWRAP_DEPTH = 8;
+
+/**
+ * Peel JSON-string layers before matching, and re-serialize afterwards.
+ *
+ * The patterns below decide where a value ends by counting backslashes. That
+ * works while the escape run is unambiguous, but once a credential containing
+ * a quote is serialized more than twice, the run in front of the *embedded*
+ * quote becomes indistinguishable from the run in front of the *terminating*
+ * one, and matching stops early — `"[REDACTED]"hunter2` keeps the tail.
+ *
+ * Counting cannot resolve that, because the ambiguity is real: the text alone
+ * does not say which quote ends the value. `JSON.parse` does, because it
+ * consumed the escapes that encode the answer. So each layer is removed
+ * before the patterns run and restored after, and they only ever see a value
+ * whose quotes are literal.
+ *
+ * This is a fast path, not the defence: a payload that is not a JSON string
+ * falls straight through to the same pattern chain as before.
+ */
+function unwrapJsonString(text: string): string | null {
+  if (text.length < 2 || text.charCodeAt(0) !== 34) return null;
+  if (!text.endsWith('"')) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  return typeof parsed === "string" ? parsed : null;
+}
+
+export function scrubSecrets(text: string, _depth = 0): string {
+  if (_depth < MAX_UNWRAP_DEPTH) {
+    const inner = unwrapJsonString(text);
+    if (inner !== null) {
+      return JSON.stringify(scrubSecrets(inner, _depth + 1));
+    }
+  }
   return text
     .replace(
       SENSITIVE_SQUOTE_RE,
