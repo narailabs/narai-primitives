@@ -524,6 +524,47 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     }
   });
 
+  it("returns an envelope when a parameter accessor throws", async () => {
+    // Reading a property can run caller code. The schema had already produced
+    // an ordinary validation failure; the exception from collecting redaction
+    // candidates then escaped in place of the envelope `fetch()` promises —
+    // the redaction machinery breaking the contract it exists to protect.
+    // An incomplete walk fails closed, which is what the caller already does.
+    const boom = {};
+    Object.defineProperty(boom, "trap", {
+      enumerable: true,
+      get() {
+        throw new Error("getter exploded");
+      },
+    });
+    const c = createConnector<{}>({
+      name: "throwing-getter-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.any().superRefine((_v, ctx) => {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: "rejected value hunter2",
+            });
+          }),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    for (const params of [boom, { a: { b: boom } }, [1, boom]]) {
+      const env = await c.fetch("login", params);
+      expect(env.status).toBe("error");
+      if (env.status === "error") {
+        expect(env.error_code).toBe("VALIDATION_ERROR");
+        // Failed closed: candidates are unknown, so the message is dropped.
+        expect(env.message).not.toContain("hunter2");
+      }
+    }
+  });
+
   it("holds the node bound while enqueuing, not only while popping", async () => {
     // The bound was checked on the way out, so a container pushed its whole
     // contents first: `new Array(100_000_000)` is cheap to construct and

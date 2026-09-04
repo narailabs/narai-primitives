@@ -365,7 +365,20 @@ function collectInputStrings(input: unknown, out: Set<string>): boolean {
       }
       continue;
     }
-    for (const v of Object.values(cur as Record<string, unknown>)) {
+    // Reading a property can run caller code. An enumerable getter that
+    // throws turned this walk into the thing that broke `fetch()`'s contract:
+    // the schema had already produced an ordinary validation failure, and the
+    // exception from collecting redaction candidates escaped in place of the
+    // envelope the caller was promised. Treated as an incomplete walk, which
+    // the caller already fails closed on — the reason the traversal exists is
+    // to decide what to redact, and a traversal that did not finish cannot.
+    let values: unknown[];
+    try {
+      values = Object.values(cur as Record<string, unknown>);
+    } catch {
+      return false;
+    }
+    for (const v of values) {
       if (nodes++ > MAX_INPUT_NODES) return false;
       stack.push(v);
     }
