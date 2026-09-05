@@ -318,6 +318,25 @@ describe("wiki_db.audit", () => {
     }
   });
 
+  it("scrubSqlSecrets ends a value only at a run boundary", () => {
+    // A comma-only rule ended the value inside a four-quote run: the secret
+    // `abc',def` encodes as `''abc'''',def''`, and the last two of the four
+    // are followed by a comma, so `,def` stayed in the log. A closing `''` is
+    // a run of exactly TWO as well as being followed by a separator.
+    for (const [sql, expected] of [
+      [
+        "UPDATE t SET x = '{''password'': ''abc'''',def''}'",
+        "UPDATE t SET x = '{''password'': ''[REDACTED]''}'",
+      ],
+      [
+        "UPDATE t SET x = '{''password'': ''abc'''',def'', ''u'': ''b''}'",
+        "UPDATE t SET x = '{''password'': ''[REDACTED]'', ''u'': ''b''}'",
+      ],
+    ] as const) {
+      expect(scrubSqlSecrets(sql)).toBe(expected);
+    }
+  });
+
   it("scrubSqlSecrets stops a doubled value at its own field", () => {
     // `''` is genuinely ambiguous: an escaped apostrophe INSIDE a value, and
     // the quote that ENDS one. A greedy body resolved it by running to the

@@ -210,11 +210,18 @@ const _KEY_END = "(?![A-Za-z0-9])";
  * entirely. Both are the same mistake: resolving the ambiguity by quantifier
  * greed rather than by what actually distinguishes the two cases.
  *
- * What distinguishes them is STRUCTURE. A value's closing `''` is followed by
- * a field separator or the end of the object; an embedded one is followed by
- * more value. So the body is lazy and the terminator carries a lookahead for
- * `,` or `}`. `abc''def` continues because `''` is followed by `d`; `p''`
- * ends because `''` is followed by `,`.
+ * What distinguishes them is STRUCTURE, and it takes both halves of a run
+ * boundary to say it. A value's closing `''` is a run of exactly two, and it
+ * is followed by a field separator or the end of the object; an embedded one
+ * is part of a longer run, or is followed by more value.
+ *
+ * The lookahead alone was not enough. In `''abc'''',def''` — the encoding of
+ * the secret `abc',def` — the last two quotes of the four ARE followed by a
+ * comma, so a comma-only rule ended the value there and left `,def` in the
+ * log. The `(?<!')` is what says "this pair is a run of its own, not the tail
+ * of a longer one". With both, `abc''def` continues (followed by `d`),
+ * `abc'''',def` continues (the pair is inside a four-run), and `p''` ends
+ * (a lone pair, followed by a comma).
  *
  * Runs BEFORE the single-quote pattern so the doubled form is consumed first.
  *
@@ -234,7 +241,7 @@ const _KEY_END = "(?![A-Za-z0-9])";
  * The test is corrected alongside this.
  */
 const _SENSITIVE_LITERAL_SQUOTE_DOUBLED_RE = new RegExp(
-  `(''${_KEY_START}${_KEY_PREFIX}(?:${_SENSITIVE_KEYS})${_KEY_END}'')(\\s*[:=]\\s*)''(?:[^']|'')*?''(?=\\s*[,}]|$)`,
+  `(''${_KEY_START}${_KEY_PREFIX}(?:${_SENSITIVE_KEYS})${_KEY_END}'')(\\s*[:=]\\s*)''(?:[^']|'')*?(?<!')''(?=\\s*[,}]|$)`,
   "gi",
 );
 const _SENSITIVE_LITERAL_SQUOTE_RE = new RegExp(
