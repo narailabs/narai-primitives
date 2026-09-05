@@ -910,6 +910,65 @@ describe("scrubSecrets — a serialized payload behind a prefix", () => {
     expect(scrubSecrets('msg: "say \\"hi\\"" and password="hunter2"')).not.toContain("hunter2");
   });
 
+  it("finds the payload when the prose has quotes of its own", () => {
+    // The first version took the first quote to the last, so any quoted
+    // fragment in the surrounding prose produced a span that was not valid
+    // JSON — nothing unwrapped, and the leak came straight back. Spans are
+    // located in one left-to-right pass now, so an unrelated `"request"` is
+    // tried and rejected rather than swallowing the payload.
+    const n3 = JSON.stringify(JSON.stringify(JSON.stringify({ password: 'pre"hunter2' })));
+    for (const input of [
+      `Error payload: ${n3}`,
+      `Error "request": payload: ${n3}`,
+      `Error payload: ${n3} in "handler"`,
+      `"a" "b" ${n3} "c" "d"`,
+    ]) {
+      expect(scrubSecrets(input)).not.toContain("hunter2");
+    }
+  });
+
+  it("redacts a second payload in the same message", () => {
+    // Locating one span and scrubbing the rest as a flat layer would leave the
+    // second one escaped. A message carrying two is no less plausible than one.
+    const a = JSON.stringify(JSON.stringify({ password: "hunter2" }));
+    const b = JSON.stringify(JSON.stringify({ api_key: "sk-live-xyz" }));
+    const out = scrubSecrets(`first ${a} then ${b}`);
+    expect(out).not.toContain("hunter2");
+    expect(out).not.toContain("sk-live-xyz");
+  });
+
+  it("does not treat a value that merely opens with a quote as a payload", () => {
+    // `{"password":"\"hunter2"}` has a value whose inner is `"hunter2` — it
+    // opens with a quote and is not a JSON string. Recursing into it scrubbed
+    // the prefix with no value beside it and leaked at every depth from 1 to
+    // 7. A further layer now has to BE a string, not just start like one.
+    let s: string = JSON.stringify({ password: '"hunter2', user: "bob" });
+    for (let depth = 1; depth <= 7; depth++) {
+      expect(scrubSecrets(s), `depth ${depth}`).not.toContain("hunter2");
+      s = JSON.stringify(s);
+    }
+  });
+
+  it("stays linear when the message is nothing but quotes", () => {
+    // The span pass must not become the cost it was written to avoid: each
+    // span's end follows from its start, so the scan is one pass, not a search
+    // over quote pairs. Same 4x ratio and threshold as the other cost tests.
+    const cost = (n: number): number => {
+      const text = '"'.repeat(n);
+      scrubSecrets(text); // warm
+      let best = Infinity;
+      for (let i = 0; i < 3; i++) {
+        const t = process.hrtime.bigint();
+        scrubSecrets(text);
+        best = Math.min(best, Number(process.hrtime.bigint() - t) / 1e6);
+      }
+      return best;
+    };
+    const small = Math.max(cost(10_000), 0.2);
+    const large = cost(40_000);
+    expect(large).toBeLessThan(small * 8);
+  });
+
   it("is idempotent over every prefixed shape", () => {
     for (const input of [
       `Error payload: ${JSON.stringify(JSON.stringify({ password: "hunter2" }))}`,
@@ -1143,12 +1202,23 @@ describe("scrubSecrets — auth header grammar and scan cost", () => {
     // slips under any threshold loose enough to be stable, and the test then
     // passes against the very bug it is written for. Checked by reverting the
     // fix: at 2x it stayed green, at 4x it fails.
+    // Best of three, not one sample. The ratio is the assertion, so a single
+    // descheduling spike in either measurement moves it — and the small one is
+    // short enough that noise dominates it. Vitest runs files in parallel, so
+    // this flaked roughly one full-suite run in three while passing 8/8 in
+    // isolation, both before and after the change that surfaced it. Taking the
+    // minimum keeps what is being measured (the work, not the scheduler)
+    // without loosening the threshold, which would cost the test its teeth.
     const timeFor = (n: number): number => {
       const text = "a".repeat(n);
       scrubSecrets(text); // warm
-      const t = process.hrtime.bigint();
-      scrubSecrets(text);
-      return Number(process.hrtime.bigint() - t) / 1e6;
+      let best = Infinity;
+      for (let i = 0; i < 3; i++) {
+        const t = process.hrtime.bigint();
+        scrubSecrets(text);
+        best = Math.min(best, Number(process.hrtime.bigint() - t) / 1e6);
+      }
+      return best;
     };
     const small = Math.max(timeFor(10_000), 0.2);
     const large = timeFor(40_000);

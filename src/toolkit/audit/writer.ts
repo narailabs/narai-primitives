@@ -416,8 +416,22 @@ const URL_USERINFO_RE =
  * When the *path* says the field is a credential, the caller should drop the
  * whole message rather than try to scrub it.
  */
+/**
+ * The trailing `s?` is on the PATH matcher only, never on the value patterns.
+ *
+ * A path segment is a container name: `{ tokens: ["…"] }` holds credentials
+ * exactly as `{ token: "…" }` does, and the connector's array walk already
+ * states that entries of `tokens` inherit their container's sensitivity — the
+ * vocabulary just did not agree, so the invariant was false and a plural
+ * container contributed no redaction candidate.
+ *
+ * The value patterns must NOT gain it. There the token is a KEY next to a
+ * value, and `passwords` as a key is the run-on-word case the boundary rules
+ * exist to leave alone; widening them is how `mytoken` starts being redacted.
+ * A path and a key look alike and are not the same question.
+ */
 const SENSITIVE_PATH_RE = new RegExp(
-  `(?:^|[.\\[\\]])${KEY_PREFIX}(?:${SENSITIVE_WORDS})(?=$|[.\\[\\]])`,
+  `(?:^|[.\\[\\]])${KEY_PREFIX}(?:${SENSITIVE_WORDS})s?(?=$|[.\\[\\]])`,
   "i",
 );
 export function isSensitiveFieldPath(path: string): boolean {
@@ -541,9 +555,9 @@ export function scrubSecrets(
  *
  * Two bounds keep this from becoming its own problem:
  *
- * - ONE candidate span, from the first quote to the last, and one `JSON.parse`
- *   of it. Trying every quote pair would be quadratic in a message full of
- *   quotes, which is the cost class the previous round was about.
+ * - Candidate spans come from ONE left-to-right pass ({@link jsonStringSpans}).
+ *   Trying every quote PAIR would be quadratic in a message full of quotes,
+ *   which is the cost class the previous round was about.
  * - The span is rewritten only when `JSON.stringify` reproduces it byte for
  *   byte. Re-serializing is not identity in general — `"aAb"` comes back
  *   as `"aAb"` — and silently rewriting the message around a credential is the
@@ -566,22 +580,68 @@ export function scrubSecrets(
 function isSerializedPayload(span: string, inner: string): boolean {
   if (inner === span.slice(1, -1)) return false;
   const head = inner.charCodeAt(0);
-  // `{`, `[`, or a further JSON string layer.
-  return head === 123 || head === 91 || head === 34;
+  if (head === 123 || head === 91) return true; // `{` or `[`
+  // A further JSON string layer — and it has to BE one, not merely start with
+  // a quote. `{"password":"\"hunter2"}` has a value whose inner is `"hunter2`,
+  // which opens with a quote and is not a string; treating it as a payload
+  // recursed into the value, scrubbed the prefix with no value beside it, and
+  // leaked at every depth from 1 to 7.
+  return head === 34 && unwrapJsonString(inner) !== null;
+}
+
+/**
+ * Every `"…"` run in one left-to-right pass, as `[start, end)` pairs.
+ *
+ * A JSON string ends at its first UNESCAPED quote, so each span's end follows
+ * from its start with no search — the pass visits each character a bounded
+ * number of times and the spans it yields are disjoint. That is what keeps
+ * locating an embedded payload linear rather than quadratic in the number of
+ * quotes, which matters because this runs synchronously on error text an
+ * attacker can shape.
+ *
+ * A run with no closing quote is not yielded: there is nothing to parse.
+ */
+function* jsonStringSpans(text: string): Generator<[number, number]> {
+  let i = 0;
+  while (i < text.length) {
+    if (text.charCodeAt(i) !== 34) {
+      i++;
+      continue;
+    }
+    let j = i + 1;
+    while (j < text.length) {
+      const c = text.charCodeAt(j);
+      if (c === 92) {
+        j += 2;
+        continue;
+      }
+      if (c === 34) break;
+      j++;
+    }
+    if (j >= text.length) return; // unterminated run; nothing left to parse
+    yield [i, j + 1];
+    i = j + 1;
+  }
 }
 
 function scrubEmbeddedOrLayer(text: string, remainingDepth: number): string {
   if (remainingDepth > 0) {
-    const first = text.indexOf('"');
-    const last = text.lastIndexOf('"');
-    if (first !== -1 && last > first) {
-      const span = text.slice(first, last + 1);
+    // Candidate spans, not "first quote to last quote". That first attempt was
+    // wrong the moment the prose carried a quote of its own:
+    // `Error "request": payload: "<serialized>"` produced a span that was not
+    // valid JSON, so nothing unwrapped and the leak came straight back. The
+    // pass below is linear and yields disjoint runs, so the unrelated
+    // `"request"` is simply tried and rejected.
+    for (const [start, end] of jsonStringSpans(text)) {
+      const span = text.slice(start, end);
       const inner = unwrapJsonString(span);
       if (inner !== null && JSON.stringify(inner) === span && isSerializedPayload(span, inner)) {
         return (
-          scrubOneLayer(text.slice(0, first)) +
+          scrubOneLayer(text.slice(0, start)) +
           JSON.stringify(scrubSecrets(inner, remainingDepth - 1)) +
-          scrubOneLayer(text.slice(last + 1))
+          // The remainder may hold a second payload; a message carrying two is
+          // no less plausible than one.
+          scrubEmbeddedOrLayer(text.slice(end), remainingDepth)
         );
       }
     }

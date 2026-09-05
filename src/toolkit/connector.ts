@@ -541,11 +541,24 @@ function collectSensitiveInputStrings(input: unknown, out: Set<string>): boolean
  * redacting against a set that may be missing the very value being echoed
  * would report success while leaking.
  */
-function redactSensitiveEchoes(message: string, params: unknown): string {
-  if (params === undefined || params === null) return message;
+function redactSensitiveEchoes(
+  message: string,
+  params: unknown,
+  credentials?: unknown,
+): string {
   const candidates = new Set<string>();
-  const complete = collectSensitiveInputStrings(params, candidates);
-  if (!complete) return "[REDACTED]";
+  if (params !== undefined && params !== null) {
+    if (!collectSensitiveInputStrings(params, candidates)) return "[REDACTED]";
+  }
+  // Credentials contribute EVERY string, not only the sensitively-named ones.
+  // A credentials object is secret by construction — that is what makes it
+  // credentials — so there is no benign half to preserve, and the field names a
+  // provider chooses (`sessionId`, `pat`, `bearer`) need not be in any
+  // vocabulary. Reported as a gap after the params-only version shipped: a
+  // handler echoing `ctx.credentials.token` collected no candidate at all.
+  if (credentials !== undefined && credentials !== null) {
+    if (!collectInputStrings(credentials, candidates)) return "[REDACTED]";
+  }
   if (candidates.size === 0) return message;
   const echo = makeEchoRedactor(candidates);
   const out = echo.redact(message);
@@ -830,8 +843,13 @@ export function createConnector<TSdk = unknown>(
         classification = spec.classify;
       }
     } catch (err) {
-      const message = scrubSecrets(
-        err instanceof Error ? err.message : String(err),
+      // Same two-stage redaction as the handler path: shapes first, then the
+      // values the caller supplied. A hook that echoes a validated parameter
+      // as prose presents no shape at all, and this envelope reaches stdout.
+      // Credentials are not loaded yet at this point in the sequence.
+      const message = redactSensitiveEchoes(
+        scrubSecrets(err instanceof Error ? err.message : String(err)),
+        validated,
       );
       return errorEnvelope(
         action,
@@ -860,8 +878,11 @@ export function createConnector<TSdk = unknown>(
           classification,
         });
       } catch (err) {
-        const message = scrubSecrets(
-          err instanceof Error ? err.message : String(err),
+        // Same as the classify() catch above, and found with it: fixing one
+        // hook and not its sibling is how the previous round's gap survived.
+        const message = redactSensitiveEchoes(
+          scrubSecrets(err instanceof Error ? err.message : String(err)),
+          validated,
         );
         return errorEnvelope(
           action,
@@ -1008,6 +1029,7 @@ export function createConnector<TSdk = unknown>(
         start,
         sdk,
         validated,
+        credentials,
       );
     }
 
@@ -1200,6 +1222,7 @@ function mapAndBuildError<TSdk>(
   start: number,
   sdk: TSdk,
   params: unknown,
+  credentials?: unknown,
 ): ErrorEnvelope {
   let code: ErrorCode;
   let message: string;
@@ -1230,7 +1253,7 @@ function mapAndBuildError<TSdk>(
   // has always done, scoped to sensitive paths so an ordinary diagnostic that
   // names a benign parameter survives.
   // DO NOT REMOVE: pinned by tests/toolkit/connector.test.ts.
-  message = redactSensitiveEchoes(message, params);
+  message = redactSensitiveEchoes(message, params, credentials);
 
   const scope = safeScope(cfg, { sdk, action, params });
 

@@ -670,6 +670,97 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     }
   });
 
+  it("redacts a credential a hook echoes as prose", async () => {
+    // classify() and extendDecision() return their own CONFIG_ERROR envelopes
+    // and never reach the handler error path, so the input-aware redaction
+    // added for that path did not cover them. Both hooks, because fixing one
+    // and not its sibling is how the previous gap survived a round.
+    for (const which of ["classify", "extendDecision"] as const) {
+      const spec: Record<string, unknown> = {
+        params: z.object({ token: z.string() }),
+        classify:
+          which === "classify"
+            ? () => {
+                throw new Error("classification rejected hunter2");
+              }
+            : { kind: "read" as const },
+        handler: async () => ({}),
+      };
+      const cfg: Record<string, unknown> = {
+        name: `hook-echo-${which}`,
+        credentials: async () => ({}),
+        sdk: async () => ({}),
+        actions: { login: spec },
+      };
+      if (which === "extendDecision") {
+        cfg["extendDecision"] = (): never => {
+          throw new Error("extension rejected hunter2");
+        };
+      }
+      const env = await createConnector<{}>(cfg as never).fetch("login", { token: "hunter2" });
+      expect(env.status).toBe("error");
+      if (env.status === "error") {
+        expect(env.error_code).toBe("CONFIG_ERROR");
+        expect(env.message, which).not.toContain("hunter2");
+        expect(env.message, which).toContain("threw:");
+      }
+    }
+  });
+
+  it("redacts a credential that came from credentials(), not params", async () => {
+    // A connector credential never appears in params, so a params-only
+    // collector found no candidate for it. Credentials contribute EVERY
+    // string: the object is secret by construction, and the field names a
+    // provider picks need not be in any vocabulary.
+    const c = createConnector<{ sessionId: string }>({
+      name: "creds-echo-test",
+      credentials: async () => ({ sessionId: "hunter2" }),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.object({ q: z.string() }),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error("upstream rejected hunter2 for query");
+          },
+        },
+      },
+    });
+    const env = await c.fetch("login", { q: "x" });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("hunter2");
+      expect(env.message).toContain("upstream rejected");
+    }
+  });
+
+  it("recognizes a plural credential container", async () => {
+    // The array walk states that entries of `tokens` inherit their container's
+    // sensitivity; the path vocabulary only knew the singular, so the
+    // invariant was false and a plural container contributed no candidate.
+    const c = createConnector<{}>({
+      name: "plural-container-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.object({ tokens: z.array(z.string()), tables: z.array(z.string()) }),
+          classify: { kind: "read" },
+          handler: async (p: { tokens: string[]; tables: string[] }) => {
+            throw new Error(`rejected ${p.tokens[0]} on ${p.tables[0]}`);
+          },
+        },
+      },
+    });
+    const env = await c.fetch("login", { tokens: ["hunter2"], tables: ["users"] });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("hunter2");
+      // Pluralising the PATH vocabulary must not pull benign containers in.
+      expect(env.message).toContain("users");
+    }
+  });
+
   it("leaves a runtime message alone when no parameter is sensitive", async () => {
     // Nothing to match against means nothing to redact — the message must not
     // be blanked defensively, or every ordinary connection error loses its
@@ -902,9 +993,18 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
           },
         },
       });
-      const t = Date.now();
-      await c.fetch("login", { ids });
-      return Date.now() - t;
+      // Best of three: the ratio is the assertion, so one descheduling spike
+      // in either measurement moves it. Vitest runs files in parallel and this
+      // flaked under full-suite load while passing in isolation. The minimum
+      // measures the work rather than the scheduler, which is cheaper than
+      // loosening the threshold — that would cost the test its teeth.
+      let best = Infinity;
+      for (let i = 0; i < 3; i++) {
+        const t = Date.now();
+        await c.fetch("login", { ids });
+        best = Math.min(best, Date.now() - t);
+      }
+      return best;
     };
     await time(1000); // warm up the JIT so the ratio measures the algorithm
     const small = await time(2000);
