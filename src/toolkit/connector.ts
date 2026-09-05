@@ -20,6 +20,7 @@ import { z } from "zod";
 import { parseAgentArgs } from "./agent_cli.js";
 import {
   createAuditWriter,
+  isCredentialContainerPath,
   isSensitiveFieldPath,
   mentionsSensitiveField,
   scrubSecrets,
@@ -490,20 +491,31 @@ function makeEchoRedactor(candidates: Iterable<string>): {
  * COMPLETED, so the caller can fail closed on a partial set.
  */
 function collectSensitiveInputStrings(input: unknown, out: Set<string>): boolean {
-  const seen = new Set<object>();
-  const stack: Array<{ node: unknown; path: string }> = [{ node: input, path: "" }];
+  // Keyed on the object AND on whether it was reached sensitively, not on the
+  // object alone. One object can be reachable by two paths — a passthrough
+  // schema with `{token: shared, metadata: shared}` is the plain case — and a
+  // plain `Set` made the answer depend on property order: the LIFO walk
+  // reached `shared` through `metadata` first, marked it seen, collected
+  // nothing, and then skipped the `token` alias entirely. `false` means it was
+  // seen only through a benign path, so a later sensitive alias must revisit.
+  // A node is therefore visited at most twice, which keeps the budget's shape.
+  const seen = new Map<object, boolean>();
+  const stack: Array<{ node: unknown; path: string; sensitive: boolean }> = [
+    { node: input, path: "", sensitive: false },
+  ];
   let nodes = 0;
   while (stack.length > 0) {
     if (nodes++ > MAX_INPUT_NODES) return false;
-    const cur = stack.pop() as { node: unknown; path: string };
+    const cur = stack.pop() as { node: unknown; path: string; sensitive: boolean };
     const v = cur.node;
     if (typeof v === "string" || typeof v === "number" || typeof v === "bigint") {
-      if (cur.path !== "" && isSensitiveFieldPath(cur.path)) addCandidate(out, String(v));
+      if (cur.sensitive) addCandidate(out, String(v));
       continue;
     }
     if (v === null || typeof v !== "object") continue;
-    if (seen.has(v)) continue;
-    seen.add(v);
+    const priorSensitive = seen.get(v);
+    if (priorSensitive === true || (priorSensitive === false && !cur.sensitive)) continue;
+    seen.set(v, cur.sensitive);
     if (Array.isArray(v)) {
       try {
         const len = v.length;
@@ -511,7 +523,7 @@ function collectSensitiveInputStrings(input: unknown, out: Set<string>): boolean
           if (nodes++ > MAX_INPUT_NODES) return false;
           // An element inherits its container's path: every entry of
           // `tokens` is as sensitive as `tokens` itself.
-          stack.push({ node: v[i], path: cur.path });
+          stack.push({ node: v[i], path: cur.path, sensitive: cur.sensitive });
         }
       } catch {
         return false;
@@ -526,7 +538,17 @@ function collectSensitiveInputStrings(input: unknown, out: Set<string>): boolean
     }
     for (const [k, child] of entries) {
       if (nodes++ > MAX_INPUT_NODES) return false;
-      stack.push({ node: child, path: cur.path === "" ? k : `${cur.path}.${k}` });
+      const childPath = cur.path === "" ? k : `${cur.path}.${k}`;
+      stack.push({
+        node: child,
+        path: childPath,
+        // Sensitivity is inherited, not re-decided: once inside a credential
+        // container everything under it is a candidate.
+        sensitive:
+          cur.sensitive ||
+          isSensitiveFieldPath(childPath) ||
+          isCredentialContainerPath(childPath),
+      });
     }
   }
   return true;

@@ -964,9 +964,29 @@ describe("scrubSecrets — a serialized payload behind a prefix", () => {
       }
       return best;
     };
-    const small = Math.max(cost(10_000), 0.2);
-    const large = cost(40_000);
+    // Same reason as the backslash test: raised so `small` clears the noise.
+    const small = Math.max(cost(100_000), 0.5);
+    const large = cost(400_000);
     expect(large).toBeLessThan(small * 8);
+  });
+
+  it("recovers after an unmatched quote in the prose", () => {
+    // Pairing every quote with the next unescaped quote let an unmatched prose
+    // quote swallow the payload's OPENING quote: the scanner yielded
+    // `" payload: "` and never offered the real span. Candidate starts are
+    // now only quotes followed by `{`, `[` or a backslash — the only things a
+    // serialized payload can open with — so the pass resynchronises instead of
+    // pairing quotes off against each other.
+    let x: string = JSON.stringify({ password: 'pre"hunter2' });
+    for (let i = 1; i < 5; i++) x = JSON.stringify(x);
+    for (const input of [
+      `Error payload: ${x}`,
+      `Error unmatched " payload: ${x}`,
+      `" ${x}`,
+      `Error "a "b payload: ${x}`,
+    ]) {
+      expect(scrubSecrets(input)).not.toContain("hunter2");
+    }
   });
 
   it("is idempotent over every prefixed shape", () => {
@@ -1254,12 +1274,18 @@ describe("scrubSecrets — auth header grammar and scan cost", () => {
     const timeForSlashes = (n: number): number => {
       const text = "\\".repeat(n);
       scrubSecrets(text); // warm
-      const t = process.hrtime.bigint();
-      scrubSecrets(text);
-      return Number(process.hrtime.bigint() - t) / 1e6;
+      let best = Infinity;
+      for (let i = 0; i < 3; i++) {
+        const t = process.hrtime.bigint();
+        scrubSecrets(text);
+        best = Math.min(best, Number(process.hrtime.bigint() - t) / 1e6);
+      }
+      return best;
     };
-    const small = Math.max(timeForSlashes(10_000), 0.2);
-    const large = timeForSlashes(40_000);
+    // Sizes raised with the code: at 10k the scan now costs a few tenths of
+    // a millisecond, so the ratio measured scheduler noise rather than work.
+    const small = Math.max(timeForSlashes(100_000), 0.5);
+    const large = timeForSlashes(400_000);
     expect(large).toBeLessThan(small * 8);
   });
 });

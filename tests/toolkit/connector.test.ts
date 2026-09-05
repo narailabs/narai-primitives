@@ -734,6 +734,75 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     }
   });
 
+  it("collects through a sensitive alias regardless of property order", async () => {
+    // One object reachable by two paths made sensitivity depend on property
+    // order: the LIFO walk reached it through `metadata` first, marked it seen
+    // having collected nothing, and skipped the `token` alias entirely. Both
+    // orders, because the bug is only visible in one of them.
+    for (const params of [
+      { metadata: { inner: "hunter2" }, token: { inner: "hunter2" } },
+      { token: { inner: "hunter2" }, metadata: { inner: "hunter2" } },
+    ]) {
+      const shared = { inner: "hunter2" };
+      const aliased =
+        "metadata" in params && "token" in params
+          ? Object.keys(params)[0] === "metadata"
+            ? { metadata: shared, token: shared }
+            : { token: shared, metadata: shared }
+          : params;
+      const c = createConnector<{}>({
+        name: "alias-order-test",
+        credentials: async () => ({}),
+        sdk: async () => ({}),
+        actions: {
+          login: {
+            params: z.any(),
+            classify: { kind: "read" },
+            handler: async () => {
+              throw new Error("rejected hunter2");
+            },
+          },
+        },
+      });
+      const env = await c.fetch("login", aliased);
+      expect(env.status).toBe("error");
+      if (env.status === "error") {
+        expect(env.message, JSON.stringify(Object.keys(aliased))).not.toContain("hunter2");
+      }
+    }
+  });
+
+  it("treats a credentials container as sensitive", async () => {
+    // `pat` is in no vocabulary and never will be; `credentials` is the only
+    // thing in `credentials.pat` that says what it holds. Kept separate from
+    // `isSensitiveFieldPath` because that predicate also decides whether a
+    // VALIDATION message is dropped whole, and folding this in degraded five
+    // existing diagnostics from redacted-echo to dropped-message.
+    const c = createConnector<{}>({
+      name: "creds-container-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.any(),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error("rejected hunter2 for users");
+          },
+        },
+      },
+    });
+    const env = await c.fetch("login", {
+      credentials: { pat: "hunter2" },
+      table: "users",
+    });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("hunter2");
+      expect(env.message).toContain("users");
+    }
+  });
+
   it("recognizes a plural credential container", async () => {
     // The array walk states that entries of `tokens` inherit their container's
     // sensitivity; the path vocabulary only knew the singular, so the

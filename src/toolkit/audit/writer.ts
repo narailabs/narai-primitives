@@ -434,6 +434,28 @@ const SENSITIVE_PATH_RE = new RegExp(
   `(?:^|[.\\[\\]])${KEY_PREFIX}(?:${SENSITIVE_WORDS})s?(?=$|[.\\[\\]])`,
   "i",
 );
+
+/**
+ * A path segment that names a CONTAINER of credentials, such as
+ * `credentials.pat`.
+ *
+ * Deliberately separate from {@link isSensitiveFieldPath} rather than another
+ * alternative inside it. That predicate answers two different questions for
+ * two callers: which values to collect for redaction, and whether a validation
+ * message should be dropped whole instead of having its echoes redacted.
+ * Folding `credential` in changed the second one too, and five existing tests
+ * caught it — `credentials: rejected value [REDACTED]` degraded to
+ * `credentials: [REDACTED]`, losing the author's constant text, which is the
+ * exact trade the redact-rather-than-drop design was chosen to avoid.
+ *
+ * So this is for the collector only. `pat` is in no vocabulary and never will
+ * be; the container name is the only thing in `credentials.pat` that says what
+ * it holds.
+ */
+const CREDENTIAL_CONTAINER_RE = /(?:^|[.[\]])credentials?(?=$|[.[\]])/i;
+export function isCredentialContainerPath(path: string): boolean {
+  return CREDENTIAL_CONTAINER_RE.test(path);
+}
 export function isSensitiveFieldPath(path: string): boolean {
   return SENSITIVE_PATH_RE.test(path);
 }
@@ -474,6 +496,13 @@ export function mentionsSensitiveField(text: string): boolean {
  * length and a 1 MB message tops out around 20. Reaching 64 means the input is
  * adversarial, so it fails closed rather than falling through.
  */
+/**
+ * How many candidate payload spans the locator will try in one message.
+ * Bounded because candidate starts overlap, so the end-scans are not disjoint
+ * and an adversarial `"{`-repeated message would otherwise be quadratic on a
+ * synchronous path. Past the cap the message is scrubbed as a flat layer.
+ */
+const MAX_PAYLOAD_SPAN_ATTEMPTS = 64;
 const MAX_UNWRAP_DEPTH = 64;
 
 /**
@@ -603,11 +632,28 @@ function isSerializedPayload(span: string, inner: string): boolean {
  */
 function* jsonStringSpans(text: string): Generator<[number, number]> {
   let i = 0;
+  let attempts = 0;
   while (i < text.length) {
-    if (text.charCodeAt(i) !== 34) {
+    // Only a quote that OPENS a serialized payload is a candidate. A payload
+    // is an object, an array, or another string layer, so the next character
+    // is `{`, `[`, or the backslash of an escaped quote — nothing else can be
+    // one. Pairing every quote with the next unescaped quote instead made an
+    // unmatched prose quote swallow the payload's opening quote: `Error
+    // unmatched " payload: "<serialized>"` yielded `" payload: "`, and the
+    // real span was never offered. Skipping non-openers resynchronises
+    // without pairing quotes off against each other.
+    if (text.charCodeAt(i) !== 34 || !isPayloadOpener(text.charCodeAt(i + 1))) {
       i++;
       continue;
     }
+    // Candidate spans can overlap once starts are chosen independently of
+    // where the previous one ended, so the end-scans are no longer disjoint
+    // and the pass is no longer linear in the worst case. Adversarial input
+    // (`"{` repeated) is the case that matters, since this runs synchronously
+    // on error text. A cap keeps the cost bounded; past it the message is
+    // scrubbed as a flat layer, which is the same fail-safe as finding no
+    // payload at all.
+    if (attempts++ >= MAX_PAYLOAD_SPAN_ATTEMPTS) return;
     let j = i + 1;
     while (j < text.length) {
       const c = text.charCodeAt(j);
@@ -620,8 +666,15 @@ function* jsonStringSpans(text: string): Generator<[number, number]> {
     }
     if (j >= text.length) return; // unterminated run; nothing left to parse
     yield [i, j + 1];
-    i = j + 1;
+    // Advance by ONE, not past the span: a rejected candidate must not consume
+    // the quotes a real payload might start at.
+    i++;
   }
+}
+
+/** `{`, `[`, or a backslash — the only characters a serialized payload can open with. */
+function isPayloadOpener(code: number): boolean {
+  return code === 123 || code === 91 || code === 92;
 }
 
 function scrubEmbeddedOrLayer(text: string, remainingDepth: number): string {
