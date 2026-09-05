@@ -256,15 +256,50 @@ describe("wiki_db.audit", () => {
     // in that shape, `password` included, not just the compound ones.
     const leaked: string[] = [];
     for (const k of ["password", "token", "secret_access_key", "session_token", "private_key"]) {
+      for (const input of [`{'${k}': 'hunter2'}`, `{'${k}':'hunter2'}`]) {
+        if (scrubSqlSecrets(input).includes("hunter2")) leaked.push(input);
+      }
+    }
+    expect(leaked).toEqual([]);
+  });
+
+  it("scrubSqlSecrets redacts a SQL-doubled embedded object", () => {
+    // A Python-style object embedded in a SQL single-quoted literal doubles
+    // its own apostrophes, and that doubled form is what reaches the database.
+    // The single-quote pattern read `''hunter2''` as an EMPTY literal followed
+    // by `hunter2''`, matched, redacted nothing, and wrote the credential out.
+    //
+    // The first version of the test above hid this: it built the doubled form
+    // and then called `.replace(/''/g, "'")` on it, asserting against a shape
+    // no database ever sees. The input here is left as valid SQL.
+    const leaked: string[] = [];
+    for (const k of ["password", "token", "secret_access_key", "session_token", "private_key"]) {
       for (const input of [
-        `{'${k}': 'hunter2'}`,
-        `{'${k}':'hunter2'}`,
-        `UPDATE t SET x = '{''${k}'': ''hunter2''}'`.replace(/''/g, "'"),
+        `UPDATE t SET x = '{''${k}'': ''hunter2''}'`,
+        `UPDATE t SET x = '{''${k}'':''hunter2''}'`,
+        `INSERT INTO t VALUES ('{''a'': 1, ''${k}'': ''hunter2''}')`,
       ]) {
         if (scrubSqlSecrets(input).includes("hunter2")) leaked.push(input);
       }
     }
     expect(leaked).toEqual([]);
+  });
+
+  it("scrubSqlSecrets keeps the SQL valid after redacting a doubled literal", () => {
+    // Redacting must not break the escaping: the replacement re-emits the
+    // doubled quotes, so the statement still parses and the apostrophe count
+    // inside the outer literal stays even.
+    const sql = `UPDATE t SET x = '{''session_token'': ''hunter2''}'`;
+    const out = scrubSqlSecrets(sql);
+    expect(out).toBe(`UPDATE t SET x = '{''session_token'': ''[REDACTED]''}'`);
+    expect(out.split("'").length % 2).toBe(sql.split("'").length % 2);
+    expect(scrubSqlSecrets(out)).toBe(out);
+  });
+
+  it("scrubSqlSecrets does not redact a doubled non-credential column", () => {
+    // The doubled pattern must respect the same key list as the others.
+    const sql = `UPDATE t SET x = '{''primary_key'': ''not-a-secret''}'`;
+    expect(scrubSqlSecrets(sql)).toContain("not-a-secret");
   });
 
   it("scrubSqlSecrets still refuses run-on words", () => {

@@ -112,9 +112,15 @@ export interface LogQueryParams {
 // miss `secret_access_key` — the exact field names `src/connectors/aws/cli.ts`
 // writes. Measured on this function before the fix: `secret_access_key`,
 // `session_token`, `secretAccessKey`, `refresh_token` and `client_secret` all
-// passed through with the credential intact, while the toolkit's own
-// `scrubSecrets` redacted every one of them. Two copies of the same redaction
-// drifted, and only one got the fix.
+// passed through with the credential intact.
+//
+// An earlier revision of this paragraph added "while the toolkit's own
+// `scrubSecrets` redacted every one of them." That was measured against a tree
+// carrying #207 and is FALSE of this branch, where the toolkit copy still has
+// the old `\b` form and leaks all five — re-measured here rather than
+// reasoned about. Retracted rather than reworded, because a comment asserting
+// that the unfixed scrubber is already safe is worse than no comment: it tells
+// the next reader the other copy needs nothing.
 //
 // Requiring a non-alphanumeric neighbour instead admits the `_`/`-` compound
 // forms while still rejecting the run-on words `\b` was there to protect
@@ -181,6 +187,30 @@ const _KEY_PREFIX = "(?:(?:secret|session|access|refresh|client|api|auth|private
 const _KQ = "[\"']?";
 const _KEY_START = "(?<![A-Za-z0-9])";
 const _KEY_END = "(?![A-Za-z0-9])";
+/**
+ * The SQL-doubled form of the same shapes.
+ *
+ * A Python-style object embedded in a SQL single-quoted literal must double
+ * its own apostrophes — `UPDATE t SET x = '{''session_token'': ''hunter2''}'`
+ * is the valid SQL for it. The single-quote pattern below reads `''hunter2''`
+ * as an EMPTY literal followed by `hunter2''`, so it matched, redacted
+ * nothing, and wrote the credential to events.jsonl.
+ *
+ * The value class is `''[^']*''` rather than an escape-aware body: inside one
+ * SQL literal a lone `'` cannot occur, so there is no ambiguity to resolve and
+ * nothing for a `''`-versus-terminator decision to get wrong. Runs BEFORE the
+ * single-quote pattern so the doubled form is consumed first.
+ *
+ * Found because the test written for the single-quote fix called
+ * `.replace(/''/g, "'")` on its own input, converting the doubled form to the
+ * plain one and asserting against a shape that never reaches the database.
+ * The test is corrected alongside this.
+ */
+const _KQ_DOUBLED = "(?:'')?";
+const _SENSITIVE_LITERAL_SQUOTE_DOUBLED_RE = new RegExp(
+  `(${_KQ_DOUBLED}${_KEY_START}${_KEY_PREFIX}(?:${_SENSITIVE_KEYS})${_KEY_END}${_KQ_DOUBLED})(\\s*[:=]\\s*)''[^']*''`,
+  "gi",
+);
 const _SENSITIVE_LITERAL_SQUOTE_RE = new RegExp(
   `(${_KQ}${_KEY_START}${_KEY_PREFIX}(?:${_SENSITIVE_KEYS})${_KEY_END}${_KQ})(\\s*[:=]\\s*)'[^'\\\\]*(?:\\\\.[^'\\\\]*)*'`,
   "gi",
@@ -196,6 +226,10 @@ const _SENSITIVE_AUTH_LINE_RE =
 
 export function scrubSqlSecrets(sql: string): string {
   return sql
+    .replace(
+      _SENSITIVE_LITERAL_SQUOTE_DOUBLED_RE,
+      (_m, key: string, sep: string) => `${key}${sep}''[REDACTED]''`,
+    )
     .replace(
       _SENSITIVE_LITERAL_SQUOTE_RE,
       (_m, key: string, sep: string) => `${key}${sep}'[REDACTED]'`,
