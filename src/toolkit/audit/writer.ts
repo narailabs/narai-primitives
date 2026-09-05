@@ -100,8 +100,15 @@ const KEY_PREFIX = "(?:(?:secret|session|access|refresh|client|api|auth|private)
  * (`request payload: {\\"password\\":\\"hunter2\\"}`), and a key group that
  * accepted only a bare `"` matched none of it — so the escaped *value* branch
  * never got a chance to run and the whole object leaked.
+ *
+ * The escape run is tied to a left boundary. Without it the group is optional
+ * at every index, so on a long backslash run each index consumed the whole
+ * remaining run before failing to find a quote — four patterns share this
+ * prefix, and `scrubSecrets("\\".repeat(20_000))` cost 2.6s and scaled
+ * quadratically on externally derived error text. A run is only ever entered
+ * at its first backslash now, which is the only start that can match anyway.
  */
-const KQ = '(?:\\\\*["\'])?';
+const KQ = '(?:(?<!\\\\)\\\\*["\'])?';
 const KEY_START = "(?<![A-Za-z0-9])";
 const KEY_END = "(?![A-Za-z0-9])";
 /**
@@ -188,11 +195,11 @@ const AUTH_SCHEME = "[A-Za-z0-9!#$%&*+^_~|.-]+";
 const AUTH_PARAM_VALUE =
   "[^\\s,\"'\\r\\n\\]}]*'[^\\s,\"'\\r\\n\\]}]*'[^\\s,\"'\\r\\n\\]}]*|[^\\s,\"'\\r\\n\\]}]+";
 const SENSITIVE_AUTH_PARAMS_RE = new RegExp(
-  `(\\\\*["']?)(\\bauthorization\\b)(\\\\*["']?)(\\s*[:=]\\s*)(${AUTH_SCHEME}\\s+)?${AUTH_PARAM_NAME}\\s*=\\s*(?:(\\\\*["'])(?:(?:(?!\\6)(?:\\\\.|[^\\r\\n]))*\\6|[^\\r\\n]*)|${AUTH_PARAM_VALUE})(?:\\s*,\\s*${AUTH_PARAM_NAME}\\s*=\\s*(?:(\\\\*["'])(?:(?:(?!\\7)(?:\\\\.|[^\\r\\n]))*\\7|[^\\r\\n]*)|${AUTH_PARAM_VALUE}))*`,
+  `((?<!\\\\)\\\\*["']?|["']?)(\\bauthorization\\b)(\\\\*["']?)(\\s*[:=]\\s*)(${AUTH_SCHEME}\\s+)?${AUTH_PARAM_NAME}\\s*=\\s*(?:(\\\\*["'])(?:(?:(?!\\6)(?:\\\\.|[^\\\\\\r\\n]))*\\6|[^\\r\\n]*)|${AUTH_PARAM_VALUE})(?:\\s*,\\s*${AUTH_PARAM_NAME}\\s*=\\s*(?:(\\\\*["'])(?:(?:(?!\\7)(?:\\\\.|[^\\\\\\r\\n]))*\\7|[^\\r\\n]*)|${AUTH_PARAM_VALUE}))*`,
   "gi",
 );
 const SENSITIVE_AUTH_ESCAPED_RE =
-  /(\\*["']?)(\bauthorization\b)(\\*["']?)(\s*[:=]\s*)((?:bearer|basic)\s+)?\\+(["'])((?:bearer|basic)\s+)?(?:\\\\.|(?!\\+\6)[^\r\n])*(\\+\6)?/gi;
+  /((?<!\\)\\*["']?|["']?)(\bauthorization\b)(\\*["']?)(\s*[:=]\s*)((?:bearer|basic)\s+)?\\+(["'])((?:bearer|basic)\s+)?(?:\\\\.|(?!\\+\6)[^\r\n])*(\\+\6)?/gi;
 const SENSITIVE_AUTH_QUOTED_RE =
   /(?<=["'])(\bauthorization\b)(\\*["']?)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\5)[^\r\n\\])*(\5)|[^\r\n]*)|(?:[^"'\r\n\\]|["'](?![\s]*(?:[,;)\]}]|$)))+)/gi;
 const SENSITIVE_AUTH_LINE_RE =
@@ -348,7 +355,7 @@ const PEM_BLOCK_RE =
  * that genuinely had no terminator.
  */
 const PEM_TRUNCATED_RE =
-  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[ \t]*[\r\n]+[A-Za-z0-9+/=]{16,}){0,256}[ \t]*[\r\n]*/g;
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[ \t]*[\r\n]+[A-Za-z0-9+/=]{16,}){0,256}(?:[ \t]*[\r\n]+[A-Za-z0-9+/=]{1,15}(?=[ \t]*(?:[\r\n]|$)))?[ \t]*[\r\n]*/g;
 
 const SENSITIVE_ESCAPED_QUOTE_RE = new RegExp(
   `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)\\\\+(["'])(?:\\\\\\\\.|(?!\\\\+\\3)[^\\r\\n])*(\\\\+\\3)?`,

@@ -565,6 +565,83 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     }
   });
 
+  it("returns an envelope when an array iterator throws", async () => {
+    // Sibling of the accessor case above, and the same contract: the array
+    // branch used `for…of`, which reads and calls `cur[Symbol.iterator]` —
+    // caller code on an array subclass. Zod can reject the value without ever
+    // iterating it, so the schema produced its validation failure and the
+    // exception from collecting redaction candidates escaped instead of the
+    // envelope. Walking by index reaches no iteration protocol.
+    class Hostile extends Array {
+      [Symbol.iterator](): never {
+        throw new Error("iterator exploded");
+      }
+    }
+    const hostile = Hostile.from([1, 2, 3]) as unknown[];
+    const c = createConnector<{}>({
+      name: "throwing-iterator-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.any().superRefine((_v, ctx) => {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: "rejected value hunter2",
+            });
+          }),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    // Unlike the accessor case this does NOT have to fail closed: an indexed
+    // walk reads elements 1, 2, 3 successfully, so the candidate set is
+    // complete and correct. What is asserted is the contract that broke —
+    // `fetch()` resolves to an envelope instead of rejecting.
+    for (const params of [hostile, { a: hostile }, [1, hostile]]) {
+      const env = await c.fetch("login", params);
+      expect(env.status).toBe("error");
+      if (env.status === "error") {
+        expect(env.error_code).toBe("VALIDATION_ERROR");
+      }
+    }
+    // And a credential inside a hostile array is still found and redacted.
+    const withSecret = Hostile.from(["hunter2"]) as unknown[];
+    const env = await c.fetch("login", withSecret);
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("hunter2");
+    }
+  });
+
+  it("still collects candidates from an ordinary array", async () => {
+    // The index walk has to keep finding what the iterator walk found, or the
+    // fix above trades an escape for a leak.
+    const c = createConnector<{}>({
+      name: "array-candidate-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.any().superRefine((_v, ctx) => {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: "rejected value hunter2",
+            });
+          }),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const env = await c.fetch("login", ["hunter2"]);
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("hunter2");
+    }
+  });
+
   it("holds the node bound while enqueuing, not only while popping", async () => {
     // The bound was checked on the way out, so a container pushed its whole
     // contents first: `new Array(100_000_000)` is cheap to construct and

@@ -358,10 +358,21 @@ function collectInputStrings(input: unknown, out: Set<string>): boolean {
     // grew the work stack to a billion entries before the bound was consulted
     // again. Time was never the tell: 8M slots cost 68ms and 311MB, so the
     // process died of memory while looking fast. The bound now holds for both.
+    // Indexed, not `for…of`: the iteration protocol reads and calls
+    // `cur[Symbol.iterator]`, which is caller code on an array subclass and is
+    // the same escape the object branch below was closed for. `length` is an
+    // own non-configurable property of an array, so only element reads can
+    // throw, and those are an incomplete walk — which the caller fails closed
+    // on for exactly this reason.
     if (Array.isArray(cur)) {
-      for (const v of cur) {
-        if (nodes++ > MAX_INPUT_NODES) return false;
-        stack.push(v);
+      try {
+        const len = cur.length;
+        for (let i = 0; i < len; i++) {
+          if (nodes++ > MAX_INPUT_NODES) return false;
+          stack.push(cur[i]);
+        }
+      } catch {
+        return false;
       }
       continue;
     }

@@ -801,6 +801,38 @@ describe("scrubSecrets — PEM private keys", () => {
     expect(JSON.parse(json)).toMatchObject({ user: "bob", n: 7 });
   });
 
+  it("redacts a body truncated inside its first line", () => {
+    // The truncated-block body is matched as base64 LINES of 16+ characters,
+    // which is what keeps it from running into prose. A cut inside the first
+    // line leaves a shorter fragment, and that fragment sat outside the match:
+    // `private_key=-----BEGIN PRIVATE KEY-----\nhunter2` redacted the header
+    // and echoed the key material after it.
+    //
+    // One final short line is now admitted, and only when nothing but
+    // whitespace follows it on that line — so a truncated body is consumed
+    // whether the message ends there or continues with a stack frame.
+    for (const input of [
+      "private_key=-----BEGIN PRIVATE KEY-----\nhunter2",
+      "private_key=-----BEGIN PRIVATE KEY-----\nhunter2\n  at parseKey (k.js:1)",
+      "-----BEGIN EC PRIVATE KEY-----\nhunter2",
+      "-----BEGIN RSA PRIVATE KEY-----\r\nhunter2\r\n",
+    ]) {
+      expect(scrubSecrets(input)).not.toContain("hunter2");
+    }
+    // The frame after the fragment is diagnostic, not key material.
+    expect(
+      scrubSecrets("private_key=-----BEGIN PRIVATE KEY-----\nhunter2\n  at parseKey (k.js:1)"),
+    ).toContain("at parseKey");
+  });
+
+  it("leaves prose after a header alone when it is not a bare line", () => {
+    // Over-matching is safe for a value and not for the message carrying it,
+    // which is why the body is line-shaped in the first place. A short base64
+    // fragment only counts when the line holds nothing else.
+    const out = scrubSecrets("-----BEGIN PRIVATE KEY-----\nthe quick brown fox jumped");
+    expect(out).toContain("quick brown fox jumped");
+  });
+
   it("keeps a certificate, which is published by design", () => {
     // Redacting one would remove the most useful thing in a TLS diagnostic.
     const cert = "-----BEGIN CERTIFICATE-----\nMIIEpublicdata\n-----END CERTIFICATE-----";
@@ -1053,6 +1085,44 @@ describe("scrubSecrets — auth header grammar and scan cost", () => {
     };
     const small = Math.max(timeFor(10_000), 0.2);
     const large = timeFor(40_000);
+    expect(large).toBeLessThan(small * 8);
+  });
+
+  it("does not backtrack exponentially on a run of backslashes in a quoted parameter value", () => {
+    // The quoted-value body was `(?:\\.|[^\r\n])*`, and the two alternatives
+    // BOTH match a backslash, so a run of them had exponentially many
+    // partitions to explore before the end-of-line fallback was taken.
+    // Measured before the fix, on the same synchronous path: 36 backslashes
+    // 315ms, 40 backslashes 2183ms, 44 backslashes 14925ms — about 2.8x per
+    // extra pair. After: under a millisecond at every size.
+    //
+    // An absolute budget is right here, unlike the linear/quadratic test
+    // above: the gap is four orders of magnitude, so 2s is far below the
+    // broken cost and far above the fixed one, and cannot go flaky between.
+    const input = 'ctx Authorization: Digest username="' + "\\".repeat(44);
+    const t = process.hrtime.bigint();
+    const out = scrubSecrets(input);
+    const elapsed = Number(process.hrtime.bigint() - t) / 1e6;
+    expect(elapsed).toBeLessThan(2_000);
+    expect(out).toContain("[REDACTED]");
+  });
+
+  it("scans a long run of backslashes in linear time", () => {
+    // The key-quote prefix `(?:\\*["'])?` is optional, so it was attempted at
+    // EVERY index; on a backslash run each attempt consumed the whole
+    // remaining run before failing to find a quote. Four patterns share that
+    // prefix. Measured before: 5k 67ms, 20k 974ms, 80k 15418ms — quadratic on
+    // externally derived error text. Same 4x ratio and threshold as the test
+    // above, and for the same reason.
+    const timeForSlashes = (n: number): number => {
+      const text = "\\".repeat(n);
+      scrubSecrets(text); // warm
+      const t = process.hrtime.bigint();
+      scrubSecrets(text);
+      return Number(process.hrtime.bigint() - t) / 1e6;
+    };
+    const small = Math.max(timeForSlashes(10_000), 0.2);
+    const large = timeForSlashes(40_000);
     expect(large).toBeLessThan(small * 8);
   });
 });
