@@ -842,17 +842,29 @@ describe("scrubSecrets — PEM private keys", () => {
   it("scans a malformed block in linear time", () => {
     // An unbounded body ran to the end of the input from every unterminated
     // `-----BEGIN`, which measured 0.8ms at 10k chars and 12.6ms at 80k.
+    //
+    // Best of three, and `hrtime` rather than `Date.now()`. The ratio is the
+    // assertion, so one descheduling spike moves it, and `Date.now()`'s
+    // millisecond granularity made `small` a 1ms floor that any noise in
+    // `large` cleared. It passed locally and failed under CI's coverage run,
+    // where instrumentation slows and roughens everything: 10 against a floor
+    // of 1. The minimum measures the work rather than the scheduler, without
+    // loosening the threshold and costing the test its teeth.
     const cost = (n: number): number => {
       const s = "-----BEGIN PRIVATE KEY-----\n".repeat(Math.floor(n / 28));
-      const t = Date.now();
-      scrubSecrets(s);
-      return Date.now() - t;
+      scrubSecrets(s); // warm
+      let best = Infinity;
+      for (let i = 0; i < 3; i++) {
+        const t = process.hrtime.bigint();
+        scrubSecrets(s);
+        best = Math.min(best, Number(process.hrtime.bigint() - t) / 1e6);
+      }
+      return best;
     };
-    cost(20_000);
-    const small = cost(40_000);
+    const small = Math.max(cost(40_000), 0.5);
     const large = cost(160_000);
     // 4x the input; linear predicts ~4x, quadratic ~16x.
-    expect(large).toBeLessThan(Math.max(small, 1) * 8);
+    expect(large).toBeLessThan(small * 8);
   });
 });
 
@@ -1240,8 +1252,10 @@ describe("scrubSecrets — auth header grammar and scan cost", () => {
       }
       return best;
     };
-    const small = Math.max(timeFor(10_000), 0.2);
-    const large = timeFor(40_000);
+    // Raised with the rest: at 10k this now costs a fraction of a millisecond,
+    // so under CI's coverage run the ratio measured instrumentation noise.
+    const small = Math.max(timeFor(100_000), 0.5);
+    const large = timeFor(400_000);
     expect(large).toBeLessThan(small * 8);
   });
 

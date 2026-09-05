@@ -1069,9 +1069,9 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
       // loosening the threshold — that would cost the test its teeth.
       let best = Infinity;
       for (let i = 0; i < 3; i++) {
-        const t = Date.now();
+        const t = process.hrtime.bigint();
         await c.fetch("login", { ids });
-        best = Math.min(best, Date.now() - t);
+        best = Math.min(best, Number(process.hrtime.bigint() - t) / 1e6);
       }
       return best;
     };
@@ -1080,7 +1080,7 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     const large = await time(8000);
     // 4x the input. Linear predicts ~4x, quadratic ~16x. A threshold of 8
     // separates them with room for noise; the pre-fix code measured ~13x.
-    expect(large).toBeLessThan(Math.max(small, 1) * 8);
+    expect(large).toBeLessThan(Math.max(small, 0.5) * 8);
   }, 120_000);
 
   it("redacts a one-character echoed credential", async () => {
