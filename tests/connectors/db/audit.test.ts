@@ -249,6 +249,24 @@ describe("wiki_db.audit", () => {
     expect(leaked).toEqual([]);
   });
 
+  it("scrubSqlSecrets redacts a single-quoted key", () => {
+    // The key-quote group was `"?`, so only a JSON-style key terminated. A
+    // Python-style repr reaches a SQL audit log as readily as JSON does — a
+    // JSONB literal, or an ORM echoing its parameters — and every key leaked
+    // in that shape, `password` included, not just the compound ones.
+    const leaked: string[] = [];
+    for (const k of ["password", "token", "secret_access_key", "session_token", "private_key"]) {
+      for (const input of [
+        `{'${k}': 'hunter2'}`,
+        `{'${k}':'hunter2'}`,
+        `UPDATE t SET x = '{''${k}'': ''hunter2''}'`.replace(/''/g, "'"),
+      ]) {
+        if (scrubSqlSecrets(input).includes("hunter2")) leaked.push(input);
+      }
+    }
+    expect(leaked).toEqual([]);
+  });
+
   it("scrubSqlSecrets still refuses run-on words", () => {
     // What the `\b` boundary was there to protect. Widening it must not cost
     // this: a column literally named `authority` or `tokenizer` is ordinary

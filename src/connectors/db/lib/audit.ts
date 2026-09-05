@@ -164,14 +164,29 @@ const _SENSITIVE_KEYS =
 /** Credential-word prefixes, so `secret_access_key` and `secretAccessKey` both reduce to a known prefix plus a known key. */
 const _KEY_PREFIX = "(?:(?:secret|session|access|refresh|client|api|auth|private)[_-]?)?";
 /** A non-alphanumeric neighbour, or the string edge — `\b`'s job without treating `_` as a letter. */
+/**
+ * The quote around the key is single OR double. A Python-style repr of a
+ * credential object reaches a SQL audit log as readily as JSON does — a JSONB
+ * literal, or an ORM echoing its parameters — and `"?` matched none of it, so
+ * the key never terminated and `{'session_token': 'hunter2'}` wrote the
+ * credential to events.jsonl in the clear. Measured across a key x wrapper
+ * cross-product: of the shapes still leaking after the compound-key fix, this
+ * one accounted for 21 on its own, plain `password` included.
+ *
+ * Same job as `KQ` in `src/toolkit/audit/writer.ts`, without its escape-run
+ * branch: the db copy has no escaped-value pattern to pair one with, so
+ * admitting an escaped key quote here would match a key whose value it then
+ * could not read. That shape stays open — see the note above `scrubSqlSecrets`.
+ */
+const _KQ = "[\"']?";
 const _KEY_START = "(?<![A-Za-z0-9])";
 const _KEY_END = "(?![A-Za-z0-9])";
 const _SENSITIVE_LITERAL_SQUOTE_RE = new RegExp(
-  `("?${_KEY_START}${_KEY_PREFIX}(?:${_SENSITIVE_KEYS})${_KEY_END}"?)(\\s*[:=]\\s*)'[^'\\\\]*(?:\\\\.[^'\\\\]*)*'`,
+  `(${_KQ}${_KEY_START}${_KEY_PREFIX}(?:${_SENSITIVE_KEYS})${_KEY_END}${_KQ})(\\s*[:=]\\s*)'[^'\\\\]*(?:\\\\.[^'\\\\]*)*'`,
   "gi",
 );
 const _SENSITIVE_LITERAL_DQUOTE_RE = new RegExp(
-  `("?${_KEY_START}${_KEY_PREFIX}(?:${_SENSITIVE_KEYS})${_KEY_END}"?)(\\s*[:=]\\s*)"[^"\\\\]*(?:\\\\.[^"\\\\]*)*"`,
+  `(${_KQ}${_KEY_START}${_KEY_PREFIX}(?:${_SENSITIVE_KEYS})${_KEY_END}${_KQ})(\\s*[:=]\\s*)"[^"\\\\]*(?:\\\\.[^"\\\\]*)*"`,
   "gi",
 );
 const _SENSITIVE_AUTH_QUOTED_RE =
