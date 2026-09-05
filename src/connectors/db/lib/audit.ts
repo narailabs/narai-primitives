@@ -196,14 +196,27 @@ const _KEY_END = "(?![A-Za-z0-9])";
  * as an EMPTY literal followed by `hunter2''`, so it matched, redacted
  * nothing, and wrote the credential to events.jsonl.
  *
- * The value body is `(?:[^']|'')*` — anything but an apostrophe, or a DOUBLED
- * one. `[^']*` alone stopped at the first `''` inside the value, so a secret
- * containing an escaped apostrophe was half-redacted and its tail stayed in
- * the log: `''abc''''def''` came back as `''[REDACTED]''''def''`. Inside one
- * SQL literal a lone `'` cannot occur, so the two alternatives are disjoint on
- * their first character and the greedy body backtracks to the LAST `''`,
- * which is the terminator. Runs BEFORE the single-quote pattern so the doubled
- * form is consumed first.
+ * The value is `''(?:[^']|'')*?''(?=\s*[,}]|$)` and every part of that earns
+ * its place, because `''` is genuinely ambiguous here: it is an escaped
+ * apostrophe INSIDE a value and also the quote that ENDS one, and the two
+ * readings pull in opposite directions.
+ *
+ * `[^']*` alone took the first reading's opposite and stopped at the first
+ * `''` inside a value, so a secret containing an escaped apostrophe was
+ * half-redacted and its tail stayed in the log: `''abc''''def''` came back as
+ * `''[REDACTED]''''def''`. A GREEDY `(?:[^']|'')*` then took the other extreme
+ * and ran to the last `''` in the statement, swallowing every field after the
+ * secret — `{''password'': ''p'', ''user'': ''bob''}` lost `''user'': ''bob''`
+ * entirely. Both are the same mistake: resolving the ambiguity by quantifier
+ * greed rather than by what actually distinguishes the two cases.
+ *
+ * What distinguishes them is STRUCTURE. A value's closing `''` is followed by
+ * a field separator or the end of the object; an embedded one is followed by
+ * more value. So the body is lazy and the terminator carries a lookahead for
+ * `,` or `}`. `abc''def` continues because `''` is followed by `d`; `p''`
+ * ends because `''` is followed by `,`.
+ *
+ * Runs BEFORE the single-quote pattern so the doubled form is consumed first.
  *
  * The doubled key quotes are REQUIRED, not optional. Optional, the pattern
  * had no left anchor and read two ordinary empty literals as one doubled
@@ -221,7 +234,7 @@ const _KEY_END = "(?![A-Za-z0-9])";
  * The test is corrected alongside this.
  */
 const _SENSITIVE_LITERAL_SQUOTE_DOUBLED_RE = new RegExp(
-  `(''${_KEY_START}${_KEY_PREFIX}(?:${_SENSITIVE_KEYS})${_KEY_END}'')(\\s*[:=]\\s*)''(?:[^']|'')*''`,
+  `(''${_KEY_START}${_KEY_PREFIX}(?:${_SENSITIVE_KEYS})${_KEY_END}'')(\\s*[:=]\\s*)''(?:[^']|'')*?''(?=\\s*[,}]|$)`,
   "gi",
 );
 const _SENSITIVE_LITERAL_SQUOTE_RE = new RegExp(

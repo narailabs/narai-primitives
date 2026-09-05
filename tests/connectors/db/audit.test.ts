@@ -318,10 +318,34 @@ describe("wiki_db.audit", () => {
     }
   });
 
+  it("scrubSqlSecrets stops a doubled value at its own field", () => {
+    // `''` is genuinely ambiguous: an escaped apostrophe INSIDE a value, and
+    // the quote that ENDS one. A greedy body resolved it by running to the
+    // last `''` in the statement and swallowed every field after the secret —
+    // `{''password'': ''p'', ''user'': ''bob''}` lost `''user'': ''bob''`.
+    // Structure is what tells the two apart: a closing `''` is followed by a
+    // separator or the end of the object.
+    for (const [sql, expected] of [
+      [
+        "UPDATE t SET x = '{''password'': ''p'', ''user'': ''bob''}'",
+        "UPDATE t SET x = '{''password'': ''[REDACTED]'', ''user'': ''bob''}'",
+      ],
+      [
+        "UPDATE t SET x = '{''token'': ''t'', ''a'': ''1'', ''b'': ''2''}'",
+        "UPDATE t SET x = '{''token'': ''[REDACTED]'', ''a'': ''1'', ''b'': ''2''}'",
+      ],
+      // Both readings at once: an embedded double AND a following field.
+      [
+        "UPDATE t SET x = '{''password'': ''abc''''def'', ''user'': ''bob''}'",
+        "UPDATE t SET x = '{''password'': ''[REDACTED]'', ''user'': ''bob''}'",
+      ],
+    ] as const) {
+      expect(scrubSqlSecrets(sql)).toBe(expected);
+    }
+  });
+
   it("scrubSqlSecrets does not run a doubled value past its own object", () => {
-    // The greedy body backtracks to the LAST `''`, so the risk of the wider
-    // class is the opposite of the bug: running past the value into the rest
-    // of the statement. What follows the object has to survive.
+    // The other direction: a second literal later in the statement.
     const sql =
       "UPDATE t SET x = '{''password'': ''p''}', y = '{''note'': ''keep''}' WHERE id = 3";
     const out = scrubSqlSecrets(sql);
@@ -329,6 +353,25 @@ describe("wiki_db.audit", () => {
     expect(out).toContain("WHERE id = 3");
     expect(out).not.toContain("''p''");
     expect(out.split("'").length).toBe(sql.split("'").length);
+  });
+
+  it("scrubSqlSecrets leaves every redacted statement parseable", () => {
+    // The apostrophe COUNT is not the invariant — a redacted secret takes its
+    // own escaped apostrophes with it, so `''abc''''def''` legitimately comes
+    // back shorter. What has to hold is that every literal is still closed,
+    // i.e. the count stays even.
+    for (const sql of [
+      "UPDATE t SET x = '{''session_token'': ''hunter2''}'",
+      "UPDATE t SET x = '{''password'': ''abc''''def''}'",
+      "UPDATE t SET x = '{''password'': ''a''''b''''c''}'",
+      "UPDATE t SET x = '{''a'': ''1'', ''token'': ''s''''t''}' WHERE id = 3",
+      "UPDATE t SET password = '' WHERE note = ''",
+      "SELECT * FROM t WHERE token = '' AND a = '' AND b = ''",
+    ]) {
+      const out = scrubSqlSecrets(sql);
+      expect((out.split("'").length - 1) % 2, sql).toBe(0);
+      expect(scrubSqlSecrets(out), sql).toBe(out);
+    }
   });
 
   it("scrubSqlSecrets leaves ordinary empty literals alone", () => {
