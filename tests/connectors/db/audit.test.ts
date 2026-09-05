@@ -296,6 +296,41 @@ describe("wiki_db.audit", () => {
     expect(scrubSqlSecrets(out)).toBe(out);
   });
 
+  it("scrubSqlSecrets consumes doubled apostrophes inside the value", () => {
+    // `[^']*` stopped at the first `''` INSIDE the value, so a secret holding
+    // an escaped apostrophe was half-redacted and its tail stayed in the log:
+    // `''abc''''def''` came back as `''[REDACTED]''''def''`.
+    for (const [sql, expected] of [
+      [
+        "UPDATE t SET x = '{''password'': ''abc''''def''}'",
+        "UPDATE t SET x = '{''password'': ''[REDACTED]''}'",
+      ],
+      [
+        "UPDATE t SET x = '{''password'': ''a''''b''''c''}'",
+        "UPDATE t SET x = '{''password'': ''[REDACTED]''}'",
+      ],
+      [
+        "UPDATE t SET x = '{''a'': ''1'', ''token'': ''s''''t''}' WHERE id = 3",
+        "UPDATE t SET x = '{''a'': ''1'', ''token'': ''[REDACTED]''}' WHERE id = 3",
+      ],
+    ] as const) {
+      expect(scrubSqlSecrets(sql)).toBe(expected);
+    }
+  });
+
+  it("scrubSqlSecrets does not run a doubled value past its own object", () => {
+    // The greedy body backtracks to the LAST `''`, so the risk of the wider
+    // class is the opposite of the bug: running past the value into the rest
+    // of the statement. What follows the object has to survive.
+    const sql =
+      "UPDATE t SET x = '{''password'': ''p''}', y = '{''note'': ''keep''}' WHERE id = 3";
+    const out = scrubSqlSecrets(sql);
+    expect(out).toContain("''keep''");
+    expect(out).toContain("WHERE id = 3");
+    expect(out).not.toContain("''p''");
+    expect(out.split("'").length).toBe(sql.split("'").length);
+  });
+
   it("scrubSqlSecrets leaves ordinary empty literals alone", () => {
     // With the doubled key quotes optional the pattern had no left anchor, so
     // two ordinary empty literals read as one doubled value: the match ran

@@ -196,10 +196,14 @@ const _KEY_END = "(?![A-Za-z0-9])";
  * as an EMPTY literal followed by `hunter2''`, so it matched, redacted
  * nothing, and wrote the credential to events.jsonl.
  *
- * The value class is `''[^']*''` rather than an escape-aware body: inside one
- * SQL literal a lone `'` cannot occur, so there is no ambiguity to resolve and
- * nothing for a `''`-versus-terminator decision to get wrong. Runs BEFORE the
- * single-quote pattern so the doubled form is consumed first.
+ * The value body is `(?:[^']|'')*` — anything but an apostrophe, or a DOUBLED
+ * one. `[^']*` alone stopped at the first `''` inside the value, so a secret
+ * containing an escaped apostrophe was half-redacted and its tail stayed in
+ * the log: `''abc''''def''` came back as `''[REDACTED]''''def''`. Inside one
+ * SQL literal a lone `'` cannot occur, so the two alternatives are disjoint on
+ * their first character and the greedy body backtracks to the LAST `''`,
+ * which is the terminator. Runs BEFORE the single-quote pattern so the doubled
+ * form is consumed first.
  *
  * The doubled key quotes are REQUIRED, not optional. Optional, the pattern
  * had no left anchor and read two ordinary empty literals as one doubled
@@ -217,7 +221,7 @@ const _KEY_END = "(?![A-Za-z0-9])";
  * The test is corrected alongside this.
  */
 const _SENSITIVE_LITERAL_SQUOTE_DOUBLED_RE = new RegExp(
-  `(''${_KEY_START}${_KEY_PREFIX}(?:${_SENSITIVE_KEYS})${_KEY_END}'')(\\s*[:=]\\s*)''[^']*''`,
+  `(''${_KEY_START}${_KEY_PREFIX}(?:${_SENSITIVE_KEYS})${_KEY_END}'')(\\s*[:=]\\s*)''(?:[^']|'')*''`,
   "gi",
 );
 const _SENSITIVE_LITERAL_SQUOTE_RE = new RegExp(
