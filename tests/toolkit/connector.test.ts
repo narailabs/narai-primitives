@@ -565,6 +565,136 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     }
   });
 
+  it("redacts a credential a handler echoes as prose", async () => {
+    // `scrubSecrets` recognises SHAPES — `key=value`, Authorization, a URL
+    // with userinfo. A handler that interpolates a credential into a sentence
+    // presents none of them, so the token reached the stdout envelope and the
+    // hardship recorder intact. The validation path has always redacted
+    // against the input; the runtime path had no equivalent.
+    const c = createConnector<{}>({
+      name: "prose-echo-test",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.object({
+            token: z.string(),
+            table: z.string(),
+            nested: z.object({ api_key: z.string() }).optional(),
+          }),
+          classify: { kind: "read" },
+          handler: async (p: { token: string; table: string; nested?: { api_key: string } }) => {
+            throw new Error(
+              `upstream rejected ${p.token} for ${p.table}` +
+                (p.nested !== undefined ? ` and ${p.nested.api_key}` : ""),
+            );
+          },
+        },
+      },
+    });
+
+    const env = await c.fetch("login", {
+      token: "hunter2",
+      table: "users",
+      nested: { api_key: "sk-live-abc" },
+    });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("hunter2");
+      expect(env.message).not.toContain("sk-live-abc");
+      // The benign parameter is the point of the path scoping: an error that
+      // cannot name the table it failed on has stopped being an error report.
+      expect(env.message).toContain("users");
+      expect(env.message).toContain("upstream rejected");
+    }
+  });
+
+  it("redacts a credential a mapError override echoes as prose", async () => {
+    // A connector's custom mapper commonly interpolates the raw driver error,
+    // and the override runs on the same path.
+    const c = createConnector<{}>({
+      name: "prose-echo-maperror",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.object({ password: z.string() }),
+          classify: { kind: "read" },
+          handler: async (p: { password: string }) => {
+            throw new Error(`denied ${p.password}`);
+          },
+        },
+      },
+      mapError: (err: unknown) => ({
+        error_code: "AUTH_ERROR" as const,
+        message: `mapped: ${err instanceof Error ? err.message : String(err)}`,
+      }),
+    });
+    const env = await c.fetch("login", { password: "hunter2" });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("hunter2");
+      expect(env.message).toContain("mapped:");
+    }
+  });
+
+  it("fails closed when the sensitive-value walk cannot finish", async () => {
+    // A partial set may be missing the very value the message echoes, so
+    // redacting against it would report success while leaking — the same rule
+    // the validation path follows.
+    const boom = {};
+    Object.defineProperty(boom, "trap", {
+      enumerable: true,
+      get() {
+        throw new Error("getter exploded");
+      },
+    });
+    const c = createConnector<{}>({
+      name: "prose-echo-failclosed",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.any(),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error("upstream rejected hunter2");
+          },
+        },
+      },
+    });
+    const env = await c.fetch("login", { token: "hunter2", boom });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("hunter2");
+    }
+  });
+
+  it("leaves a runtime message alone when no parameter is sensitive", async () => {
+    // Nothing to match against means nothing to redact — the message must not
+    // be blanked defensively, or every ordinary connection error loses its
+    // diagnostic.
+    const c = createConnector<{}>({
+      name: "prose-echo-nonsensitive",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.object({ table: z.string() }),
+          classify: { kind: "read" },
+          handler: async (p: { table: string }) => {
+            throw new Error(`ECONNREFUSED reading ${p.table}`);
+          },
+        },
+      },
+    });
+    const env = await c.fetch("login", { table: "users" });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).toBe("ECONNREFUSED reading users");
+    }
+  });
+
   it("returns an envelope when an array iterator throws", async () => {
     // Sibling of the accessor case above, and the same contract: the array
     // branch used `for…of`, which reads and calls `cur[Symbol.iterator]` —

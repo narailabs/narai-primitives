@@ -518,10 +518,75 @@ export function scrubSecrets(
   const scrubbed =
     depth === maxUnwrapDepth && unwrapJsonString(payload) !== null
       ? "[REDACTED]"
-      : scrubOneLayer(payload);
+      : scrubEmbeddedOrLayer(payload, maxUnwrapDepth - depth);
   let out = scrubbed;
   for (let i = 0; i < depth; i++) out = JSON.stringify(out);
   return out;
+}
+
+/**
+ * Scrub one layer, unwrapping a serialized payload that sits BEHIND a prose
+ * prefix rather than being the whole message.
+ *
+ * The peel above requires the entire string to be a JSON string, and an SDK
+ * exception routinely prefixes one (`Error payload: "{\"password\":…}"`). With
+ * the prefix present nothing was unwrapped and the escaped form went straight
+ * to the pattern chain, which copes at one and two layers and stops coping at
+ * three: `'Error payload: ' + JSON.stringify(x3)` of a value containing a
+ * double quote leaked, while the identical payload without the prefix did not.
+ * The behaviour was also non-monotonic in depth — three and five leaked, four
+ * did not — which is the mark of a regex resolving a genuine ambiguity rather
+ * than a threshold set too low. Unwrapping removes the ambiguity instead of
+ * widening another escape class to survive it.
+ *
+ * Two bounds keep this from becoming its own problem:
+ *
+ * - ONE candidate span, from the first quote to the last, and one `JSON.parse`
+ *   of it. Trying every quote pair would be quadratic in a message full of
+ *   quotes, which is the cost class the previous round was about.
+ * - The span is rewritten only when `JSON.stringify` reproduces it byte for
+ *   byte. Re-serializing is not identity in general — `"aAb"` comes back
+ *   as `"aAb"` — and silently rewriting the message around a credential is the
+ *   failure mode this whole file guards against.
+ */
+/**
+ * Whether a byte-identical JSON-string span is a SERIALIZED PAYLOAD rather
+ * than an ordinary quoted value.
+ *
+ * Both parse; the difference is what unwrapping does. `api_key="hunter2"` has
+ * a span of `"hunter2"` whose inner is the same characters without the quotes,
+ * so unwrapping it and re-serializing hands the value straight back — while
+ * the prefix, scrubbed alone, no longer has a value to redact. That was a leak
+ * introduced by the unwrap itself, caught by twelve existing tests.
+ *
+ * Two conditions, and both are needed. Unwrapping must have actually removed
+ * escapes, and the result must open like a JSON document. A quoted value
+ * containing an escape (`"say \"hi\""`) satisfies the first alone.
+ */
+function isSerializedPayload(span: string, inner: string): boolean {
+  if (inner === span.slice(1, -1)) return false;
+  const head = inner.charCodeAt(0);
+  // `{`, `[`, or a further JSON string layer.
+  return head === 123 || head === 91 || head === 34;
+}
+
+function scrubEmbeddedOrLayer(text: string, remainingDepth: number): string {
+  if (remainingDepth > 0) {
+    const first = text.indexOf('"');
+    const last = text.lastIndexOf('"');
+    if (first !== -1 && last > first) {
+      const span = text.slice(first, last + 1);
+      const inner = unwrapJsonString(span);
+      if (inner !== null && JSON.stringify(inner) === span && isSerializedPayload(span, inner)) {
+        return (
+          scrubOneLayer(text.slice(0, first)) +
+          JSON.stringify(scrubSecrets(inner, remainingDepth - 1)) +
+          scrubOneLayer(text.slice(last + 1))
+        );
+      }
+    }
+  }
+  return scrubOneLayer(text);
 }
 
 /** The pattern chain itself, applied to one fully-decoded layer. */

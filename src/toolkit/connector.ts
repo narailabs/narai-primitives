@@ -402,6 +402,156 @@ function escapeRegExp(literal: string): string {
   return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * Replace occurrences of caller-supplied values in a message.
+ *
+ * Redacting the occurrences, rather than dropping the message that contains
+ * one, keeps every word the author wrote that is not the caller's own input:
+ * `rejected value xy` becomes `rejected value [REDACTED]` and a constant
+ * `.refine` instruction survives with only the echoed token removed. Dropping
+ * on echo was wrong in kind, not degree — it blanked a diagnostic whenever an
+ * input string happened to occur inside it, while a value below the length
+ * cutoff still escaped entirely: opposite failures of one substring test used
+ * as a boolean.
+ *
+ * Longest first — a short value can be a substring of a longer one, and
+ * replacing the short one first would leave the longer one's remainder
+ * standing.
+ *
+ * The node bound limits the WALK, not the formatting that follows it, and the
+ * two are independent in the same way depth and node count were. One issue per
+ * rejected array element against one candidate per element is a cross-product:
+ * 8k elements measured 134ms against 35ms for 4k, which is the quadratic
+ * signature, and the ceiling is the node bound squared. Budgeting the
+ * comparisons makes the existing bound actually bound the error path;
+ * exhausting the budget fails closed, like a partial walk. The budget is
+ * shared across every message one redactor formats, which is why it is held
+ * here rather than passed per call.
+ *
+ * Module-level, and used by BOTH error paths. It was a closure inside the Zod
+ * branch, and the runtime path had no equivalent at all — the divergence that
+ * this connector's own db sibling spent a separate PR repairing.
+ */
+function makeEchoRedactor(candidates: Iterable<string>): {
+  redact: (message: string) => string;
+  exhausted: () => boolean;
+} {
+  const byLengthDesc = [...candidates].sort((a, b) => b.length - a.length);
+  let comparisons = 0;
+  let budgetExhausted = false;
+  return {
+    exhausted: (): boolean => budgetExhausted,
+    redact: (message: string): string => {
+      let out = message;
+      for (const value of byLengthDesc) {
+        if (comparisons++ > MAX_REDACTION_COMPARISONS) {
+          budgetExhausted = true;
+          return "[REDACTED]";
+        }
+        if (value.length >= WHOLE_TOKEN_MATCH_BELOW_LEN) {
+          if (out.includes(value)) out = out.split(value).join("[REDACTED]");
+          continue;
+        }
+        // A short value only counts where it is the whole token. Anchored on
+        // non-word neighbours rather than `\b`, so a punctuation-only value
+        // (`-`, `.`) — which `\b` cannot anchor at all — is still matched.
+        const re = new RegExp(
+          `(^|[^A-Za-z0-9_])${escapeRegExp(value)}(?=[^A-Za-z0-9_]|$)`,
+          "g",
+        );
+        out = out.replace(re, (_m, lead: string) => `${lead}[REDACTED]`);
+      }
+      return out;
+    },
+  };
+}
+
+/**
+ * Values the caller passed at a SENSITIVE parameter path.
+ *
+ * The runtime error path — a handler or a `mapError` throwing — was guarded by
+ * `scrubSecrets` alone, which recognises shapes: `key=value`, an Authorization
+ * header, a URL with userinfo. A handler that echoes a credential as ordinary
+ * prose has none of those, so `{ token: "hunter2" }` with a handler throwing
+ * `upstream rejected hunter2` wrote the token to the stdout envelope and into
+ * hardship context intact.
+ *
+ * Path-scoped, unlike {@link collectInputStrings}, and that is the whole
+ * design. The Zod path can redact against EVERY input value because a
+ * validation message echoes the value it rejected. A runtime message echoes
+ * whatever the author interpolated, and most of that is legitimately
+ * diagnostic: `{ table: "users" }` with `no such table: users` must keep the
+ * table name, or the error stops being an error report. Only values the schema
+ * itself marks as credentials are candidates.
+ *
+ * Same bounds and the same failure modes as {@link collectInputStrings}: node
+ * budget, cycle guard, indexed array walk, and accessors that throw are an
+ * incomplete walk rather than an escaped exception. Returns whether the walk
+ * COMPLETED, so the caller can fail closed on a partial set.
+ */
+function collectSensitiveInputStrings(input: unknown, out: Set<string>): boolean {
+  const seen = new Set<object>();
+  const stack: Array<{ node: unknown; path: string }> = [{ node: input, path: "" }];
+  let nodes = 0;
+  while (stack.length > 0) {
+    if (nodes++ > MAX_INPUT_NODES) return false;
+    const cur = stack.pop() as { node: unknown; path: string };
+    const v = cur.node;
+    if (typeof v === "string" || typeof v === "number" || typeof v === "bigint") {
+      if (cur.path !== "" && isSensitiveFieldPath(cur.path)) addCandidate(out, String(v));
+      continue;
+    }
+    if (v === null || typeof v !== "object") continue;
+    if (seen.has(v)) continue;
+    seen.add(v);
+    if (Array.isArray(v)) {
+      try {
+        const len = v.length;
+        for (let i = 0; i < len; i++) {
+          if (nodes++ > MAX_INPUT_NODES) return false;
+          // An element inherits its container's path: every entry of
+          // `tokens` is as sensitive as `tokens` itself.
+          stack.push({ node: v[i], path: cur.path });
+        }
+      } catch {
+        return false;
+      }
+      continue;
+    }
+    let entries: Array<[string, unknown]>;
+    try {
+      entries = Object.entries(v as Record<string, unknown>);
+    } catch {
+      return false;
+    }
+    for (const [k, child] of entries) {
+      if (nodes++ > MAX_INPUT_NODES) return false;
+      stack.push({ node: child, path: cur.path === "" ? k : `${cur.path}.${k}` });
+    }
+  }
+  return true;
+}
+
+/**
+ * Redact credentials a runtime message echoes as prose.
+ *
+ * Runs after `scrubSecrets`, which handles every recognisable SHAPE; this
+ * handles the values that arrive in no shape at all. A partial or
+ * budget-exhausted walk fails closed, for the same reason the Zod path does:
+ * redacting against a set that may be missing the very value being echoed
+ * would report success while leaking.
+ */
+function redactSensitiveEchoes(message: string, params: unknown): string {
+  if (params === undefined || params === null) return message;
+  const candidates = new Set<string>();
+  const complete = collectSensitiveInputStrings(params, candidates);
+  if (!complete) return "[REDACTED]";
+  if (candidates.size === 0) return message;
+  const echo = makeEchoRedactor(candidates);
+  const out = echo.redact(message);
+  return echo.exhausted() ? "[REDACTED]" : out;
+}
+
 function defaultErrorMap(
   err: unknown,
   params?: unknown,
@@ -437,38 +587,8 @@ function defaultErrorMap(
     // Longest first — a short value can be a substring of a longer one, and
     // replacing the short one first would leave the longer one's remainder
     // standing.
-    const byLengthDesc = [...inputStrings].sort((a, b) => b.length - a.length);
-    // The node bound limits the WALK, not the formatting that follows it, and
-    // the two are independent in the same way depth and node count were. One
-    // issue per rejected array element against one candidate per element is a
-    // cross-product: 8k elements measured 134ms against 35ms for 4k, which is
-    // the quadratic signature, and the ceiling is the node bound squared.
-    // Budgeting the comparisons makes the existing bound actually bound the
-    // error path; exhausting the budget fails closed, like a partial walk.
-    let comparisons = 0;
-    let budgetExhausted = false;
-    const redactEchoedInput = (message: string): string => {
-      let out = message;
-      for (const value of byLengthDesc) {
-        if (comparisons++ > MAX_REDACTION_COMPARISONS) {
-          budgetExhausted = true;
-          return "[REDACTED]";
-        }
-        if (value.length >= WHOLE_TOKEN_MATCH_BELOW_LEN) {
-          if (out.includes(value)) out = out.split(value).join("[REDACTED]");
-          continue;
-        }
-        // A short value only counts where it is the whole token. Anchored on
-        // non-word neighbours rather than `\\b`, so a punctuation-only value
-        // (`-`, `.`) — which `\\b` cannot anchor at all — is still matched.
-        const re = new RegExp(
-          `(^|[^A-Za-z0-9_])${escapeRegExp(value)}(?=[^A-Za-z0-9_]|$)`,
-          "g",
-        );
-        out = out.replace(re, (_m, lead: string) => `${lead}[REDACTED]`);
-      }
-      return out;
-    };
+    const echo = makeEchoRedactor(inputStrings);
+    const redactEchoedInput = echo.redact;
     const msg = err.issues
       .map((i) => {
         const joined = i.path.join(".");
@@ -506,7 +626,7 @@ function defaultErrorMap(
         // failed.
         const drop =
           !collected ||
-          budgetExhausted ||
+          echo.exhausted() ||
           isSensitiveFieldPath(path) ||
           (joined === "" && mentionsSensitiveField(i.message));
         return `${path}: ${drop ? "[REDACTED]" : redactEchoedInput(i.message)}`;
@@ -1105,6 +1225,12 @@ function mapAndBuildError<TSdk>(
   // mapper commonly interpolates the raw driver error.
   // DO NOT REMOVE: pinned by tests/toolkit/connector.test.ts.
   message = scrubSecrets(message);
+  // `scrubSecrets` recognises shapes; a handler echoing a credential as prose
+  // presents none. This is the same input-aware redaction the validation path
+  // has always done, scoped to sensitive paths so an ordinary diagnostic that
+  // names a benign parameter survives.
+  // DO NOT REMOVE: pinned by tests/toolkit/connector.test.ts.
+  message = redactSensitiveEchoes(message, params);
 
   const scope = safeScope(cfg, { sdk, action, params });
 

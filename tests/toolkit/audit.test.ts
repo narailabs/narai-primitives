@@ -856,6 +856,73 @@ describe("scrubSecrets — PEM private keys", () => {
   });
 });
 
+describe("scrubSecrets — a serialized payload behind a prefix", () => {
+  it("unwraps a payload that is not the whole message", () => {
+    // The peel required the ENTIRE string to be a JSON string, and an SDK
+    // exception routinely prefixes one. With the prefix present nothing was
+    // unwrapped and the escaped form went straight to the pattern chain,
+    // which copes at one and two layers and stops coping at three.
+    const leaks: string[] = [];
+    for (const val of ["hunter2", 'pre"hunter2', "pre'hunter2"]) {
+      for (let depth = 1; depth <= 5; depth++) {
+        let s = JSON.stringify({ password: val });
+        for (let i = 1; i < depth; i++) s = JSON.stringify(s);
+        for (const input of [s, `Error payload: ${s}`, `${s} <- failed`]) {
+          if (scrubSecrets(input).includes("hunter2")) leaks.push(input);
+        }
+      }
+    }
+    expect(leaks).toEqual([]);
+  });
+
+  it("was non-monotonic in depth, which is the tell", () => {
+    // Three and five leaked while four did not — a regex resolving a genuine
+    // ambiguity, not a threshold set too low. Pinned so a future change to the
+    // escape classes cannot quietly reintroduce it at some other depth.
+    const nested = JSON.stringify(JSON.stringify(JSON.stringify({ password: 'pre"hunter2' })));
+    expect(scrubSecrets(`Error payload: ${nested}`)).not.toContain("hunter2");
+  });
+
+  it("rewrites only spans it can reproduce byte for byte", () => {
+    // Re-serializing is not identity: `"aAb"` comes back as `"aAb"`.
+    // Silently rewriting the message around a credential is the failure mode
+    // this file exists to prevent, so a span that does not round-trip is left
+    // to the pattern chain untouched.
+    for (const input of [
+      'unicode "a\\u0041b" span',
+      'he said "hello" then "goodbye"',
+      'request failed: "some quoted thing" and more',
+      "ends with a quote \"",
+      "no quotes at all here",
+    ]) {
+      expect(scrubSecrets(input)).toBe(input);
+    }
+  });
+
+  it("does not mistake an ordinary quoted value for a payload", () => {
+    // Both parse as JSON strings. The difference is that unwrapping an
+    // ordinary value hands it straight back, and the prefix scrubbed on its
+    // own no longer has a value to redact — a leak the unwrap itself would
+    // introduce. Twelve existing tests caught this; these pin the boundary.
+    expect(scrubSecrets('api_key="hunter2"')).not.toContain("hunter2");
+    expect(scrubSecrets('ctx api_key="hunter2"')).not.toContain("hunter2");
+    expect(scrubSecrets('{"password":"hunter2"}')).not.toContain("hunter2");
+    expect(scrubSecrets('msg: "say \\"hi\\"" and password="hunter2"')).not.toContain("hunter2");
+  });
+
+  it("is idempotent over every prefixed shape", () => {
+    for (const input of [
+      `Error payload: ${JSON.stringify(JSON.stringify({ password: "hunter2" }))}`,
+      'api_key="hunter2"',
+      'unicode "a\\u0041b" span',
+      '{"a":1,"password":"x","b":2}',
+    ]) {
+      const once = scrubSecrets(input);
+      expect(scrubSecrets(once)).toBe(once);
+    }
+  });
+});
+
 describe("scrubSecrets — serialization depth", () => {
   // Rounds 1-3 of review on this PR each reported the same predicate with one
   // more escaping layer: an escaped value, then an escaped Digest parameter
