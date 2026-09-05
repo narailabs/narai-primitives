@@ -201,14 +201,23 @@ const _KEY_END = "(?![A-Za-z0-9])";
  * nothing for a `''`-versus-terminator decision to get wrong. Runs BEFORE the
  * single-quote pattern so the doubled form is consumed first.
  *
+ * The doubled key quotes are REQUIRED, not optional. Optional, the pattern
+ * had no left anchor and read two ordinary empty literals as one doubled
+ * value: `UPDATE t SET password = '' WHERE note = ''` came back as
+ * `UPDATE t SET password = '[REDACTED]'[REDACTED]''`, deleting `WHERE note = `
+ * from the audit record. Over-matching is safe for a value and not for the
+ * statement carrying it, and an audit log that rewrites the query has lost
+ * the thing it exists to keep. Requiring them also says what the pattern is
+ * for: an object embedded in a literal, where both key and value are doubled.
+ * A bare key inside one cannot arise — JSON and Python reprs both quote keys.
+ *
  * Found because the test written for the single-quote fix called
  * `.replace(/''/g, "'")` on its own input, converting the doubled form to the
  * plain one and asserting against a shape that never reaches the database.
  * The test is corrected alongside this.
  */
-const _KQ_DOUBLED = "(?:'')?";
 const _SENSITIVE_LITERAL_SQUOTE_DOUBLED_RE = new RegExp(
-  `(${_KQ_DOUBLED}${_KEY_START}${_KEY_PREFIX}(?:${_SENSITIVE_KEYS})${_KEY_END}${_KQ_DOUBLED})(\\s*[:=]\\s*)''[^']*''`,
+  `(''${_KEY_START}${_KEY_PREFIX}(?:${_SENSITIVE_KEYS})${_KEY_END}'')(\\s*[:=]\\s*)''[^']*''`,
   "gi",
 );
 const _SENSITIVE_LITERAL_SQUOTE_RE = new RegExp(

@@ -296,6 +296,48 @@ describe("wiki_db.audit", () => {
     expect(scrubSqlSecrets(out)).toBe(out);
   });
 
+  it("scrubSqlSecrets leaves ordinary empty literals alone", () => {
+    // With the doubled key quotes optional the pattern had no left anchor, so
+    // two ordinary empty literals read as one doubled value: the match ran
+    // from the first `''` to the second and deleted everything between them.
+    // Over-matching is safe for a value and not for the statement carrying it
+    // — an audit log that rewrites the query has lost what it exists to keep.
+    for (const [sql, expected] of [
+      [
+        "UPDATE t SET password = '' WHERE note = ''",
+        "UPDATE t SET password = '[REDACTED]' WHERE note = ''",
+      ],
+      [
+        "SELECT * FROM t WHERE token = '' AND a = '' AND b = ''",
+        "SELECT * FROM t WHERE token = '[REDACTED]' AND a = '' AND b = ''",
+      ],
+      [
+        "UPDATE t SET password = 'x' WHERE note = 'y'",
+        "UPDATE t SET password = '[REDACTED]' WHERE note = 'y'",
+      ],
+    ] as const) {
+      expect(scrubSqlSecrets(sql)).toBe(expected);
+    }
+  });
+
+  it("scrubSqlSecrets preserves the statement around every doubled match", () => {
+    // The structural property behind the case above, asserted directly: what
+    // is outside the redacted value has to survive intact.
+    for (const sql of [
+      "UPDATE t SET x = '{''session_token'': ''hunter2''}' WHERE id = 7",
+      "INSERT INTO t VALUES ('{''a'': 1, ''password'': ''p''}'), ('plain')",
+      "SELECT '' AS empty, '{''token'': ''t''}' AS payload FROM t",
+    ]) {
+      const out = scrubSqlSecrets(sql);
+      // Same number of apostrophes: the redaction re-emits the doubling.
+      expect(out.split("'").length, sql).toBe(sql.split("'").length);
+      expect(scrubSqlSecrets(out), sql).toBe(out);
+    }
+    expect(
+      scrubSqlSecrets("UPDATE t SET x = '{''session_token'': ''hunter2''}' WHERE id = 7"),
+    ).toContain("WHERE id = 7");
+  });
+
   it("scrubSqlSecrets does not redact a doubled non-credential column", () => {
     // The doubled pattern must respect the same key list as the others.
     const sql = `UPDATE t SET x = '{''primary_key'': ''not-a-secret''}'`;
