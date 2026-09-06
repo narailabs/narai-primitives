@@ -241,7 +241,7 @@ const _KEY_END = "(?![A-Za-z0-9])";
  * The test is corrected alongside this.
  */
 const _SENSITIVE_LITERAL_SQUOTE_DOUBLED_RE = new RegExp(
-  `(''${_KEY_START}${_KEY_PREFIX}(?:${_SENSITIVE_KEYS})${_KEY_END}'')(\\s*[:=]\\s*)''(?:[^']|'')*?(?<!')''(?=\\s*[,}]|$)`,
+  `(''${_KEY_START}${_KEY_PREFIX}(?:${_SENSITIVE_KEYS})${_KEY_END}'')(\\s*[:=]\\s*)''(?:\\\\''|[^']|'')*?(?:(?<=\\\\'')|(?<!'))''(?=\\s*[,}]|$)`,
   "gi",
 );
 /**

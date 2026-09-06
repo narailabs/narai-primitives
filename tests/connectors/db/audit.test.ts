@@ -441,6 +441,39 @@ describe("wiki_db.audit", () => {
     expect(scrubSqlSecrets(sql)).toContain("not-a-secret");
   });
 
+  it("scrubSqlSecrets ends a doubled value at an escaped trailing apostrophe", () => {
+    // Regression (Codex P1). Python reaches the backslash-escaped form only
+    // when the value contains BOTH quote types: repr of `abc"'` is
+    // `'abc"\''`, and SQL-doubling makes the tail a backslash plus FOUR
+    // apostrophes — an escaped data apostrophe followed by the closing quote.
+    // `(?<!')` rejected that closing pair, because a doubled data apostrophe
+    // sits immediately before it.
+    //
+    // The report said the credential came back unchanged. It does not: the
+    // value ran PAST its own field and swallowed the rest of the object, so
+    // the failure is statement corruption rather than a leak. That is the
+    // worse half by this file's own rule — an audit log that rewrites the
+    // query has lost the thing it exists to keep.
+    const sql =
+      "INSERT INTO t VALUES ('{''password'': ''abc\"\\'''', ''user'': ''bob''}')";
+    const out = scrubSqlSecrets(sql);
+    expect(out).not.toContain("abc");
+    expect(out, "the value ran past its own field").toContain(
+      "''user'': ''bob''",
+    );
+  });
+
+  it("scrubSqlSecrets handles escaped apostrophes throughout a doubled value", () => {
+    // Not only at the terminator. `a'b"c'd` escapes twice mid-value, which the
+    // pre-fix pattern already handled — pinned so the escape-aware branch
+    // cannot regress the interior case while fixing the trailing one.
+    const sql =
+      "INSERT INTO t VALUES ('{''password'': ''a\\''b\"c\\''d'', ''user'': ''bob''}')";
+    const out = scrubSqlSecrets(sql);
+    expect(out).not.toContain("b\"c");
+    expect(out).toContain("''user'': ''bob''");
+  });
+
   it("scrubSqlSecrets redacts a doubled key whose value is double-quoted", () => {
     // Python switches a value to double quotes exactly when the value itself
     // contains an apostrophe, so this is the shape a leaked credential takes
