@@ -738,6 +738,132 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     }
   });
 
+  it("fails closed when the credentials loader itself rejects", async () => {
+    // Regression (Codex P1) against the `loadedCreds` capture added earlier in
+    // this run. If `credentials()` rejects, there is by definition nothing to
+    // collect — and its message is the one most likely to name what it had
+    // just read. Redacting against an empty candidate set reports success
+    // while leaking, so the message is dropped whole.
+    const c = createConnector<{}>({
+      name: "creds-reject",
+      credentials: async () => {
+        throw new Error("vault rejected hunter2");
+      },
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.any(),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const env = await c.fetch("login", {});
+    expect(env.status).toBe("error");
+    if (env.status === "error") expect(env.message).toBe("[REDACTED]");
+  });
+
+  it("does not wait for a hung loader after its sibling fails", async () => {
+    // Regression (Codex P2) against the same change. `allSettled` waits for
+    // EVERY sibling, so a fast configuration failure paired with a loader that
+    // never settles turned a reportable setup error into a request that never
+    // resolved. `Promise.all` rejects on the first failure instead.
+    const c = createConnector<{}>({
+      name: "hung-sibling",
+      credentials: () => new Promise<never>(() => undefined),
+      sdk: async () => {
+        throw new Error("bad configuration");
+      },
+      actions: {
+        login: {
+          params: z.any(),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const env = await Promise.race([
+      c.fetch("login", {}),
+      new Promise((resolve) => setTimeout(() => resolve("TIMED_OUT"), 3000)),
+    ]);
+    expect(env, "fetch() never reached the error branch").not.toBe("TIMED_OUT");
+    expect((env as { status: string }).status).toBe("error");
+  }, 10_000);
+
+  it("fails closed on a class instance under a sensitive path", async () => {
+    // Regression (Codex P1). `Object.prototype.toString.call(new Foo())` is
+    // `[object Object]`, so the tag test written to exclude class instances
+    // did not exclude them — verified, not assumed. A credential in a private
+    // field behind a prototype getter enumerates to nothing and reported a
+    // COMPLETE walk, which is the exact fail-open the check exists to stop.
+    class Holder {
+      readonly #secret: string;
+      constructor(secret: string) {
+        this.#secret = secret;
+      }
+      get value(): string {
+        return this.#secret;
+      }
+    }
+    const c = createConnector<{}>({
+      name: "class-instance",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.any(),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error("upstream rejected hunter2");
+          },
+        },
+      },
+    });
+    const env = await c.fetch("login", { token: new Holder("hunter2") });
+    expect(env.status).toBe("error");
+    if (env.status === "error") expect(env.message).not.toContain("hunter2");
+  });
+
+  it("fails closed on an accessor at an array index", async () => {
+    // Regression (Codex P2). Both walkers read `cur[i]` directly, so the
+    // accessor rule the object branch enforces was only half present — an
+    // indexed read runs caller code exactly as a property read does. Codex
+    // named this in the original accessor thread and I fixed only the object
+    // branch, which is what made it the next round's finding.
+    //
+    // The getter counts its own invocations, so this asserts the walk never
+    // ran it rather than only that nothing leaked.
+    let reads = 0;
+    const arr: unknown[] = [];
+    Object.defineProperty(arr, 0, {
+      enumerable: true,
+      configurable: true,
+      get() {
+        reads++;
+        return "hunter2";
+      },
+    });
+    Object.defineProperty(arr, "length", { value: 1, writable: true });
+    const c = createConnector<{}>({
+      name: "array-accessor",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.any(),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error("upstream rejected hunter2");
+          },
+        },
+      },
+    });
+    const env = await c.fetch("login", { token: arr });
+    expect(env.status).toBe("error");
+    if (env.status === "error") expect(env.message).not.toContain("hunter2");
+    expect(reads, "the walk executed an indexed accessor").toBe(0);
+  });
+
   it("redacts a credential the SDK loader echoes when it rejects", async () => {
     // Regression (Codex P1). `Promise.all` left the destructuring unassigned
     // when `sdk()` rejected, so `credentials` reached the redactor as

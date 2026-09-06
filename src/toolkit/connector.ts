@@ -379,6 +379,30 @@ function addCandidate(out: Set<string>, value: string): void {
  * This narrows the hole rather than closing it: `getOwnPropertyDescriptors`
  * still fires a Proxy's traps.
  */
+/**
+ * One array element, or `null` when reading it is not safe.
+ *
+ * Indexed reads run caller code exactly as property reads do — an accessor
+ * installed at index 0 is invoked by `cur[i]` — so the accessor rule the
+ * object branch enforces has to hold here too, or the guard is only half
+ * present. Both walkers go through this for the same reason they share
+ * {@link enumerableDataEntries}.
+ */
+function arrayElementValue(
+  arr: readonly unknown[],
+  i: number,
+): { value: unknown } | null {
+  let d: PropertyDescriptor | undefined;
+  try {
+    d = Object.getOwnPropertyDescriptor(arr, i);
+  } catch {
+    return null;
+  }
+  if (d === undefined) return { value: undefined };
+  if (d.get !== undefined || d.set !== undefined) return null;
+  return { value: d.value };
+}
+
 function enumerableDataEntries(
   v: object,
   budget: number,
@@ -389,7 +413,15 @@ function enumerableDataEntries(
     // plain-object test added to close the container hole was itself an
     // uncaught call to caller code, on the same path and with the same
     // consequence: `fetch()` rejecting instead of returning the envelope.
-    if (Object.prototype.toString.call(v) !== "[object Object]") return null;
+    // The PROTOTYPE, not the tag. `Object.prototype.toString.call(new Foo())`
+    // is `[object Object]` for an ordinary class instance, so the tag test
+    // written to exclude class instances did not exclude them — a credential
+    // in a private field behind a prototype getter enumerated to nothing and
+    // reported a COMPLETE walk, which is the fail-open this check exists to
+    // prevent. A plain object literal and a null-prototype object pass; a
+    // class instance, a Map, a Set, a Date and a RegExp do not.
+    const proto = Object.getPrototypeOf(v);
+    if (proto !== Object.prototype && proto !== null) return null;
     // Width before descriptors. `getOwnPropertyDescriptors` materializes one
     // descriptor object per property, so a programmatic object with millions
     // of keys bought seconds of synchronous work and the memory for all of it
@@ -452,7 +484,9 @@ function collectInputStrings(input: unknown, out: Set<string>): boolean {
         const len = cur.length;
         for (let i = 0; i < len; i++) {
           if (nodes++ > MAX_INPUT_NODES) return false;
-          stack.push(cur[i]);
+          const el = arrayElementValue(cur, i);
+          if (el === null) return false;
+          stack.push(el.value);
         }
       } catch {
         return false;
@@ -632,7 +666,9 @@ function collectSensitiveInputStrings(input: unknown, out: Set<string>): boolean
           if (nodes++ > MAX_INPUT_NODES) return false;
           // An element inherits its container's path: every entry of
           // `tokens` is as sensitive as `tokens` itself.
-          stack.push({ node: v[i], sensitive: cur.sensitive });
+          const el = arrayElementValue(v, i);
+          if (el === null) return false;
+          stack.push({ node: el.value, sensitive: cur.sensitive });
         }
       } catch {
         return false;
@@ -1134,21 +1170,38 @@ export function createConnector<TSdk = unknown>(
     // 6. decision.status === "success". Load SDK + creds lazily, run handler.
     let sdk: TSdk;
     let credentials: Credentials;
-    // `allSettled`, not `all`. With `all`, one rejection left the destructuring
-    // unassigned, so a `sdk()` failure whose message echoes a credential
-    // reached `redactSensitiveEchoes` with `credentials === undefined` and no
-    // candidate to match — and setup prose carries no `key = value` shape for
-    // `scrubSecrets` to find either. The credentials that DID resolve are the
-    // ones most likely to be named in the failure.
-    const settled = await Promise.allSettled([loadSdk(), loadCreds()]);
-    const loadedCreds =
-      settled[1].status === "fulfilled" ? settled[1].value : undefined;
+    // One rejection used to leave the destructuring unassigned, so a `sdk()`
+    // failure whose message echoes a credential reached the redactor with
+    // `credentials === undefined` and no candidate — and setup prose carries
+    // no `key = value` shape for `scrubSecrets` to find either. The
+    // credentials that DID resolve are the ones most likely to be named.
+    //
+    // Recorded as it settles rather than by `allSettled`, which waits for
+    // EVERY sibling: a fast configuration failure paired with a hung
+    // network-backed loader turned a reportable setup error into a request
+    // that never resolved at all. `Promise.all` still rejects on the first
+    // failure, and the credential is already captured if it arrived first.
+    let loadedCreds: Credentials | undefined;
+    let credsUnavailable = false;
+    const sdkPromise = loadSdk();
+    const credsPromise = loadCreds().then(
+      (c) => {
+        loadedCreds = c;
+        return c;
+      },
+      (e) => {
+        // The loader read a credential and then failed. There is nothing to
+        // collect, so nothing can be matched, and its message is the one most
+        // likely to name what it just read. Fails closed below.
+        credsUnavailable = true;
+        throw e;
+      },
+    );
+    // Keep a handler attached: if the credentials loader rejects first,
+    // `Promise.all` settles and this one would otherwise be unhandled.
+    sdkPromise.catch(() => undefined);
     try {
-      for (const r of settled) {
-        if (r.status === "rejected") throw r.reason;
-      }
-      sdk = (settled[0] as PromiseFulfilledResult<TSdk>).value;
-      credentials = (settled[1] as PromiseFulfilledResult<Credentials>).value;
+      [sdk, credentials] = await Promise.all([sdkPromise, credsPromise]);
     } catch (err) {
       return mapAndBuildError(
         err,
@@ -1162,6 +1215,7 @@ export function createConnector<TSdk = unknown>(
         validated,
         loadedCreds,
         params,
+        credsUnavailable,
       );
     }
 
@@ -1396,6 +1450,13 @@ function mapAndBuildError<TSdk>(
   params: unknown,
   credentials?: unknown,
   rawParams?: unknown,
+  /**
+   * The credentials loader itself failed, so no credential is available to
+   * redact against. Its message is the one most likely to name what it had
+   * just read, and there is nothing to match it with — so the message is
+   * dropped whole rather than redacted against an empty set.
+   */
+  credentialsUnavailable = false,
 ): ErrorEnvelope {
   let code: ErrorCode;
   let message: string;
@@ -1426,7 +1487,9 @@ function mapAndBuildError<TSdk>(
   // has always done, scoped to sensitive paths so an ordinary diagnostic that
   // names a benign parameter survives.
   // DO NOT REMOVE: pinned by tests/toolkit/connector.test.ts.
-  message = redactSensitiveEchoes(message, params, credentials, rawParams);
+  message = credentialsUnavailable
+    ? "[REDACTED]"
+    : redactSensitiveEchoes(message, params, credentials, rawParams);
 
   const scope = safeScope(cfg, { sdk, action, params });
 
