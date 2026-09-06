@@ -441,6 +441,119 @@ describe("wiki_db.audit", () => {
     expect(scrubSqlSecrets(sql)).toContain("not-a-secret");
   });
 
+  it("keeps the statement intact for every Python-repr escape shape", () => {
+    // Regression (Codex P2) against the escape-aware branch added an hour
+    // earlier in this same PR: `\''` was written as one alternative, so a value
+    // ENDING in a backslash had its final `\` consumed together with the
+    // closing quote pair, the match ran on through the next field, and
+    // `''user'': ''bob''` was deleted from the audited statement.
+    //
+    // Hand-picked examples are exactly what let that through, so this pins
+    // the whole space instead. Nothing may leak, and — the property the
+    // regression broke — the statement around the credential must survive.
+  // Generated from Python: for each value below, `repr({'password': v,
+  // 'user': 'bob'})` embedded in a SQL literal with every apostrophe
+  // doubled. Values are every string of length 1-3 over {a, ', ", \\} —
+  // the three characters that decide which quoting repr picks, plus one
+  // ordinary letter. Hand-picked examples are what let the trailing-
+  // backslash case through; this is the whole space.
+  const REPR_SHAPES: ReadonlyArray<readonly [string, string]> = [
+    ["\"", "INSERT INTO t VALUES ('{''password'': ''\"'', ''user'': ''bob''}')"],
+    ["\"\"", "INSERT INTO t VALUES ('{''password'': ''\"\"'', ''user'': ''bob''}')"],
+    ["\"\"\"", "INSERT INTO t VALUES ('{''password'': ''\"\"\"'', ''user'': ''bob''}')"],
+    ["\"\"'", "INSERT INTO t VALUES ('{''password'': ''\"\"\\'''', ''user'': ''bob''}')"],
+    ["\"\"\\", "INSERT INTO t VALUES ('{''password'': ''\"\"\\\\'', ''user'': ''bob''}')"],
+    ["\"\"a", "INSERT INTO t VALUES ('{''password'': ''\"\"a'', ''user'': ''bob''}')"],
+    ["\"'", "INSERT INTO t VALUES ('{''password'': ''\"\\'''', ''user'': ''bob''}')"],
+    ["\"'\"", "INSERT INTO t VALUES ('{''password'': ''\"\\''\"'', ''user'': ''bob''}')"],
+    ["\"''", "INSERT INTO t VALUES ('{''password'': ''\"\\''\\'''', ''user'': ''bob''}')"],
+    ["\"'\\", "INSERT INTO t VALUES ('{''password'': ''\"\\''\\\\'', ''user'': ''bob''}')"],
+    ["\"'a", "INSERT INTO t VALUES ('{''password'': ''\"\\''a'', ''user'': ''bob''}')"],
+    ["\"\\", "INSERT INTO t VALUES ('{''password'': ''\"\\\\'', ''user'': ''bob''}')"],
+    ["\"\\\"", "INSERT INTO t VALUES ('{''password'': ''\"\\\\\"'', ''user'': ''bob''}')"],
+    ["\"\\'", "INSERT INTO t VALUES ('{''password'': ''\"\\\\\\'''', ''user'': ''bob''}')"],
+    ["\"\\\\", "INSERT INTO t VALUES ('{''password'': ''\"\\\\\\\\'', ''user'': ''bob''}')"],
+    ["\"\\a", "INSERT INTO t VALUES ('{''password'': ''\"\\\\a'', ''user'': ''bob''}')"],
+    ["\"a", "INSERT INTO t VALUES ('{''password'': ''\"a'', ''user'': ''bob''}')"],
+    ["\"a\"", "INSERT INTO t VALUES ('{''password'': ''\"a\"'', ''user'': ''bob''}')"],
+    ["\"a'", "INSERT INTO t VALUES ('{''password'': ''\"a\\'''', ''user'': ''bob''}')"],
+    ["\"a\\", "INSERT INTO t VALUES ('{''password'': ''\"a\\\\'', ''user'': ''bob''}')"],
+    ["\"aa", "INSERT INTO t VALUES ('{''password'': ''\"aa'', ''user'': ''bob''}')"],
+    ["'", "INSERT INTO t VALUES ('{''password'': \"''\", ''user'': ''bob''}')"],
+    ["'\"", "INSERT INTO t VALUES ('{''password'': ''\\''\"'', ''user'': ''bob''}')"],
+    ["'\"\"", "INSERT INTO t VALUES ('{''password'': ''\\''\"\"'', ''user'': ''bob''}')"],
+    ["'\"'", "INSERT INTO t VALUES ('{''password'': ''\\''\"\\'''', ''user'': ''bob''}')"],
+    ["'\"\\", "INSERT INTO t VALUES ('{''password'': ''\\''\"\\\\'', ''user'': ''bob''}')"],
+    ["'\"a", "INSERT INTO t VALUES ('{''password'': ''\\''\"a'', ''user'': ''bob''}')"],
+    ["''", "INSERT INTO t VALUES ('{''password'': \"''''\", ''user'': ''bob''}')"],
+    ["''\"", "INSERT INTO t VALUES ('{''password'': ''\\''\\''\"'', ''user'': ''bob''}')"],
+    ["'''", "INSERT INTO t VALUES ('{''password'': \"''''''\", ''user'': ''bob''}')"],
+    ["''\\", "INSERT INTO t VALUES ('{''password'': \"''''\\\\\", ''user'': ''bob''}')"],
+    ["''a", "INSERT INTO t VALUES ('{''password'': \"''''a\", ''user'': ''bob''}')"],
+    ["'\\", "INSERT INTO t VALUES ('{''password'': \"''\\\\\", ''user'': ''bob''}')"],
+    ["'\\\"", "INSERT INTO t VALUES ('{''password'': ''\\''\\\\\"'', ''user'': ''bob''}')"],
+    ["'\\'", "INSERT INTO t VALUES ('{''password'': \"''\\\\''\", ''user'': ''bob''}')"],
+    ["'\\\\", "INSERT INTO t VALUES ('{''password'': \"''\\\\\\\\\", ''user'': ''bob''}')"],
+    ["'\\a", "INSERT INTO t VALUES ('{''password'': \"''\\\\a\", ''user'': ''bob''}')"],
+    ["'a", "INSERT INTO t VALUES ('{''password'': \"''a\", ''user'': ''bob''}')"],
+    ["'a\"", "INSERT INTO t VALUES ('{''password'': ''\\''a\"'', ''user'': ''bob''}')"],
+    ["'a'", "INSERT INTO t VALUES ('{''password'': \"''a''\", ''user'': ''bob''}')"],
+    ["'a\\", "INSERT INTO t VALUES ('{''password'': \"''a\\\\\", ''user'': ''bob''}')"],
+    ["'aa", "INSERT INTO t VALUES ('{''password'': \"''aa\", ''user'': ''bob''}')"],
+    ["\\", "INSERT INTO t VALUES ('{''password'': ''\\\\'', ''user'': ''bob''}')"],
+    ["\\\"", "INSERT INTO t VALUES ('{''password'': ''\\\\\"'', ''user'': ''bob''}')"],
+    ["\\\"\"", "INSERT INTO t VALUES ('{''password'': ''\\\\\"\"'', ''user'': ''bob''}')"],
+    ["\\\"'", "INSERT INTO t VALUES ('{''password'': ''\\\\\"\\'''', ''user'': ''bob''}')"],
+    ["\\\"\\", "INSERT INTO t VALUES ('{''password'': ''\\\\\"\\\\'', ''user'': ''bob''}')"],
+    ["\\\"a", "INSERT INTO t VALUES ('{''password'': ''\\\\\"a'', ''user'': ''bob''}')"],
+    ["\\'", "INSERT INTO t VALUES ('{''password'': \"\\\\''\", ''user'': ''bob''}')"],
+    ["\\'\"", "INSERT INTO t VALUES ('{''password'': ''\\\\\\''\"'', ''user'': ''bob''}')"],
+    ["\\''", "INSERT INTO t VALUES ('{''password'': \"\\\\''''\", ''user'': ''bob''}')"],
+    ["\\'\\", "INSERT INTO t VALUES ('{''password'': \"\\\\''\\\\\", ''user'': ''bob''}')"],
+    ["\\'a", "INSERT INTO t VALUES ('{''password'': \"\\\\''a\", ''user'': ''bob''}')"],
+    ["\\\\", "INSERT INTO t VALUES ('{''password'': ''\\\\\\\\'', ''user'': ''bob''}')"],
+    ["\\\\\"", "INSERT INTO t VALUES ('{''password'': ''\\\\\\\\\"'', ''user'': ''bob''}')"],
+    ["\\\\'", "INSERT INTO t VALUES ('{''password'': \"\\\\\\\\''\", ''user'': ''bob''}')"],
+    ["\\\\\\", "INSERT INTO t VALUES ('{''password'': ''\\\\\\\\\\\\'', ''user'': ''bob''}')"],
+    ["\\\\a", "INSERT INTO t VALUES ('{''password'': ''\\\\\\\\a'', ''user'': ''bob''}')"],
+    ["\\a", "INSERT INTO t VALUES ('{''password'': ''\\\\a'', ''user'': ''bob''}')"],
+    ["\\a\"", "INSERT INTO t VALUES ('{''password'': ''\\\\a\"'', ''user'': ''bob''}')"],
+    ["\\a'", "INSERT INTO t VALUES ('{''password'': \"\\\\a''\", ''user'': ''bob''}')"],
+    ["\\a\\", "INSERT INTO t VALUES ('{''password'': ''\\\\a\\\\'', ''user'': ''bob''}')"],
+    ["\\aa", "INSERT INTO t VALUES ('{''password'': ''\\\\aa'', ''user'': ''bob''}')"],
+    ["a", "INSERT INTO t VALUES ('{''password'': ''a'', ''user'': ''bob''}')"],
+    ["a\"", "INSERT INTO t VALUES ('{''password'': ''a\"'', ''user'': ''bob''}')"],
+    ["a\"\"", "INSERT INTO t VALUES ('{''password'': ''a\"\"'', ''user'': ''bob''}')"],
+    ["a\"'", "INSERT INTO t VALUES ('{''password'': ''a\"\\'''', ''user'': ''bob''}')"],
+    ["a\"\\", "INSERT INTO t VALUES ('{''password'': ''a\"\\\\'', ''user'': ''bob''}')"],
+    ["a\"a", "INSERT INTO t VALUES ('{''password'': ''a\"a'', ''user'': ''bob''}')"],
+    ["a'", "INSERT INTO t VALUES ('{''password'': \"a''\", ''user'': ''bob''}')"],
+    ["a'\"", "INSERT INTO t VALUES ('{''password'': ''a\\''\"'', ''user'': ''bob''}')"],
+    ["a''", "INSERT INTO t VALUES ('{''password'': \"a''''\", ''user'': ''bob''}')"],
+    ["a'\\", "INSERT INTO t VALUES ('{''password'': \"a''\\\\\", ''user'': ''bob''}')"],
+    ["a'a", "INSERT INTO t VALUES ('{''password'': \"a''a\", ''user'': ''bob''}')"],
+    ["a\\", "INSERT INTO t VALUES ('{''password'': ''a\\\\'', ''user'': ''bob''}')"],
+    ["a\\\"", "INSERT INTO t VALUES ('{''password'': ''a\\\\\"'', ''user'': ''bob''}')"],
+    ["a\\'", "INSERT INTO t VALUES ('{''password'': \"a\\\\''\", ''user'': ''bob''}')"],
+    ["a\\\\", "INSERT INTO t VALUES ('{''password'': ''a\\\\\\\\'', ''user'': ''bob''}')"],
+    ["a\\a", "INSERT INTO t VALUES ('{''password'': ''a\\\\a'', ''user'': ''bob''}')"],
+    ["aa", "INSERT INTO t VALUES ('{''password'': ''aa'', ''user'': ''bob''}')"],
+    ["aa\"", "INSERT INTO t VALUES ('{''password'': ''aa\"'', ''user'': ''bob''}')"],
+    ["aa'", "INSERT INTO t VALUES ('{''password'': \"aa''\", ''user'': ''bob''}')"],
+    ["aa\\", "INSERT INTO t VALUES ('{''password'': ''aa\\\\'', ''user'': ''bob''}')"],
+    ["aaa", "INSERT INTO t VALUES ('{''password'': ''aaa'', ''user'': ''bob''}')"],
+  ];
+    for (const [value, sql] of REPR_SHAPES) {
+      const out = scrubSqlSecrets(sql);
+      expect(out, `statement mangled for value ${JSON.stringify(value)}`).toContain(
+        "''user'': ''bob''",
+      );
+      expect(out, `not redacted for value ${JSON.stringify(value)}`).toContain(
+        "[REDACTED]",
+      );
+    }
+  });
+
   it("scrubSqlSecrets ends a doubled value at an escaped trailing apostrophe", () => {
     // Regression (Codex P1). Python reaches the backslash-escaped form only
     // when the value contains BOTH quote types: repr of `abc"'` is
