@@ -52,29 +52,745 @@ export interface AuditWriterOptions {
  * matched mid-string and the greedy unquoted value class swallowed the
  * trailing `"}`, producing unterminated JSON.
  */
-const SENSITIVE_KEYS = "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|auth";
+/**
+ * `private[_-]?key` is listed explicitly rather than by adding a bare `key`
+ * alternative. `KEY_PREFIX` can already consume `private`, but with no `key`
+ * word to complete it a service-account credential rendered as
+ * `private_key="…"` (or `privateKey`, as SDKs emit it) passed through intact.
+ * A bare `key` would fix that and also redact `primary_key`, `sort_key` and
+ * every other ordinary `*_key` column, which is why the compound is named.
+ */
+const SENSITIVE_WORDS =
+  "password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|private[_-]?key|auth";
+/**
+ * Key boundaries. Plain `\b` is wrong here because `_` is a word character,
+ * so `\btoken\b` misses `session_token` and `\bsecret\b` /
+ * `\baccess[_-]?key\b` both miss `secret_access_key` — the exact field names
+ * `src/connectors/aws/cli.ts` uses for AWS credentials.
+ *
+ * Requiring a non-alphanumeric neighbour instead admits the `_`/`-` joined
+ * compound forms while still rejecting the run-on words `\b` was added to
+ * protect (`mytoken`, `notpassword`, `xsecret`), where the neighbour is a
+ * letter.
+ *
+ * camelCase compounds are handled by KEY_PREFIX rather than by loosening these
+ * boundaries. Widening KEY_START to admit a lowercase-to-uppercase transition
+ * looks like the general rule, but these patterns are built with `i`: the `i`
+ * flag case-folds `[A-Z]`, so `(?<=[a-z0-9])(?=[A-Z])` degrades to "letter
+ * followed by letter" and starts redacting `mytoken` and `notpassword` — the
+ * exact run-on words the boundary exists to reject. Measured, not assumed.
+ */
+/**
+ * Credential-word prefixes, so a compound key matches whichever way it is
+ * spelled: `secret_access_key` (CLI/env), `secretAccessKey` (JS objects) and
+ * `secret-access-key` all reduce to a known prefix plus a known key.
+ *
+ * SDK and custom errors render JavaScript credential objects, so the same
+ * fields that `src/connectors/aws/cli.ts` writes as snake_case arrive from the
+ * SDK as camelCase. Enumerating the prefixes keeps the run-on protection that
+ * a case-based rule loses: `my` is not a credential word, so `mytoken` still
+ * falls through to KEY_START and is still rejected.
+ */
+const KEY_PREFIX = "(?:(?:secret|session|access|refresh|client|api|auth|private)[_-]?)?";
+/**
+ * Optional quote around the key: single or double, escaped or not. Single
+ * quotes matter because a Python-style repr of a credential object
+ * (`{'password': 'hunter2'}`) reaches these logs as readily as JSON does. A serialized object embedded
+ * in another string arrives with its key quotes escaped as well
+ * (`request payload: {\\"password\\":\\"hunter2\\"}`), and a key group that
+ * accepted only a bare `"` matched none of it — so the escaped *value* branch
+ * never got a chance to run and the whole object leaked.
+ *
+ * The escape run is tied to a left boundary. Without it the group is optional
+ * at every index, so on a long backslash run each index consumed the whole
+ * remaining run before failing to find a quote — four patterns share this
+ * prefix, and `scrubSecrets("\\".repeat(20_000))` cost 2.6s and scaled
+ * quadratically on externally derived error text. A run is only ever entered
+ * at its first backslash now, which is the only start that can match anyway.
+ */
+const KQ = '(?:(?<!\\\\)\\\\*["\'])?';
+const KEY_START = "(?<![A-Za-z0-9])";
+const KEY_END = "(?![A-Za-z0-9])";
+/**
+ * The quoted-value bodies use the loop-unrolled form `[^'\\]*(?:\\.[^'\\]*)*`
+ * rather than the equivalent `(?:[^'\\]|\\.)*`. Both are linear here — the two
+ * alternatives are disjoint on their first character, so no ambiguous
+ * decomposition exists — but #95 rewrites these same two lines to the unrolled
+ * form, and it edits them off `main`, i.e. without KEY_START/KEY_END. Carrying
+ * the unrolled body here makes this branch a strict superset of #95 on these
+ * lines, so resolving that conflict in either direction keeps the compound-key
+ * boundary fix. Taking #95's side otherwise silently restores `\b` and stops
+ * redacting `secret_access_key` / `session_token`.
+ */
 const SENSITIVE_SQUOTE_RE = new RegExp(
-  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)'(?:[^'\\\\]|\\\\.)*'`,
+  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)'(?:[^'\\\\]*(?:\\\\.[^'\\\\]*)*(')|[^\\r\\n]*)`,
   "gi",
 );
 const SENSITIVE_DQUOTE_RE = new RegExp(
-  `("?\\b(?:${SENSITIVE_KEYS})\\b"?)(\\s*[:=]\\s*)"(?:[^"\\\\]|\\\\.)*"`,
+  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)"(?:[^"\\\\]*(?:\\\\.[^"\\\\]*)*(")|[^\\r\\n]*)`,
   "gi",
 );
+/**
+ * Authorization with a backslash-escaped quoted value, and optionally an
+ * escaped quote around the keyword too — the nested-serialization form, same
+ * as SENSITIVE_ESCAPED_QUOTE_RE handles for the other credential keys.
+ *
+ * This exists because the escaped form had to be added to each pattern family
+ * separately, and the Authorization family was missed twice. Runs first, so
+ * the balanced and unquoted branches below only ever see unescaped text.
+ */
+/**
+ * A parameterised auth header (`Authorization: Digest username="alice",
+ * response="…"`). The value is a comma-separated list of `key="value"` pairs
+ * rather than one token, so every other branch stopped at the first quote and
+ * left the `response` credential standing.
+ *
+ * The line-anchored pattern already covered this by consuming to end of line,
+ * which is why the gap only ever showed up mid-string. This branch is the
+ * bounded equivalent: it consumes only well-formed `key="value"` pairs joined
+ * by commas, so it cannot run past the header into a surrounding payload the
+ * way an end-of-line rule would.
+ *
+ * The whole parameter list is redacted, including `username` and `nonce`.
+ * Over-redacting a header whose interesting field is the credential is the
+ * safe direction, and it matches what the line-anchored branch already does.
+ */
+/**
+ * Parameter NAMES are an HTTP token, not `\w+`. RFC 7616 defines `username*`
+ * for the extended (RFC 5987) encoding, and the token set also admits
+ * `- . ! # $ % & + ^ _ ~ |`. `\w+` rejected `username*`, so a header using the
+ * extended form failed this branch and fell through to the inline one, which
+ * stops at the first quote and leaves `response` standing.
+ *
+ * The whole token set is admitted at once rather than adding `*`. This branch
+ * has now been widened three times — for bare values, for escaped quotes, and
+ * for this — and each time the next unhandled character was the next report.
+ * The apostrophe is the one token character deliberately excluded: it is also
+ * a value quote here, and admitting it into the name would let a name run
+ * across a quoted value.
+ */
+const AUTH_PARAM_NAME = "[A-Za-z0-9!#$%&*+^_~|.-]+";
+/**
+ * An authentication SCHEME is a token as well, not `[A-Za-z]+`. `AWS4-HMAC-SHA256`
+ * carries digits and hyphens, so a scheme-letters-only rule failed the whole
+ * parameter branch and the fallback stopped at the first quoted value, leaving
+ * `Signature="…"` standing. Same grammar as the parameter names above and the
+ * same exclusion: the apostrophe is a value quote here.
+ */
+const AUTH_SCHEME = "[A-Za-z0-9!#$%&*+^_~|.-]+";
+/**
+ * An unquoted parameter value. Two shapes, and the order matters.
+ *
+ * First the RFC 5987 extended value an `xxx*=` parameter carries —
+ * `charset'language'value`, as in `username*=UTF-8''alice`. It contains
+ * apostrophes by definition, which the plain token below excludes, so a
+ * token-only rule stopped at `UTF-8` and the parameter list failed from
+ * there. Each of its three segments still excludes the double quote, so it
+ * cannot run across a following quoted value.
+ *
+ * Then the plain token. It excludes the quote, comma and whitespace to keep
+ * the parameter boundaries, and `]` and `}` so the branch cannot escape the
+ * header into a surrounding payload.
+ */
+const AUTH_PARAM_VALUE =
+  "[^\\s,\"'\\r\\n\\]}]*'[^\\s,\"'\\r\\n\\]}]*'[^\\s,\"'\\r\\n\\]}]*|[^\\s,\"'\\r\\n\\]}]+";
+const SENSITIVE_AUTH_PARAMS_RE = new RegExp(
+  `((?<!\\\\)\\\\*["']?|["']?)(\\bauthorization\\b)(\\\\*["']?)(\\s*[:=]\\s*)(${AUTH_SCHEME}\\s+)?${AUTH_PARAM_NAME}\\s*=\\s*(?:(\\\\*["'])(?:(?:(?!\\6)(?:\\\\.|[^\\\\\\r\\n]))*\\6|[^\\r\\n]*)|${AUTH_PARAM_VALUE})(?:\\s*,\\s*${AUTH_PARAM_NAME}\\s*=\\s*(?:(\\\\*["'])(?:(?:(?!\\7)(?:\\\\.|[^\\\\\\r\\n]))*\\7|[^\\r\\n]*)|${AUTH_PARAM_VALUE}))*`,
+  "gi",
+);
+const SENSITIVE_AUTH_ESCAPED_RE =
+  /((?<!\\)\\*["']?|["']?)(\bauthorization\b)(\\*["']?)(\s*[:=]\s*)((?:bearer|basic)\s+)?\\+(["'])((?:bearer|basic)\s+)?(?:\\\\.|(?!\\+\6)[^\r\n])*(\\+\6)?/gi;
 const SENSITIVE_AUTH_QUOTED_RE =
-  /(?<=["'])(\bauthorization\b)("?)(\s*[:=]\s*)(?:(["'])((?:bearer|basic)\s+)?(?:\\.|[^\r\n\\])*?\4|((?:bearer|basic)\s+)?[^"'\r\n]+)/gi;
+  /(?<=["'])(\bauthorization\b)(\\*["']?)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\5)[^\r\n\\])*(\5)|[^\r\n]*)|(?:[^"'\r\n\\]|["'](?![\s]*(?:[,;)\]}]|$)))+)/gi;
 const SENSITIVE_AUTH_LINE_RE =
   /(?:^|(?<=[\r\n]))(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?[^\r\n]+/gi;
+/**
+ * INLINE_RE — the third context: a header embedded mid-string with a prefix,
+ * as thrown messages routinely are (`request failed: Authorization: Bearer
+ * abc.def`). QUOTED_RE needs a preceding quote and LINE_RE needs a line
+ * start, so neither fires and the token reached stdout intact.
+ *
+ * Runs after both, so by this point the only `authorization` occurrences
+ * left are the unanchored ones.
+ *
+ * The value is an alternation, not one class. A *balanced* quoted run comes
+ * first: it stops at its own closing quote, so it cannot consume past a JSON
+ * value's end and mangle the outer payload — the safety property the original
+ * single-unanchored-pattern regression lacked. The unquoted class (excluding
+ * `"` and `'`) is the fallback.
+ *
+ * The unquoted fallback admits a quote that is followed by more value, and
+ * stops at one followed by structure (`,;)]}`) or the end of the input. Those
+ * are the two things a quote can be here: part of the credential, or the
+ * closer of the string the message was embedded in. Refusing every quote
+ * leaked `Authorization: Bearer pre"abc123`; accepting every quote consumed
+ * the `"}` of `{"message":"authorization: Bearer abc"}` and broke the
+ * payload. The lookahead is the distinction between those two cases.
+ *
+ * An unquoted-only class was not enough. `Authorization: "Bearer abc123"`
+ * stopped at the opening quote and redacted the separator whitespace instead
+ * of the token, yielding `Authorization:[REDACTED]"Bearer abc123"` with the
+ * credential intact. The scheme is captured on both sides of the quote,
+ * because it appears in both `Authorization: "Bearer x"` and
+ * `Authorization: Bearer "x"`.
+ *
+ * The rule the quoted branch encodes, stated once so it does not need another
+ * narrower case bolted on: **the value runs to its terminator, and an absent
+ * terminator is the end of the line.** A truncated message
+ * (`Authorization: "Bearer abc123` — no closing quote) has nothing structured
+ * after it to protect, because everything that follows is inside the unclosed
+ * string. So the balanced form is preferred when it exists, and end-of-line is
+ * the fallback. The closing quote is captured rather than assumed, so the
+ * replacement re-emits one only when the source actually had one.
+ *
+ * Re-running over already-redacted text is a no-op in every branch.
+ *
+ * The unquoted fallback admits a quote in a SECOND case: when `, name =`
+ * follows it, so the value continues into another parameter. This is the
+ * fail-closed rule for a header the parameter branch could not parse.
+ * `AUTH_PARAM_NAME` excludes the apostrophe on purpose — it is also a value
+ * quote here — so `Digest foo'bar="x", response="hunter2"` failed that branch
+ * and arrived here, where the old rule read the `"` before `,` as structure,
+ * stopped, and reported success on half a header.
+ *
+ * The fix is deliberately NOT a wider name class. Admitting backtick alone —
+ * the half with no counter-argument, since it is not in the value-quote class
+ * — turned seven serialization depths from clean to leaking. Widening the
+ * grammar to close one arrangement has opened others every time it was tried.
+ * What was actually wrong is that a PARTIAL match here reported success; a
+ * fallback that consumes the whole parameter list covers the apostrophe, the
+ * backtick, and the next character nobody has thought of, without touching
+ * the grammar at all.
+ *
+ * It stays bounded: the quote is admitted only when another `name =` follows,
+ * so the value ends with the last parameter and cannot run into the object
+ * carrying the header — the safety property an end-of-line rule lacks.
+ */
+const SENSITIVE_AUTH_INLINE_RE =
+  /(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\4)[^\r\n\\])*(\4)|[^\r\n]*)|(?:[^"'\r\n\\]|["'](?=\s*,\s*[^\s,="'\r\n]+\s*=)|["'](?![\s]*(?:[,;)\]}]|$)))+)/gi;
+/**
+ * Unquoted-value form (`password:hunter2`). Parser errors echo the offending
+ * source fragment, so `--params '{"password":hunter2}'` surfaces the raw
+ * value in a `JSON.parse` message that the quoted patterns above skip.
+ *
+ * Runs LAST so already-redacted quoted values are inert. That rests on the
+ * FIRST position alone refusing `"` and `'`, so `password='[REDACTED]'` still
+ * does not match. The trailing position deliberately admits them: a value
+ * that never opened a quote cannot be ended by one, and excluding the quote
+ * there meant `password=pre"hunter2` matched only `pre` and emitted
+ * `password="[REDACTED]""hunter2` with the tail intact. Structure (`,;)]}`)
+ * and whitespace still bound the match, so the payload after the field is
+ * untouched.
+ *
+ * The value is split into two positions rather than one `+` class:
+ *
+ *   first char — excludes whitespace, quotes, and the structure openers
+ *     `{` / `[`. Openers must not match: `{"token":[1,2]}` is well-formed
+ *     and redacting from `[` would stop at the inner `,` and mangle the
+ *     array. Closers and separators (`,;)]}`) ARE admitted here, because
+ *     valid JSON never places one directly after `:` for a scalar field —
+ *     if one appears, the text is already malformed, which is exactly the
+ *     parser-echo case, and redacting is the safe direction.
+ *
+ *   rest — excludes the delimiters too, so the match stops at the end of
+ *     the field rather than swallowing the payload tail. This is the same
+ *     greedy-consumption regression the AUTH anchoring above guards against.
+ *
+ * Excluding delimiters from BOTH positions was the earlier bug: a value that
+ * *begins* with one (`{"password":)hunter2}`) failed to match at all and
+ * leaked whole.
+ *
+ * The first position also excludes `\`, because a backslash-led value is the
+ * escaped-quote form that SENSITIVE_ESCAPED_QUOTE_RE consumes just above.
+ * Without that exclusion this pattern re-matched the `\` in that pattern's own
+ * output and stacked a second marker on it.
+ *
+ * The replacement is quoted (`"[REDACTED]"`) so redacting a bare JSON literal
+ * (`{"token":12345}`) leaves events.jsonl parseable as JSON-per-line.
+ */
+/**
+ * Backslash-escaped quoted value (`password=\"hunter2\"`). A JSON string that
+ * was itself serialized into another string arrives with its quotes escaped,
+ * so the quoted patterns above never fire — their quote must follow the
+ * separator directly, and here a backslash sits in between. The unquoted
+ * pattern then matched the lone backslash and stopped at the quote, emitting
+ * `password="[REDACTED]""hunter2\"` with the credential still present.
+ *
+ * Runs before the unquoted pattern so that partial match can no longer happen.
+ * The closing `\"` is captured, so the same terminator rule the other value
+ * patterns use holds here too: consume to the terminator, fall back to end of
+ * line, and re-emit a closer only when the source had one.
+ */
+/**
+ * PEM armor, redacted as one unit wherever it appears.
+ *
+ * Every value pattern in this file treats whitespace as a value terminator,
+ * which is correct for a token and wrong for a PEM block: the body is
+ * newline-separated, so `private_key=-----BEGIN PRIVATE KEY-----\nMIIE...`
+ * redacted the first token and left the key material standing. That became
+ * reachable the moment the `private_key` vocabulary was added.
+ *
+ * Armor does not need a terminator guessed for it — it carries its own. The
+ * match runs from `-----BEGIN` to the first `-----END ...-----`, so it is
+ * bounded by the document rather than by the end of the line, and it needs no
+ * field name in front of it: a PEM private key echoed on its own is a
+ * credential whether or not something labelled it.
+ *
+ * Scoped to key material. A CERTIFICATE is published by design, and redacting
+ * one would remove the most useful thing in a TLS diagnostic.
+ *
+ * Runs FIRST so the value patterns never see the inside of a block.
+ *
+ * The body is base64 and whitespace, and bounded. An unconstrained `[\\s\\S]*?`
+ * was measurably superlinear — a message of repeated unterminated `-----BEGIN`
+ * headers went 0.8ms at 10k chars to 13.4ms at 80k, because each header
+ * rescans to the end looking for a terminator that is not there. Restricting
+ * the class makes a non-PEM continuation fail at the first character (`-` is
+ * not base64), and the length cap covers the rest: 8192 base64 characters is
+ * comfortably above a 4096-bit key. Round 7 made linear scan cost a standing
+ * requirement for this file.
+ */
+const PEM_BLOCK_RE =
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[A-Za-z0-9+/=\s]{0,8192}?-----END [A-Z0-9 ]*PRIVATE KEY-----/g;
 
-export function scrubSecrets(text: string): string {
+/**
+ * A PEM block whose `-----END` marker never arrived.
+ *
+ * A parser error echoing incomplete key material is the ordinary case, and
+ * {@link PEM_BLOCK_RE} requires the terminator, so a truncated block fell
+ * through to the field patterns — which redacted `-----BEGIN` as the value and
+ * left the body on the following lines. Four shapes leaked: keyed, bare, other
+ * key types, and mid-prose.
+ *
+ * A `-----BEGIN … PRIVATE KEY-----` header is unambiguous on its own, so the
+ * absence of a terminator is a reason to redact more, not less.
+ *
+ * The body is matched as base64 LINES rather than as base64 characters. Prose
+ * is mostly letters, so a character class would run straight on into the rest
+ * of the message and delete the diagnostic around the key — over-matching is
+ * safe for a value and not for the message carrying it. Requiring 16+
+ * unbroken base64 characters per line admits a real PEM body (64 to a line)
+ * and stops at ordinary words.
+ *
+ * Runs immediately after {@link PEM_BLOCK_RE}, so it only ever sees blocks
+ * that genuinely had no terminator.
+ */
+const PEM_TRUNCATED_RE =
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[ \t]*[\r\n]+[A-Za-z0-9+/=]{16,}){0,256}(?:[ \t]*[\r\n]+[A-Za-z0-9+/=]{1,15}(?=[ \t]*(?:[\r\n]|$)))?[ \t]*[\r\n]*/g;
+
+const SENSITIVE_ESCAPED_QUOTE_RE = new RegExp(
+  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)\\\\+(["'])(?:\\\\\\\\.|(?!\\\\+\\3)[^\\r\\n])*(\\\\+\\3)?`,
+  "gi",
+);
+const SENSITIVE_UNQUOTED_RE = new RegExp(
+  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)(?:[^\\s"'{\\[\\\\][^\\s,;)\\]}]*)`,
+  "gi",
+);
+/**
+ * Connection-URL userinfo (`mongodb://user:hunter2@host`). Every pattern above
+ * keys off a `password`-style field name; a DSN carries the credential
+ * positionally instead, so a thrown driver error echoing its connection string
+ * matched nothing and leaked whole. `src/connectors/db/lib/drivers/mongodb.ts`
+ * builds exactly this shape (`${user}:${password}@`).
+ *
+ * Only the password position is redacted. The username is not itself a secret
+ * and keeping it — along with scheme, host, and path — is what makes the
+ * scrubbed message still useful for diagnosing a connection failure.
+ *
+ * The value classes exclude `/` and `@`, so the match cannot run past the
+ * authority into the path and swallow the rest of the payload — the same
+ * greedy-consumption guard the AUTH patterns document above. Re-running over
+ * already-redacted text is a no-op (`[REDACTED]` re-matches to itself).
+ *
+ * They do NOT exclude the apostrophe. `encodeURIComponent` leaves `'` alone,
+ * so `_buildUri` emits `mongodb://user:abc'def@host` for a password containing
+ * one — and excluding it meant the class stopped early, the required trailing
+ * `@` was never reached, and the whole credential survived. The double quote
+ * still is excluded, which is what keeps the match inside a JSON string value;
+ * `@` and `/` are what bound it within the authority. The apostrophe was doing
+ * no work here that those three do not already do.
+ *
+ * Residual: a colon-less userinfo (`https://<token>@host`) is left alone,
+ * because that position is far more often a bare username (`postgres://
+ * myuser@localhost/db`) than a token, and this repo never generates it.
+ *
+ * The leading lookbehind is a performance guard, not a correctness one. A
+ * scheme cannot begin part-way through a run of scheme characters, and without
+ * saying so the engine retried the greedy `[a-z0-9+.-]*` from EVERY character
+ * of a long alphabetic message, backtracking each time in search of `://`.
+ * That is quadratic, and it runs synchronously on externally derived exception
+ * text: measured before the guard, 10k characters took 48 ms, 30k took 376 ms
+ * and 60k took 1.6 s, so a large parser error stalled the connector.
+ */
+const URL_USERINFO_RE =
+  /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/[^\s:/?#@"]+:)[^\s/@"]+@/gi;
+
+/**
+ * True when a field path names a credential — `password`, `api_key`,
+ * `secretAccessKey`, `auth.token`, and the rest of the same vocabulary the
+ * scrubbing patterns use.
+ *
+ * Exists because `scrubSecrets` cannot help with author-controlled free text.
+ * It finds a secret by its `key = value` shape, so a message that names the
+ * field and the value in prose — a Zod `superRefine` producing
+ * `rejected value hunter2` — has no shape to key off and survives scrubbing.
+ * When the *path* says the field is a credential, the caller should drop the
+ * whole message rather than try to scrub it.
+ */
+/**
+ * The trailing `s?` is on the PATH matcher only, never on the value patterns.
+ *
+ * A path segment is a container name: `{ tokens: ["…"] }` holds credentials
+ * exactly as `{ token: "…" }` does, and the connector's array walk already
+ * states that entries of `tokens` inherit their container's sensitivity — the
+ * vocabulary just did not agree, so the invariant was false and a plural
+ * container contributed no redaction candidate.
+ *
+ * The value patterns must NOT gain it. There the token is a KEY next to a
+ * value, and `passwords` as a key is the run-on-word case the boundary rules
+ * exist to leave alone; widening them is how `mytoken` starts being redacted.
+ * A path and a key look alike and are not the same question.
+ */
+const SENSITIVE_PATH_RE = new RegExp(
+  `(?:^|[.\\[\\]])${KEY_PREFIX}(?:${SENSITIVE_WORDS})s?(?=$|[.\\[\\]])`,
+  "i",
+);
+
+/**
+ * A path segment that names a CONTAINER of credentials, such as
+ * `credentials.pat`.
+ *
+ * Deliberately separate from {@link isSensitiveFieldPath} rather than another
+ * alternative inside it. That predicate answers two different questions for
+ * two callers: which values to collect for redaction, and whether a validation
+ * message should be dropped whole instead of having its echoes redacted.
+ * Folding `credential` in changed the second one too, and five existing tests
+ * caught it — `credentials: rejected value [REDACTED]` degraded to
+ * `credentials: [REDACTED]`, losing the author's constant text, which is the
+ * exact trade the redact-rather-than-drop design was chosen to avoid.
+ *
+ * So this is for the collector only. `pat` is in no vocabulary and never will
+ * be; the container name is the only thing in `credentials.pat` that says what
+ * it holds.
+ */
+const CREDENTIAL_CONTAINER_RE = /(?:^|[.[\]])credentials?(?=$|[.[\]])/i;
+export function isCredentialContainerPath(path: string): boolean {
+  return CREDENTIAL_CONTAINER_RE.test(path);
+}
+export function isSensitiveFieldPath(path: string): boolean {
+  return SENSITIVE_PATH_RE.test(path);
+}
+
+/**
+ * Does free-text prose *name* a credential field?
+ *
+ * `isSensitiveFieldPath` above keys off a structured path (`auth.token`,
+ * `creds[0].password`). A validation issue raised on the object rather than on
+ * one of its fields has no path at all, so that test is blind to it, and the
+ * message is author prose rather than a `key = value` literal `scrubSecrets`
+ * can find. This is the same credential vocabulary applied with prose
+ * boundaries: any non-alphanumeric neighbour instead of a path separator.
+ *
+ * The lookahead still rejects run-on words, so `authorization failed` does not
+ * match on `auth` (the next character is a letter) while `auth failed` does.
+ * Over-matching here only ever costs a dropped message, never a leak.
+ */
+const SENSITIVE_MENTION_RE = new RegExp(
+  `(?:^|[^A-Za-z0-9])${KEY_PREFIX}(?:${SENSITIVE_WORDS})(?=$|[^A-Za-z0-9])`,
+  "i",
+);
+export function mentionsSensitiveField(text: string): boolean {
+  return SENSITIVE_MENTION_RE.test(text);
+}
+
+/**
+ * Bound on JSON-string layers `scrubSecrets` will peel.
+ *
+ * Each layer strictly shrinks the input, so the loop terminates without a cap
+ * — and the cap that was here did harm rather than good: past it the still
+ * escaped text was handed to the very patterns whose ambiguity the unwrap
+ * exists to avoid, so eleven layers leaked where eight did not. A defensive
+ * limit that silently restores the failure mode is not a defence.
+ *
+ * The bound remains only as a work ceiling, and it is now unreachable in
+ * practice: serializing doubles the escape run, so depth grows as log2 of the
+ * length and a 1 MB message tops out around 20. Reaching 64 means the input is
+ * adversarial, so it fails closed rather than falling through.
+ */
+/**
+ * How many candidate payload spans the locator will try in one message.
+ * Bounded because candidate starts overlap, so the end-scans are not disjoint
+ * and an adversarial `"{`-repeated message would otherwise be quadratic on a
+ * synchronous path. Past the cap the message is scrubbed as a flat layer.
+ */
+const MAX_PAYLOAD_SPAN_ATTEMPTS = 64;
+const MAX_UNWRAP_DEPTH = 64;
+
+/**
+ * Peel JSON-string layers before matching, and re-serialize afterwards.
+ *
+ * The patterns below decide where a value ends by counting backslashes. That
+ * works while the escape run is unambiguous, but once a credential containing
+ * a quote is serialized more than twice, the run in front of the *embedded*
+ * quote becomes indistinguishable from the run in front of the *terminating*
+ * one, and matching stops early — `"[REDACTED]"hunter2` keeps the tail.
+ *
+ * Counting cannot resolve that, because the ambiguity is real: the text alone
+ * does not say which quote ends the value. `JSON.parse` does, because it
+ * consumed the escapes that encode the answer. So each layer is removed
+ * before the patterns run and restored after, and they only ever see a value
+ * whose quotes are literal.
+ *
+ * This is a fast path, not the defence: a payload that is not a JSON string
+ * falls straight through to the same pattern chain as before.
+ */
+function unwrapJsonString(text: string): string | null {
+  if (text.length < 2 || text.charCodeAt(0) !== 34) return null;
+  if (!text.endsWith('"')) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  return typeof parsed === "string" ? parsed : null;
+}
+
+/**
+ * @param maxUnwrapDepth How many JSON-string layers to peel before failing
+ * closed. The default is unreachable for a real message (see
+ * {@link MAX_UNWRAP_DEPTH}); it is a parameter so the ceiling behaviour is
+ * reachable from a test, and so a caller on a memory-constrained path can
+ * trade diagnostic detail for a lower bound.
+ */
+export function scrubSecrets(
+  text: string,
+  maxUnwrapDepth: number = MAX_UNWRAP_DEPTH,
+): string {
+  // Peel iteratively rather than recursively: depth is caller-controlled, and
+  // the recursion this replaces put it on the JavaScript call stack.
+  let payload = text;
+  let depth = 0;
+  while (depth < maxUnwrapDepth) {
+    const inner = unwrapJsonString(payload);
+    if (inner === null) break;
+    payload = inner;
+    depth++;
+  }
+  // Still nested at the ceiling. Redact rather than hand the escaped remainder
+  // to the patterns below, which is what made the previous cap a leak.
+  const scrubbed =
+    depth === maxUnwrapDepth && unwrapJsonString(payload) !== null
+      ? "[REDACTED]"
+      : scrubEmbeddedOrLayer(payload, maxUnwrapDepth - depth);
+  let out = scrubbed;
+  for (let i = 0; i < depth; i++) out = JSON.stringify(out);
+  return out;
+}
+
+/**
+ * Scrub one layer, unwrapping a serialized payload that sits BEHIND a prose
+ * prefix rather than being the whole message.
+ *
+ * The peel above requires the entire string to be a JSON string, and an SDK
+ * exception routinely prefixes one (`Error payload: "{\"password\":…}"`). With
+ * the prefix present nothing was unwrapped and the escaped form went straight
+ * to the pattern chain, which copes at one and two layers and stops coping at
+ * three: `'Error payload: ' + JSON.stringify(x3)` of a value containing a
+ * double quote leaked, while the identical payload without the prefix did not.
+ * The behaviour was also non-monotonic in depth — three and five leaked, four
+ * did not — which is the mark of a regex resolving a genuine ambiguity rather
+ * than a threshold set too low. Unwrapping removes the ambiguity instead of
+ * widening another escape class to survive it.
+ *
+ * Two bounds keep this from becoming its own problem:
+ *
+ * - Candidate spans come from ONE left-to-right pass ({@link jsonStringSpans}).
+ *   Trying every quote PAIR would be quadratic in a message full of quotes,
+ *   which is the cost class the previous round was about.
+ * - The span is rewritten only when `JSON.stringify` reproduces it byte for
+ *   byte. Re-serializing is not identity in general — `"aAb"` comes back
+ *   as `"aAb"` — and silently rewriting the message around a credential is the
+ *   failure mode this whole file guards against.
+ */
+/**
+ * Whether a byte-identical JSON-string span is a SERIALIZED PAYLOAD rather
+ * than an ordinary quoted value.
+ *
+ * Both parse; the difference is what unwrapping does. `api_key="hunter2"` has
+ * a span of `"hunter2"` whose inner is the same characters without the quotes,
+ * so unwrapping it and re-serializing hands the value straight back — while
+ * the prefix, scrubbed alone, no longer has a value to redact. That was a leak
+ * introduced by the unwrap itself, caught by twelve existing tests.
+ *
+ * Two conditions, and both are needed. Unwrapping must have actually removed
+ * escapes, and the result must open like a JSON document. A quoted value
+ * containing an escape (`"say \"hi\""`) satisfies the first alone.
+ */
+function isSerializedPayload(span: string, inner: string): boolean {
+  if (inner === span.slice(1, -1)) return false;
+  const head = inner.charCodeAt(0);
+  if (head === 123 || head === 91) return true; // `{` or `[`
+  // A further JSON string layer — and it has to BE one, not merely start with
+  // a quote. `{"password":"\"hunter2"}` has a value whose inner is `"hunter2`,
+  // which opens with a quote and is not a string; treating it as a payload
+  // recursed into the value, scrubbed the prefix with no value beside it, and
+  // leaked at every depth from 1 to 7.
+  return head === 34 && unwrapJsonString(inner) !== null;
+}
+
+/**
+ * Every `"…"` run in one left-to-right pass, as `[start, end)` pairs.
+ *
+ * A JSON string ends at its first UNESCAPED quote, so each span's end follows
+ * from its start with no search — the pass visits each character a bounded
+ * number of times and the spans it yields are disjoint. That is what keeps
+ * locating an embedded payload linear rather than quadratic in the number of
+ * quotes, which matters because this runs synchronously on error text an
+ * attacker can shape.
+ *
+ * A run with no closing quote is not yielded: there is nothing to parse.
+ */
+/**
+ * Yields `[start, end, exhausted]`. `exhausted` is `true` on the single
+ * sentinel yielded when {@link MAX_PAYLOAD_SPAN_ATTEMPTS} runs out, and the
+ * caller MUST fail closed on it: candidates remain unexamined, so a payload
+ * this pass never looked at may still be in the text.
+ */
+function* jsonStringSpans(
+  text: string,
+): Generator<[number, number, boolean]> {
+  let i = 0;
+  let attempts = 0;
+  while (i < text.length) {
+    // Only a quote that OPENS a serialized payload is a candidate. A payload
+    // is an object, an array, or another string layer, so the next character
+    // is `{`, `[`, or the backslash of an escaped quote — nothing else can be
+    // one. Pairing every quote with the next unescaped quote instead made an
+    // unmatched prose quote swallow the payload's opening quote: `Error
+    // unmatched " payload: "<serialized>"` yielded `" payload: "`, and the
+    // real span was never offered. Skipping non-openers resynchronises
+    // without pairing quotes off against each other.
+    if (text.charCodeAt(i) !== 34 || !isPayloadOpener(text.charCodeAt(i + 1))) {
+      i++;
+      continue;
+    }
+    // Candidate spans can overlap once starts are chosen independently of
+    // where the previous one ended, so the end-scans are no longer disjoint
+    // and the pass is no longer linear in the worst case. Adversarial input
+    // (`"{` repeated) is the case that matters, since this runs synchronously
+    // on error text. A cap keeps the cost bounded. Past it the
+    // caller redacts the remainder wholesale: flat-scrubbing it is NOT the
+    // same fail-safe as finding no payload, because the budget ran out with
+    // candidates unexamined and the 65th may be the real one. Every other
+    // budget in this file fails closed; this one silently failed open.
+    if (attempts++ >= MAX_PAYLOAD_SPAN_ATTEMPTS) {
+      yield [i, i, true];
+      return;
+    }
+    let j = i + 1;
+    while (j < text.length) {
+      const c = text.charCodeAt(j);
+      if (c === 92) {
+        j += 2;
+        continue;
+      }
+      if (c === 34) break;
+      j++;
+    }
+    if (j >= text.length) return; // unterminated run; nothing left to parse
+    yield [i, j + 1, false];
+    // Advance by ONE, not past the span: a rejected candidate must not consume
+    // the quotes a real payload might start at.
+    i++;
+  }
+}
+
+/** `{`, `[`, or a backslash — the only characters a serialized payload can open with. */
+function isPayloadOpener(code: number): boolean {
+  return code === 123 || code === 91 || code === 92;
+}
+
+function scrubEmbeddedOrLayer(text: string, remainingDepth: number): string {
+  if (remainingDepth <= 0) return scrubOneLayer(text);
+  // Candidate spans, not "first quote to last quote". That first attempt was
+  // wrong the moment the prose carried a quote of its own:
+  // `Error "request": payload: "<serialized>"` produced a span that was not
+  // valid JSON, so nothing unwrapped and the leak came straight back. The
+  // pass below is linear and yields disjoint runs, so the unrelated
+  // `"request"` is simply tried and rejected.
+  //
+  // The remainder is consumed by a LOOP, not a tail call. Recursing on it cost
+  // one stack frame per payload while `remainingDepth` stayed put, so a
+  // message carrying ten thousand of them overflowed the stack and replaced
+  // the connector's error envelope with a `RangeError` — the scrubber
+  // destroying the diagnostic it exists to protect. The unwrap loop above was
+  // made iterative for this reason and the pattern came back one function
+  // down. Only the SIBLING recursion becomes a loop: the recursion into a
+  // payload's own content stays, because `remainingDepth` bounds that one.
+  let rest = text;
+  let out = "";
+  outer: while (rest.length > 0) {
+    for (const [start, end, exhausted] of jsonStringSpans(rest)) {
+      // The span budget ran out with candidates unexamined, so what is left
+      // may hold a payload this pass never reached.
+      if (exhausted) return out + "[REDACTED]";
+      const span = rest.slice(start, end);
+      const inner = unwrapJsonString(span);
+      if (inner !== null && JSON.stringify(inner) === span && isSerializedPayload(span, inner)) {
+        out += scrubOneLayer(rest.slice(0, start));
+        out += JSON.stringify(scrubSecrets(inner, remainingDepth - 1));
+        // The remainder may hold a second payload; a message carrying two is
+        // no less plausible than one.
+        rest = rest.slice(end);
+        continue outer;
+      }
+    }
+    break;
+  }
+  return out + scrubOneLayer(rest);
+}
+
+/** The pattern chain itself, applied to one fully-decoded layer. */
+function scrubOneLayer(text: string): string {
   return text
+    .replace(PEM_BLOCK_RE, "[REDACTED]")
+    .replace(PEM_TRUNCATED_RE, "[REDACTED]")
     .replace(
       SENSITIVE_SQUOTE_RE,
-      (_m, key: string, sep: string) => `${key}${sep}'[REDACTED]'`,
+      (_m, key: string, sep: string, close: string | undefined) =>
+        `${key}${sep}'[REDACTED]${close ?? ""}`,
     )
     .replace(
       SENSITIVE_DQUOTE_RE,
-      (_m, key: string, sep: string) => `${key}${sep}"[REDACTED]"`,
+      (_m, key: string, sep: string, close: string | undefined) =>
+        `${key}${sep}"[REDACTED]${close ?? ""}`,
+    )
+    .replace(
+      SENSITIVE_AUTH_PARAMS_RE,
+      (
+        _m,
+        kq1: string,
+        kw: string,
+        kq2: string,
+        sep: string,
+        scheme: string | undefined,
+      ) => `${kq1}${kw}${kq2}${sep}${scheme ?? ""}[REDACTED]`,
+    )
+    .replace(
+      SENSITIVE_AUTH_ESCAPED_RE,
+      (
+        _m,
+        kq1: string,
+        kw: string,
+        kq2: string,
+        sep: string,
+        schemeOutside: string | undefined,
+        quote: string,
+        schemeInside: string | undefined,
+        close: string | undefined,
+      ) =>
+        `${kq1}${kw}${kq2}${sep}${schemeOutside ?? ""}\\${quote}${schemeInside ?? ""}[REDACTED]${close ?? ""}`,
     )
     .replace(
       SENSITIVE_AUTH_QUOTED_RE,
@@ -83,21 +799,60 @@ export function scrubSecrets(text: string): string {
         kw: string,
         keyQuote: string,
         sep: string,
+        schemeOutside: string | undefined,
         valQuote: string | undefined,
-        schemeQ: string | undefined,
-        schemeU: string | undefined,
+        schemeInside: string | undefined,
+        closeQuote: string | undefined,
       ) => {
         if (valQuote !== undefined) {
-          return `${kw}${keyQuote}${sep}${valQuote}${schemeQ || ""}[REDACTED]${valQuote}`;
+          // Same terminator rule as everywhere else: re-emit the closer only
+          // when the source had one.
+          const close = closeQuote === undefined ? "" : valQuote;
+          return `${kw}${keyQuote}${sep}${schemeOutside ?? ""}${valQuote}${schemeInside ?? ""}[REDACTED]${close}`;
         }
-        return `${kw}${keyQuote}${sep}${schemeU || ""}[REDACTED]`;
+        return `${kw}${keyQuote}${sep}${schemeOutside ?? ""}[REDACTED]`;
       },
     )
     .replace(
       SENSITIVE_AUTH_LINE_RE,
       (_m, kw: string, sep: string, scheme: string | undefined) =>
         `${kw}${sep}${scheme || ""}[REDACTED]`,
-    );
+    )
+    .replace(
+      SENSITIVE_AUTH_INLINE_RE,
+      (
+        _m,
+        kw: string,
+        sep: string,
+        schemeOutside: string | undefined,
+        valQuote: string | undefined,
+        schemeInside: string | undefined,
+        closeQuote: string | undefined,
+      ) => {
+        if (valQuote !== undefined) {
+          // Re-emit the closing quote only when the source had one; a
+          // truncated message must not gain a quote it never contained.
+          const close = closeQuote === undefined ? "" : valQuote;
+          return `${kw}${sep}${schemeOutside || ""}${valQuote}${schemeInside || ""}[REDACTED]${close}`;
+        }
+        return `${kw}${sep}${schemeOutside || ""}[REDACTED]`;
+      },
+    )
+    .replace(
+      SENSITIVE_ESCAPED_QUOTE_RE,
+      (
+        _m,
+        key: string,
+        sep: string,
+        quote: string,
+        close: string | undefined,
+      ) => `${key}${sep}\\${quote}[REDACTED]${close ?? ""}`,
+    )
+    .replace(
+      SENSITIVE_UNQUOTED_RE,
+      (_m, key: string, sep: string) => `${key}${sep}"[REDACTED]"`,
+    )
+    .replace(URL_USERINFO_RE, (_m, prefix: string) => `${prefix}[REDACTED]@`);
 }
 
 function isoTimestamp(): string {
