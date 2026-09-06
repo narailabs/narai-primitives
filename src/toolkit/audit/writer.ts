@@ -651,7 +651,15 @@ function isSerializedPayload(span: string, inner: string): boolean {
  *
  * A run with no closing quote is not yielded: there is nothing to parse.
  */
-function* jsonStringSpans(text: string): Generator<[number, number]> {
+/**
+ * Yields `[start, end, exhausted]`. `exhausted` is `true` on the single
+ * sentinel yielded when {@link MAX_PAYLOAD_SPAN_ATTEMPTS} runs out, and the
+ * caller MUST fail closed on it: candidates remain unexamined, so a payload
+ * this pass never looked at may still be in the text.
+ */
+function* jsonStringSpans(
+  text: string,
+): Generator<[number, number, boolean]> {
   let i = 0;
   let attempts = 0;
   while (i < text.length) {
@@ -671,10 +679,15 @@ function* jsonStringSpans(text: string): Generator<[number, number]> {
     // where the previous one ended, so the end-scans are no longer disjoint
     // and the pass is no longer linear in the worst case. Adversarial input
     // (`"{` repeated) is the case that matters, since this runs synchronously
-    // on error text. A cap keeps the cost bounded; past it the message is
-    // scrubbed as a flat layer, which is the same fail-safe as finding no
-    // payload at all.
-    if (attempts++ >= MAX_PAYLOAD_SPAN_ATTEMPTS) return;
+    // on error text. A cap keeps the cost bounded. Past it the
+    // caller redacts the remainder wholesale: flat-scrubbing it is NOT the
+    // same fail-safe as finding no payload, because the budget ran out with
+    // candidates unexamined and the 65th may be the real one. Every other
+    // budget in this file fails closed; this one silently failed open.
+    if (attempts++ >= MAX_PAYLOAD_SPAN_ATTEMPTS) {
+      yield [i, i, true];
+      return;
+    }
     let j = i + 1;
     while (j < text.length) {
       const c = text.charCodeAt(j);
@@ -686,7 +699,7 @@ function* jsonStringSpans(text: string): Generator<[number, number]> {
       j++;
     }
     if (j >= text.length) return; // unterminated run; nothing left to parse
-    yield [i, j + 1];
+    yield [i, j + 1, false];
     // Advance by ONE, not past the span: a rejected candidate must not consume
     // the quotes a real payload might start at.
     i++;
@@ -699,28 +712,43 @@ function isPayloadOpener(code: number): boolean {
 }
 
 function scrubEmbeddedOrLayer(text: string, remainingDepth: number): string {
-  if (remainingDepth > 0) {
-    // Candidate spans, not "first quote to last quote". That first attempt was
-    // wrong the moment the prose carried a quote of its own:
-    // `Error "request": payload: "<serialized>"` produced a span that was not
-    // valid JSON, so nothing unwrapped and the leak came straight back. The
-    // pass below is linear and yields disjoint runs, so the unrelated
-    // `"request"` is simply tried and rejected.
-    for (const [start, end] of jsonStringSpans(text)) {
-      const span = text.slice(start, end);
+  if (remainingDepth <= 0) return scrubOneLayer(text);
+  // Candidate spans, not "first quote to last quote". That first attempt was
+  // wrong the moment the prose carried a quote of its own:
+  // `Error "request": payload: "<serialized>"` produced a span that was not
+  // valid JSON, so nothing unwrapped and the leak came straight back. The
+  // pass below is linear and yields disjoint runs, so the unrelated
+  // `"request"` is simply tried and rejected.
+  //
+  // The remainder is consumed by a LOOP, not a tail call. Recursing on it cost
+  // one stack frame per payload while `remainingDepth` stayed put, so a
+  // message carrying ten thousand of them overflowed the stack and replaced
+  // the connector's error envelope with a `RangeError` — the scrubber
+  // destroying the diagnostic it exists to protect. The unwrap loop above was
+  // made iterative for this reason and the pattern came back one function
+  // down. Only the SIBLING recursion becomes a loop: the recursion into a
+  // payload's own content stays, because `remainingDepth` bounds that one.
+  let rest = text;
+  let out = "";
+  outer: while (rest.length > 0) {
+    for (const [start, end, exhausted] of jsonStringSpans(rest)) {
+      // The span budget ran out with candidates unexamined, so what is left
+      // may hold a payload this pass never reached.
+      if (exhausted) return out + "[REDACTED]";
+      const span = rest.slice(start, end);
       const inner = unwrapJsonString(span);
       if (inner !== null && JSON.stringify(inner) === span && isSerializedPayload(span, inner)) {
-        return (
-          scrubOneLayer(text.slice(0, start)) +
-          JSON.stringify(scrubSecrets(inner, remainingDepth - 1)) +
-          // The remainder may hold a second payload; a message carrying two is
-          // no less plausible than one.
-          scrubEmbeddedOrLayer(text.slice(end), remainingDepth)
-        );
+        out += scrubOneLayer(rest.slice(0, start));
+        out += JSON.stringify(scrubSecrets(inner, remainingDepth - 1));
+        // The remainder may hold a second payload; a message carrying two is
+        // no less plausible than one.
+        rest = rest.slice(end);
+        continue outer;
       }
     }
+    break;
   }
-  return scrubOneLayer(text);
+  return out + scrubOneLayer(rest);
 }
 
 /** The pattern chain itself, applied to one fully-decoded layer. */

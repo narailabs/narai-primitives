@@ -246,6 +246,31 @@ describe("scrubSecrets", () => {
     expect(out).not.toContain('response="');
   });
 
+  it("fails closed when the payload-span budget is exhausted", () => {
+    // Regression (Codex P1). `MAX_PAYLOAD_SPAN_ATTEMPTS` bounds the cost of
+    // the span scan, but running out used to `return` from the generator, so
+    // the loop ended and `scrubOneLayer` ran on text whose candidates had
+    // never been examined. The 65th candidate can be the real payload, and
+    // here it is: 64 rejected `"{}"` openers, then a thrice-serialized
+    // credential whose escaped form the flat patterns cannot read.
+    const payload = JSON.stringify(
+      JSON.stringify(JSON.stringify({ password: 'pre"hunter2' })),
+    );
+    const out = scrubSecrets(`${'"{}" '.repeat(64)}${payload}`);
+    expect(out).not.toContain("hunter2");
+  });
+
+  it("scrubs many embedded payloads without exhausting the stack", () => {
+    // Regression (Codex P2). The remainder was processed by a tail call, so N
+    // payloads in one message cost N frames while `remainingDepth` stayed put.
+    // 10,000 of them threw `RangeError: Maximum call stack size exceeded`,
+    // which surfaces as a rejected fetch()/CLI crash INSTEAD of the connector
+    // error envelope — the scrubber destroying the diagnostic it protects.
+    const one = JSON.stringify(JSON.stringify({ password: "hunter2" }));
+    const out = scrubSecrets(Array.from({ length: 10_000 }, () => one).join(" "));
+    expect(out).not.toContain("hunter2");
+  });
+
   it("redacts a Digest header whose parameter name is outside the token class", () => {
     // Regression (Codex P1, thread on writer.ts:172). `AUTH_PARAM_NAME`
     // deliberately excludes the apostrophe — it is also a value quote in these
