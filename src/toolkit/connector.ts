@@ -533,11 +533,20 @@ function makeEchoRedactor(candidates: Iterable<string>): {
         // A short value only counts where it is the whole token. Anchored on
         // non-word neighbours rather than `\b`, so a punctuation-only value
         // (`-`, `.`) — which `\b` cannot anchor at all — is still matched.
+        //
+        // The left boundary is a LOOKBEHIND, not a consuming group. Consuming
+        // it meant one match ate the character the next match needed to start
+        // from, so consecutive occurrences of a punctuation-only value were
+        // half-redacted: candidate `.` turned `rejected ..` into `rejected
+        // [REDACTED].`, and `--` turned `----` into `[REDACTED]--`, leaving a
+        // complete credential standing. Only punctuation values reach this:
+        // an alphanumeric one cannot neighbour itself and still be a whole
+        // token. Both boundaries are now non-consuming and symmetric.
         const re = new RegExp(
-          `(^|[^A-Za-z0-9_])${escapeRegExp(value)}(?=[^A-Za-z0-9_]|$)`,
+          `(?<![A-Za-z0-9_])${escapeRegExp(value)}(?=[^A-Za-z0-9_]|$)`,
           "g",
         );
-        out = out.replace(re, (_m, lead: string) => `${lead}[REDACTED]`);
+        out = out.replace(re, () => "[REDACTED]");
       }
       return out;
     },

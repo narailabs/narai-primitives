@@ -738,6 +738,66 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     }
   });
 
+  it("redacts every occurrence of a punctuation-only credential", async () => {
+    // Regression (Codex P2). The left boundary was a CONSUMING group, so one
+    // match ate the character the next match needed to start from and
+    // consecutive occurrences were half-redacted: `.` turned `rejected ..`
+    // into `rejected [REDACTED].` and `--` turned `----` into `[REDACTED]--`,
+    // leaving a complete credential in the envelope. Only punctuation values
+    // reach this — an alphanumeric one cannot neighbour itself and still be a
+    // whole token — which is why the earlier boundary tests never caught it.
+    for (const [secret, echoed] of [
+      [".", "rejected .."],
+      ["--", "----"],
+      ["-", "- -"],
+    ]) {
+      const c = createConnector<{}>({
+        name: `punct-${Math.random()}`,
+        credentials: async () => ({}),
+        sdk: async () => ({}),
+        actions: {
+          login: {
+            params: z.any(),
+            classify: { kind: "read" },
+            handler: async () => {
+              throw new Error(echoed);
+            },
+          },
+        },
+      });
+      const env = await c.fetch("login", { token: secret });
+      expect(env.status).toBe("error");
+      if (env.status === "error") {
+        expect(env.message, `left ${secret} standing`).not.toMatch(
+          new RegExp(`(?<![A-Za-z0-9_])${secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9_])`),
+        );
+      }
+    }
+  });
+
+  it("still refuses a short value that is not a whole token", async () => {
+    // The other half: making the boundary non-consuming must not turn the
+    // whole-token rule into a substring rule. A `.` inside `3.14` is not the
+    // credential, and redacting it would destroy an ordinary diagnostic.
+    const c = createConnector<{}>({
+      name: "punct-not-token",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.any(),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error("upstream returned 3.14 for rate");
+          },
+        },
+      },
+    });
+    const env = await c.fetch("login", { token: "." });
+    expect(env.status).toBe("error");
+    if (env.status === "error") expect(env.message).toContain("3.14");
+  });
+
   it("bounds redaction by characters scanned, not comparison count", async () => {
     // Regression (Codex P2). Each comparison is a pass over the WHOLE message,
     // so a count-only ceiling bounded how many passes happened and not how
