@@ -441,6 +441,55 @@ describe("wiki_db.audit", () => {
     expect(scrubSqlSecrets(sql)).toContain("not-a-secret");
   });
 
+  it("scrubSqlSecrets redacts a doubled key whose value is double-quoted", () => {
+    // Python switches a value to double quotes exactly when the value itself
+    // contains an apostrophe, so this is the shape a leaked credential takes
+    // when it is the *awkward* one: `repr({"password": "abc'def"})` embedded in
+    // a SQL literal doubles the key to `''password''` but leaves the value's
+    // `"` single. The doubled pattern wanted `''` after the separator and the
+    // double-quote pattern allowed only one key quote, so neither fired.
+    const sql = `INSERT INTO t VALUES ('{''password'': "abc''def"}')`;
+    const out = scrubSqlSecrets(sql);
+    expect(out).not.toContain("abc");
+    expect(out).toBe(`INSERT INTO t VALUES ('{''password'': "[REDACTED]"}')`);
+  });
+
+  it("scrubSqlSecrets keeps the fields after a doubled/double-quoted credential", () => {
+    // The value run stops at the first unescaped `"`, so the match cannot eat
+    // the rest of the object the way an end-of-line rule would. This is the
+    // payload-integrity half of the pattern above.
+    const sql = `INSERT INTO t VALUES ('{''password'': "hunter2", ''user'': ''bob''}')`;
+    const out = scrubSqlSecrets(sql);
+    expect(out).not.toContain("hunter2");
+    expect(out).toContain("''user'': ''bob''");
+  });
+
+  it("scrubSqlSecrets covers every key/value quoting a SQL literal can carry", () => {
+    // The axes are the forms that can actually occur INSIDE a single-quoted
+    // SQL literal: an apostrophe from the payload is always doubled, a double
+    // quote never is. So `'password'` and `'value'` are not reachable shapes —
+    // they would end the literal. That leaves bare, doubled and double-quoted.
+    //
+    // Pinning the whole grid rather than the one reported cell: the two
+    // covered-by-a-serializer diagonals (Python repr, JSON) plus the mixed
+    // form this commit adds. The unquoted-value column is a different axis
+    // (connection strings, not objects) and leaks identically on main.
+    const KEYS = ["''password''", '"password"'];
+    const VALS = ["''SEKRIT''", '"SEKRIT"'];
+    for (const k of KEYS) {
+      for (const v of VALS) {
+        // A doubled key pairs with a doubled or double-quoted value; a plain
+        // double-quoted key (JSON) pairs with a double-quoted value. The
+        // remaining cell — JSON key, doubled value — no serializer emits.
+        if (k === '"password"' && v === "''SEKRIT''") continue;
+        const sql = `INSERT INTO t VALUES ('{${k}: ${v}, ''user'': ''bob''}')`;
+        const out = scrubSqlSecrets(sql);
+        expect(out, `leaked for key=${k} value=${v}`).not.toContain("SEKRIT");
+        expect(out, `mangled for key=${k} value=${v}`).toContain("''user'': ''bob''");
+      }
+    }
+  });
+
   it("scrubSqlSecrets still refuses run-on words", () => {
     // What the `\b` boundary was there to protect. Widening it must not cost
     // this: a column literally named `authority` or `tokenizer` is ordinary

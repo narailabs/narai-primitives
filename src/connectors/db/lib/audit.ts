@@ -244,6 +244,30 @@ const _SENSITIVE_LITERAL_SQUOTE_DOUBLED_RE = new RegExp(
   `(''${_KEY_START}${_KEY_PREFIX}(?:${_SENSITIVE_KEYS})${_KEY_END}'')(\\s*[:=]\\s*)''(?:[^']|'')*?(?<!')''(?=\\s*[,}]|$)`,
   "gi",
 );
+/**
+ * The other half of the doubled-key pair: a doubled key whose value is
+ * DOUBLE-quoted.
+ *
+ * Python only reaches for `"` when the value itself contains an apostrophe —
+ * `repr({"password": "abc'def"})` is `{'password': "abc'def"}` — so inside a
+ * SQL literal the key doubles to `''password''` while the value keeps its
+ * single, undoubled `"`. `_SENSITIVE_LITERAL_SQUOTE_DOUBLED_RE` above requires
+ * `''` after the separator and `_SENSITIVE_LITERAL_DQUOTE_RE` below matches at
+ * most ONE key quote (`_KQ`), so the doubled key stranded both and the value
+ * reached events.jsonl intact. The two patterns each covered one quoting style
+ * consistently applied; this is the mixed form a single serializer emits, and
+ * it is exactly the case where the credential contains an apostrophe.
+ *
+ * The value body is the same escape-aware run the plain double-quote pattern
+ * uses, so it stops at the first unescaped `"` and cannot consume the fields
+ * after the credential. No `(?=\s*[,}]|$)` boundary is needed here: unlike
+ * `''`, a lone `"` inside a SQL literal is unambiguously a value quote rather
+ * than possibly an escaped apostrophe, so there is no run to disambiguate.
+ */
+const _SENSITIVE_LITERAL_DQUOTE_DOUBLED_KEY_RE = new RegExp(
+  `(''${_KEY_START}${_KEY_PREFIX}(?:${_SENSITIVE_KEYS})${_KEY_END}'')(\\s*[:=]\\s*)"[^"\\\\]*(?:\\\\.[^"\\\\]*)*"`,
+  "gi",
+);
 const _SENSITIVE_LITERAL_SQUOTE_RE = new RegExp(
   `(${_KQ}${_KEY_START}${_KEY_PREFIX}(?:${_SENSITIVE_KEYS})${_KEY_END}${_KQ})(\\s*[:=]\\s*)'[^'\\\\]*(?:\\\\.[^'\\\\]*)*'`,
   "gi",
@@ -262,6 +286,10 @@ export function scrubSqlSecrets(sql: string): string {
     .replace(
       _SENSITIVE_LITERAL_SQUOTE_DOUBLED_RE,
       (_m, key: string, sep: string) => `${key}${sep}''[REDACTED]''`,
+    )
+    .replace(
+      _SENSITIVE_LITERAL_DQUOTE_DOUBLED_KEY_RE,
+      (_m, key: string, sep: string) => `${key}${sep}"[REDACTED]"`,
     )
     .replace(
       _SENSITIVE_LITERAL_SQUOTE_RE,
