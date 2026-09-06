@@ -246,6 +246,42 @@ describe("scrubSecrets", () => {
     expect(out).not.toContain('response="');
   });
 
+  it("redacts a Digest header whose parameter name is outside the token class", () => {
+    // Regression (Codex P1, thread on writer.ts:172). `AUTH_PARAM_NAME`
+    // deliberately excludes the apostrophe — it is also a value quote in these
+    // patterns, and a name that admits it can run across a quoted value — so
+    // `foo'bar=` failed the parameter branch and fell through to the inline
+    // one, which stopped at the first quote: `Authorization: [REDACTED]",
+    // response="hunter2"`.
+    //
+    // The fix is NOT a wider name class. Adding backtick alone — the half with
+    // no counter-argument, since it is not in the value-quote class — turned
+    // seven serialization depths from clean to leaking. It is the FALLBACK
+    // that was wrong: it reported success on a header it had only partly
+    // parsed. A quote is now part of the value when another parameter follows
+    // it, so the fallback consumes the whole list whatever the names contain.
+    for (const name of ["foo'bar", "foo`bar", "foo\u00e9bar"]) {
+      const out = scrubSecrets(
+        `ctx Authorization: Digest ${name}="x", response="hunter2"`,
+      );
+      expect(out, `leaked for name ${name}`).not.toContain("hunter2");
+      expect(out, `leaked for name ${name}`).not.toContain("response=");
+    }
+  });
+
+  it("stops a continued Digest value at the end of the parameter list", () => {
+    // The payload-integrity half. The continuation rule admits a quote only
+    // when `, name =` follows it, so the value ends with the last parameter
+    // and cannot run on into the object carrying the header — the property the
+    // end-of-line rule lacks and the reason this is a lookahead rather than a
+    // wider class.
+    const out = scrubSecrets(
+      `{"err":"authorization: Digest foo'bar=\"x\", response=\"hunter2\"","code":42}`,
+    );
+    expect(out).not.toContain("hunter2");
+    expect(out).toContain('"code":42');
+  });
+
   it("redacts unquoted values", () => {
     // Regression (Codex P2): only quoted values were recognized, so a
     // JSON.parse failure echoing `--params '{"password":hunter2}'` left the

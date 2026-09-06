@@ -244,9 +244,30 @@ const SENSITIVE_AUTH_LINE_RE =
  * replacement re-emits one only when the source actually had one.
  *
  * Re-running over already-redacted text is a no-op in every branch.
+ *
+ * The unquoted fallback admits a quote in a SECOND case: when `, name =`
+ * follows it, so the value continues into another parameter. This is the
+ * fail-closed rule for a header the parameter branch could not parse.
+ * `AUTH_PARAM_NAME` excludes the apostrophe on purpose — it is also a value
+ * quote here — so `Digest foo'bar="x", response="hunter2"` failed that branch
+ * and arrived here, where the old rule read the `"` before `,` as structure,
+ * stopped, and reported success on half a header.
+ *
+ * The fix is deliberately NOT a wider name class. Admitting backtick alone —
+ * the half with no counter-argument, since it is not in the value-quote class
+ * — turned seven serialization depths from clean to leaking. Widening the
+ * grammar to close one arrangement has opened others every time it was tried.
+ * What was actually wrong is that a PARTIAL match here reported success; a
+ * fallback that consumes the whole parameter list covers the apostrophe, the
+ * backtick, and the next character nobody has thought of, without touching
+ * the grammar at all.
+ *
+ * It stays bounded: the quote is admitted only when another `name =` follows,
+ * so the value ends with the last parameter and cannot run into the object
+ * carrying the header — the safety property an end-of-line rule lacks.
  */
 const SENSITIVE_AUTH_INLINE_RE =
-  /(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\4)[^\r\n\\])*(\4)|[^\r\n]*)|(?:[^"'\r\n\\]|["'](?![\s]*(?:[,;)\]}]|$)))+)/gi;
+  /(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\4)[^\r\n\\])*(\4)|[^\r\n]*)|(?:[^"'\r\n\\]|["'](?=\s*,\s*[^\s,="'\r\n]+\s*=)|["'](?![\s]*(?:[,;)\]}]|$)))+)/gi;
 /**
  * Unquoted-value form (`password:hunter2`). Parser errors echo the offending
  * source fragment, so `--params '{"password":hunter2}'` surfaces the raw
