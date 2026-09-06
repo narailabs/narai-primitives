@@ -763,6 +763,38 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     if (env.status === "error") expect(env.message).toBe("[REDACTED]");
   });
 
+  it("fails closed when the SDK fails before credentials resolve", async () => {
+    // Regression (Codex P1) against the `loadedCreds` capture from earlier in
+    // this run. An SDK failure can win the race against a slow credential
+    // loader: `loadedCreds` is undefined while the loader is still on its way
+    // to returning the very value the SDK error names, and `credsUnavailable`
+    // is false because nothing rejected. Redacting against an empty set there
+    // reports success while leaking.
+    //
+    // Unresolved and rejected differ only in timing, and neither is
+    // distinguishable at the point the message is redacted, so both fail
+    // closed. The loader here resolves AFTER the failure, which is what makes
+    // this different from the sibling test above.
+    const c = createConnector<{}>({
+      name: "creds-slow",
+      credentials: () =>
+        new Promise((resolve) => setTimeout(() => resolve({ token: "hunter2" }), 50)),
+      sdk: async () => {
+        throw new Error("upstream rejected hunter2");
+      },
+      actions: {
+        login: {
+          params: z.any(),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const env = await c.fetch("login", {});
+    expect(env.status).toBe("error");
+    if (env.status === "error") expect(env.message).not.toContain("hunter2");
+  });
+
   it("does not wait for a hung loader after its sibling fails", async () => {
     // Regression (Codex P2) against the same change. `allSettled` waits for
     // EVERY sibling, so a fast configuration failure paired with a loader that

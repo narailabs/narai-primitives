@@ -1197,6 +1197,14 @@ export function createConnector<TSdk = unknown>(
         throw e;
       },
     );
+    // Unresolved counts as unavailable, not as "no credentials". An SDK
+    // failure can win the race against a slow credential loader, and then
+    // `loadedCreds` is undefined while the loader is still on its way to
+    // returning the very value the SDK error names. Redacting against an empty
+    // set there reports success while leaking, exactly as a rejected loader
+    // would — the difference is only in timing, so the two cannot be
+    // distinguished at the point where the message is redacted.
+    const credentialsPending = (): boolean => loadedCreds === undefined;
     // Keep a handler attached: if the credentials loader rejects first,
     // `Promise.all` settles and this one would otherwise be unhandled.
     sdkPromise.catch(() => undefined);
@@ -1215,7 +1223,7 @@ export function createConnector<TSdk = unknown>(
         validated,
         loadedCreds,
         params,
-        credsUnavailable,
+        credsUnavailable || credentialsPending(),
       );
     }
 
