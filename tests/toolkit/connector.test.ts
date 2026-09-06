@@ -670,6 +670,79 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     }
   });
 
+  it("fails closed on a container the walk cannot enumerate", async () => {
+    // Regression (Codex P1). `Object.entries`/`Object.values` return `[]` for
+    // a Map or a Set, so the walk reported a COMPLETE traversal with no
+    // candidates — a silent empty result from the function whose whole job is
+    // to decide what to redact, and the caller's fail-closed path never fired.
+    // The contrast is the proof: same sensitive path, three container types.
+    const build = (token: unknown): Promise<unknown> => {
+      const c = createConnector<{}>({
+        name: `container-${Math.random()}`,
+        credentials: async () => ({}),
+        sdk: async () => ({}),
+        actions: {
+          login: {
+            params: z.any(),
+            classify: { kind: "read" },
+            handler: async () => {
+              throw new Error("upstream rejected hunter2");
+            },
+          },
+        },
+      });
+      return c.fetch("login", { token });
+    };
+    for (const token of [
+      { k: "hunter2" },
+      new Map([["k", "hunter2"]]),
+      new Set(["hunter2"]),
+    ]) {
+      const env = (await build(token)) as { status: string; message?: string };
+      expect(env.status).toBe("error");
+      expect(env.message ?? "").not.toContain("hunter2");
+    }
+  });
+
+  it("fails closed on an accessor rather than reading it", async () => {
+    // Regression (Codex P2). An earlier round caught a getter that THREW; the
+    // catch does nothing for one that returns quietly, which runs caller code
+    // on the validation-error path, nor for one that BLOCKS — and a getter
+    // that never returns means fetch() never resolves at all, which is worse
+    // than the exception because there is no error to report. Descriptors are
+    // inspected instead of values.
+    //
+    // This getter counts its own invocations, so the assertion is that the
+    // walk never ran it, not merely that nothing leaked.
+    let reads = 0;
+    const lazy = {};
+    Object.defineProperty(lazy, "computed", {
+      enumerable: true,
+      get() {
+        reads++;
+        return "hunter2";
+      },
+    });
+    const c = createConnector<{}>({
+      name: "accessor-failclosed",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.any(),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error("upstream rejected hunter2");
+          },
+        },
+      },
+    });
+    const env = await c.fetch("login", { token: lazy });
+    expect(env.status).toBe("error");
+    if (env.status === "error") expect(env.message).not.toContain("hunter2");
+    expect(reads, "the walk executed a getter").toBe(0);
+  });
+
   it("redacts a credential a hook echoes as prose", async () => {
     // classify() and extendDecision() return their own CONFIG_ERROR envelopes
     // and never reach the handler error path, so the input-aware redaction

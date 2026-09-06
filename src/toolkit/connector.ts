@@ -329,6 +329,52 @@ function addCandidate(out: Set<string>, value: string): void {
  * The caller fails closed on `false` rather than redacting against a set that
  * may be missing the credential.
  */
+/**
+ * Own enumerable DATA properties of a plain object, or `null` when the walk
+ * cannot safely enumerate it. `null` means an incomplete walk, which both
+ * collectors' callers already fail closed on.
+ *
+ * Two distinct fail-open holes, closed in one place so the two collectors
+ * cannot drift — they hold the same rule and drifting copies of one rule is
+ * exactly the defect narailabs/narai-primitives#210 exists to repair in the db
+ * copy of the scrubber.
+ *
+ * **Unsupported containers.** `Object.entries`/`Object.values` return `[]` for
+ * a `Map` or a `Set`, so a credential inside one produced a COMPLETE walk with
+ * no candidates: a silent empty result from the function whose entire job is
+ * to decide what to redact. `{ token: { k: "hunter2" } }` redacted and
+ * `{ token: new Map([["k", "hunter2"]]) }` leaked, on the same sensitive path.
+ * The tag test is blunt on purpose — it also excludes `Date`, `RegExp`,
+ * class instances and anything else exotic — because teaching this walker
+ * every collection type is a losing game, and the cost of being wrong here is
+ * a leaked credential rather than a lost message.
+ *
+ * **Accessors.** Reading a property runs caller code. An earlier round caught
+ * a getter that THREW; the `catch` does nothing for one that blocks, and a
+ * getter that never returns means `fetch()` never resolves at all — strictly
+ * worse than the exception, because there is no error to report. Descriptors
+ * are inspected instead of values, and any accessor makes the walk incomplete.
+ * This narrows the hole rather than closing it: `getOwnPropertyDescriptors`
+ * still fires a Proxy's traps.
+ */
+function enumerableDataEntries(v: object): Array<[string, unknown]> | null {
+  if (Object.prototype.toString.call(v) !== "[object Object]") return null;
+  let descs: Record<string, PropertyDescriptor>;
+  try {
+    descs = Object.getOwnPropertyDescriptors(v);
+  } catch {
+    return null;
+  }
+  const entries: Array<[string, unknown]> = [];
+  for (const k of Object.keys(descs)) {
+    const d = descs[k];
+    if (d === undefined || !d.enumerable) continue;
+    if (d.get !== undefined || d.set !== undefined) return null;
+    entries.push([k, d.value]);
+  }
+  return entries;
+}
+
 function collectInputStrings(input: unknown, out: Set<string>): boolean {
   const seen = new Set<object>();
   const stack: unknown[] = [input];
@@ -384,13 +430,9 @@ function collectInputStrings(input: unknown, out: Set<string>): boolean {
     // envelope the caller was promised. Treated as an incomplete walk, which
     // the caller already fails closed on — the reason the traversal exists is
     // to decide what to redact, and a traversal that did not finish cannot.
-    let values: unknown[];
-    try {
-      values = Object.values(cur as Record<string, unknown>);
-    } catch {
-      return false;
-    }
-    for (const v of values) {
+    const dataEntries = enumerableDataEntries(cur);
+    if (dataEntries === null) return false;
+    for (const [, v] of dataEntries) {
       if (nodes++ > MAX_INPUT_NODES) return false;
       stack.push(v);
     }
@@ -530,12 +572,8 @@ function collectSensitiveInputStrings(input: unknown, out: Set<string>): boolean
       }
       continue;
     }
-    let entries: Array<[string, unknown]>;
-    try {
-      entries = Object.entries(v as Record<string, unknown>);
-    } catch {
-      return false;
-    }
+    const entries = enumerableDataEntries(v as object);
+    if (entries === null) return false;
     for (const [k, child] of entries) {
       if (nodes++ > MAX_INPUT_NODES) return false;
       const childPath = cur.path === "" ? k : `${cur.path}.${k}`;
