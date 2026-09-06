@@ -379,22 +379,36 @@ function addCandidate(out: Set<string>, value: string): void {
  * This narrows the hole rather than closing it: `getOwnPropertyDescriptors`
  * still fires a Proxy's traps.
  */
-function enumerableDataEntries(v: object): Array<[string, unknown]> | null {
-  if (Object.prototype.toString.call(v) !== "[object Object]") return null;
-  let descs: Record<string, PropertyDescriptor>;
+function enumerableDataEntries(
+  v: object,
+  budget: number,
+): Array<[string, unknown]> | null {
   try {
-    descs = Object.getOwnPropertyDescriptors(v);
+    // Inside the try. `Object.prototype.toString` reads a caller-defined
+    // `Symbol.toStringTag`, which can be a getter and can throw — so the
+    // plain-object test added to close the container hole was itself an
+    // uncaught call to caller code, on the same path and with the same
+    // consequence: `fetch()` rejecting instead of returning the envelope.
+    if (Object.prototype.toString.call(v) !== "[object Object]") return null;
+    // Width before descriptors. `getOwnPropertyDescriptors` materializes one
+    // descriptor object per property, so a programmatic object with millions
+    // of keys bought seconds of synchronous work and the memory for all of it
+    // before `MAX_INPUT_NODES` was ever consulted. `Object.keys` allocates
+    // one array of names, which is the cheapest way to learn the width, and
+    // the walk fails closed past its remaining budget.
+    if (Object.keys(v).length > budget) return null;
+    const descs = Object.getOwnPropertyDescriptors(v);
+    const entries: Array<[string, unknown]> = [];
+    for (const k of Object.keys(descs)) {
+      const d = descs[k];
+      if (d === undefined || !d.enumerable) continue;
+      if (d.get !== undefined || d.set !== undefined) return null;
+      entries.push([k, d.value]);
+    }
+    return entries;
   } catch {
     return null;
   }
-  const entries: Array<[string, unknown]> = [];
-  for (const k of Object.keys(descs)) {
-    const d = descs[k];
-    if (d === undefined || !d.enumerable) continue;
-    if (d.get !== undefined || d.set !== undefined) return null;
-    entries.push([k, d.value]);
-  }
-  return entries;
 }
 
 function collectInputStrings(input: unknown, out: Set<string>): boolean {
@@ -452,7 +466,7 @@ function collectInputStrings(input: unknown, out: Set<string>): boolean {
     // envelope the caller was promised. Treated as an incomplete walk, which
     // the caller already fails closed on — the reason the traversal exists is
     // to decide what to redact, and a traversal that did not finish cannot.
-    const dataEntries = enumerableDataEntries(cur);
+    const dataEntries = enumerableDataEntries(cur, MAX_INPUT_NODES - nodes);
     if (dataEntries === null) return false;
     for (const [, v] of dataEntries) {
       if (nodes++ > MAX_INPUT_NODES) return false;
@@ -616,7 +630,7 @@ function collectSensitiveInputStrings(input: unknown, out: Set<string>): boolean
       }
       continue;
     }
-    const entries = enumerableDataEntries(v as object);
+    const entries = enumerableDataEntries(v as object, MAX_INPUT_NODES - nodes);
     if (entries === null) return false;
     for (const [k, child] of entries) {
       if (nodes++ > MAX_INPUT_NODES) return false;
@@ -730,7 +744,13 @@ function defaultErrorMap(
     const msg = err.issues
       .map((i) => {
         const joined = i.path.join(".");
-        const path = joined || "<root>";
+        // The PATH is redacted as well as the message. A custom refinement can
+        // put the rejected value in the path itself — `{ path: [v.password],
+        // message: "invalid" }` renders as `hunter2: invalid` — and the
+        // shape-based scrub sees no `key = value` in that prose. Same redactor
+        // and therefore the same candidates, so a path segment that is the
+        // caller's own input is removed while an ordinary field name is not.
+        const path = redactEchoedInput(joined) || "<root>";
         // Issue text is author-controlled prose and can name the rejected
         // value without any `key = value` shape for `scrubSecrets` to find
         // (`password: rejected value hunter2` scrubbed to
@@ -1107,8 +1127,21 @@ export function createConnector<TSdk = unknown>(
     // 6. decision.status === "success". Load SDK + creds lazily, run handler.
     let sdk: TSdk;
     let credentials: Credentials;
+    // `allSettled`, not `all`. With `all`, one rejection left the destructuring
+    // unassigned, so a `sdk()` failure whose message echoes a credential
+    // reached `redactSensitiveEchoes` with `credentials === undefined` and no
+    // candidate to match — and setup prose carries no `key = value` shape for
+    // `scrubSecrets` to find either. The credentials that DID resolve are the
+    // ones most likely to be named in the failure.
+    const settled = await Promise.allSettled([loadSdk(), loadCreds()]);
+    const loadedCreds =
+      settled[1].status === "fulfilled" ? settled[1].value : undefined;
     try {
-      [sdk, credentials] = await Promise.all([loadSdk(), loadCreds()]);
+      for (const r of settled) {
+        if (r.status === "rejected") throw r.reason;
+      }
+      sdk = (settled[0] as PromiseFulfilledResult<TSdk>).value;
+      credentials = (settled[1] as PromiseFulfilledResult<Credentials>).value;
     } catch (err) {
       return mapAndBuildError(
         err,
@@ -1120,7 +1153,7 @@ export function createConnector<TSdk = unknown>(
         start,
         undefined as unknown as TSdk,
         validated,
-        undefined,
+        loadedCreds,
         params,
       );
     }

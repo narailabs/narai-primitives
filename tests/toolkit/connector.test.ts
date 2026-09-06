@@ -738,6 +738,164 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     }
   });
 
+  it("redacts a credential the SDK loader echoes when it rejects", async () => {
+    // Regression (Codex P1). `Promise.all` left the destructuring unassigned
+    // when `sdk()` rejected, so `credentials` reached the redactor as
+    // `undefined` and the walk had no candidate — while setup prose carries no
+    // `key = value` shape for the pattern scrub to find either. The
+    // credentials that DID resolve are the ones most likely to be named in a
+    // setup failure, so they are kept via `allSettled`.
+    const c = createConnector<{}>({
+      name: "sdk-reject-creds",
+      credentials: async () => ({ token: "hunter2" }),
+      sdk: async () => {
+        throw new Error("upstream rejected hunter2");
+      },
+      actions: {
+        login: {
+          params: z.any(),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const env = await c.fetch("login", {});
+    expect(env.status).toBe("error");
+    if (env.status === "error") expect(env.message).not.toContain("hunter2");
+  });
+
+  it("redacts a credential a refinement puts in the issue PATH", async () => {
+    // Regression (Codex P1). Only `i.message` went through the input-aware
+    // redactor; the path was emitted verbatim, so a refinement using the
+    // rejected value as its path rendered `hunter2: invalid`.
+    const c = createConnector<{}>({
+      name: "issue-path-echo",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.object({ password: z.string() }).superRefine((v, ctx) => {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: [v.password],
+              message: "invalid",
+            });
+          }),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const env = await c.fetch("login", { password: "hunter2" });
+    expect(env.status).toBe("error");
+    if (env.status === "error") expect(env.message).not.toContain("hunter2");
+  });
+
+  it("keeps an ordinary field name in the issue path", async () => {
+    // The other half: redacting the path must not blank ordinary field names,
+    // which are the reason the path is kept when a message is dropped.
+    const c = createConnector<{}>({
+      name: "issue-path-plain",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.object({ region: z.string() }),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const env = await c.fetch("login", { region: 42 });
+    expect(env.status).toBe("error");
+    if (env.status === "error") expect(env.message).toContain("region");
+  });
+
+  it("fails closed on a throwing Symbol.toStringTag", async () => {
+    // Regression (Codex P2) against the plain-object check added for the
+    // container hole: `Object.prototype.toString` reads a caller-defined
+    // `Symbol.toStringTag`, which can be a getter and can throw. The guard
+    // written to stop caller code escaping was itself an uncaught call to it.
+    const trap = {};
+    Object.defineProperty(trap, Symbol.toStringTag, {
+      get() {
+        throw new Error("tag exploded");
+      },
+    });
+    const c = createConnector<{}>({
+      name: "tostringtag-trap",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.any(),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error("upstream rejected hunter2");
+          },
+        },
+      },
+    });
+    const env = await c.fetch("login", { token: "hunter2", trap });
+    expect(env.status).toBe("error");
+    if (env.status === "error") expect(env.message).not.toContain("hunter2");
+  });
+
+  it("applies the node budget before materializing descriptors", async () => {
+    // Regression (Codex P2). `getOwnPropertyDescriptors` builds one descriptor
+    // object per property, so a very wide object bought the work and the
+    // memory for all of them before `MAX_INPUT_NODES` was consulted.
+    //
+    // Asserted by COUNTING the call, not by timing it and not by the envelope.
+    // The envelope cannot distinguish: an over-wide object trips the node
+    // bound during the entry loop either way, so an output assertion passes
+    // with the fix reverted — it proves nothing. A timing assertion would be a
+    // CI-speed test. The observable property is that descriptors are never
+    // materialized for an object past the remaining budget.
+    const wide = Object.fromEntries(
+      Array.from({ length: 60_000 }, (_, i) => [`k${i}`, `v${i}`]),
+    );
+    const real = Object.getOwnPropertyDescriptors;
+    let descriptorCalls = 0;
+    Object.defineProperty(Object, "getOwnPropertyDescriptors", {
+      configurable: true,
+      writable: true,
+      value: (o: object) => {
+        if (o === wide) descriptorCalls++;
+        return real(o);
+      },
+    });
+    try {
+      const c = createConnector<{}>({
+        name: "wide-budget",
+        credentials: async () => ({}),
+        sdk: async () => ({}),
+        actions: {
+          login: {
+            params: z.any(),
+            classify: { kind: "read" },
+            handler: async () => {
+              throw new Error("upstream rejected hunter2");
+            },
+          },
+        },
+      });
+      const env = await c.fetch("login", { token: { wide, secret: "hunter2" } });
+      expect(env.status).toBe("error");
+      if (env.status === "error") expect(env.message).toBe("[REDACTED]");
+      expect(
+        descriptorCalls,
+        "materialized descriptors for an over-budget object",
+      ).toBe(0);
+    } finally {
+      Object.defineProperty(Object, "getOwnPropertyDescriptors", {
+        configurable: true,
+        writable: true,
+        value: real,
+      });
+    }
+  });
+
   it("redacts every occurrence of a punctuation-only credential", async () => {
     // Regression (Codex P2). The left boundary was a CONSUMING group, so one
     // match ate the character the next match needed to start from and
