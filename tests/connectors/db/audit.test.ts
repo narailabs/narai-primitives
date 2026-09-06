@@ -221,7 +221,16 @@ describe("wiki_db.audit", () => {
     // `session_token` and `\bsecret\b` / `\baccess[_-]?key\b` both missed
     // `secret_access_key` — the field names `src/connectors/aws/cli.ts`
     // writes. Measured before the fix: every key below passed the credential
-    // through untouched, while the toolkit's own `scrubSecrets` redacted it.
+    // through untouched.
+    //
+    // An earlier version of this comment added "while the toolkit's own
+    // `scrubSecrets` redacted it". That was wrong, and re-measured on this
+    // branch: `src/toolkit/audit/writer.ts` still wraps `SENSITIVE_KEYS` in
+    // `\b`, so it leaks the first FIVE of these — `secret_access_key`,
+    // `session_token`, `secretAccessKey`, `refresh_token`, `client_secret` —
+    // and redacts only the four whose names carry no underscore boundary. The
+    // toolkit copy gets the same lookaround treatment in #207; until that
+    // merges, nothing here should be read as saying it is already safe.
     const keys = [
       "secret_access_key",
       "session_token",
