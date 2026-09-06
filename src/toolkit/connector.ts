@@ -338,7 +338,7 @@ export function createConnector<TSdk = unknown>(
         status: "error",
         action,
         error_code: "VALIDATION_ERROR",
-        message: `Unknown action '${action}'. Valid: ${[...validActions].join(", ")}`,
+        message: scrubSecrets(`Unknown action '${action}'. Valid: ${[...validActions].join(", ")}`),
         retriable: false,
       };
     }
@@ -347,7 +347,7 @@ export function createConnector<TSdk = unknown>(
         status: "error",
         action,
         error_code: "CONFIG_ERROR",
-        message: `Policy config error: ${policyLoadError}`,
+        message: scrubSecrets(`Policy config error: ${policyLoadError}`),
         retriable: false,
       };
     }
@@ -359,11 +359,12 @@ export function createConnector<TSdk = unknown>(
     const parsed = spec.params.safeParse(params);
     if (!parsed.success) {
       const mapped = defaultErrorMap(parsed.error);
+      const scrubbedMessage = scrubSecrets(mapped.message);
       const env: ErrorEnvelope = {
         status: "error",
         action,
         error_code: mapped.error_code,
-        message: mapped.message,
+        message: scrubbedMessage,
         retriable: false,
       };
       audit.logEvent({
@@ -376,7 +377,7 @@ export function createConnector<TSdk = unknown>(
       recorder({
         action,
         kind: "validation",
-        context: mapped.message,
+        context: scrubbedMessage,
         scope: safeScope(cfg, { sdk: undefined as unknown as TSdk, action, params }),
       });
       return env;
@@ -561,15 +562,16 @@ export function createConnector<TSdk = unknown>(
     // hit the case where stdout is empty and the failure is text on stderr.
     // Exit code is 2 (CLI misuse), distinct from 1 (handled action-level error).
     const writeArgErrorEnvelope = (action: string, message: string): void => {
+      const scrubbed = scrubSecrets(message);
       const env = {
         status: "error",
         action,
         error_code: "VALIDATION_ERROR",
-        message,
+        message: scrubbed,
         retriable: false,
       };
       process.stdout.write(JSON.stringify(env) + "\n");
-      process.stderr.write(`argument error: ${message}\n`);
+      process.stderr.write(`argument error: ${scrubbed}\n`);
     };
 
     let parsed;
@@ -694,7 +696,7 @@ function errorEnvelope(
     status: "error",
     action,
     error_code: code,
-    message,
+    message: scrubSecrets(message),
     retriable,
   };
 }
@@ -729,12 +731,12 @@ function mapAndBuildError<TSdk>(
   const override = cfg.mapError?.(err, action);
   if (override?.error_code !== undefined && override?.message !== undefined) {
     code = override.error_code;
-    message = override.message;
+    message = scrubSecrets(override.message);
     retriable = override.retriable ?? RETRIABLE_CODES.has(code);
   } else {
     const def = defaultErrorMap(err);
     code = def.error_code;
-    message = def.message;
+    message = scrubSecrets(def.message);
     retriable = RETRIABLE_CODES.has(code);
   }
 
@@ -744,7 +746,7 @@ function mapAndBuildError<TSdk>(
   recorder({
     action,
     kind: code.toLowerCase(),
-    context: scrubSecrets(message),
+    context: message, // already scrubbed
     scope,
   });
 
@@ -754,7 +756,7 @@ function mapAndBuildError<TSdk>(
     facts: {
       kind: code.toLowerCase(),
       action,
-      context: scrubSecrets(message),
+      context: message, // already scrubbed
     },
   };
   if (cfg.runtime?.cwd !== undefined) hitOpts.cwd = cfg.runtime.cwd;
