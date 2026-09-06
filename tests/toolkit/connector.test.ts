@@ -738,6 +738,77 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     }
   });
 
+  it("bounds redaction by characters scanned, not comparison count", async () => {
+    // Regression (Codex P2). Each comparison is a pass over the WHOLE message,
+    // so a count-only ceiling bounded how many passes happened and not how
+    // much was read. Measured on the pre-fix code: 2000 candidates against a
+    // 2 MB message cost 95ms on the `includes` branch and 2187ms on the
+    // short-value regex branch — at 1% of the permitted 200,000 comparisons.
+    //
+    // Asserted on the OUTPUT, not on elapsed time: the budget must fail closed
+    // and return `[REDACTED]`. A timing assertion here would be a CI-speed
+    // test, and this file already carries one ratio test that is delicate
+    // enough under load.
+    const big = "x".repeat(4_000_000);
+    const c = createConnector<{}>({
+      name: "redaction-charge",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.any(),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error(big);
+          },
+        },
+      },
+    });
+    const token = Object.fromEntries(
+      Array.from({ length: 100 }, (_, i) => [`k${i}`, `secret-value-${i}`]),
+    );
+    const env = await c.fetch("login", { token });
+    expect(env.status).toBe("error");
+    if (env.status === "error") expect(env.message).toBe("[REDACTED]");
+  });
+
+  it("still redacts normally at a realistic message and candidate size", async () => {
+    // The over-redaction guard, and it has to be SIZED to be one: a budget
+    // that replaced every diagnostic with `[REDACTED]` would still pass a leak
+    // test, so this pins a case a mis-scaled charge would break. 100 KB and
+    // 100 candidates costs 100 units each = 10,000 of the permitted 200,000 at
+    // the 1 KB unit, and 10,000,000 if the unit were characters. A first
+    // version of this test used a 50-character message and one candidate,
+    // which both scalings pass — it proved nothing.
+    const filler = "upstream rejected the request. ".repeat(3300); // ~100 KB
+    const c = createConnector<{}>({
+      name: "redaction-charge-realistic",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.any(),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error(`${filler} value hunter2 was refused`);
+          },
+        },
+      },
+    });
+    const token = Object.fromEntries([
+      ...Array.from({ length: 99 }, (_, i) => [`k${i}`, `unused-value-${i}`]),
+      ["secret", "hunter2"],
+    ]);
+    const env = await c.fetch("login", { token });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("hunter2");
+      expect(env.message, "budget over-redacted an ordinary error").toContain(
+        "upstream rejected the request",
+      );
+    }
+  });
+
   it("fails closed on a container the walk cannot enumerate", async () => {
     // Regression (Codex P1). `Object.entries`/`Object.values` return `[]` for
     // a Map or a Set, so the walk reported a COMPLETE traversal with no

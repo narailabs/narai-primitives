@@ -274,6 +274,28 @@ const MAX_INPUT_NODES = 50_000;
 const MAX_REDACTION_COMPARISONS = 200_000;
 
 /**
+ * The unit a comparison is CHARGED in, in characters.
+ *
+ * The counter above bounds how many comparisons happen, not how much they
+ * read, and each one is an `includes`/`replace` over the WHOLE message. So the
+ * ceiling admitted an unbounded amount of synchronous scanning on an error
+ * path: measured, 2000 candidates against a 2 MB message cost 95 ms on the
+ * `includes` branch and 2187 ms on the short-value regex branch — and that is
+ * 2000 of a permitted 200 000.
+ *
+ * Charging `ceil(message.length / 1KB)` units per candidate makes the existing
+ * budget measure work instead of calls, without inventing a second tuned
+ * number: a 1 KB message still costs one unit per candidate, exactly as
+ * before, and a 2 MB message costs 2000, so it exhausts the budget after 100
+ * candidates rather than 200 000.
+ *
+ * The check also runs BEFORE the loop. Accumulating during it lets a single
+ * enormous message through for one full pass before the first charge is
+ * levied, which is most of the cost when the candidate list is short.
+ */
+const REDACTION_CHARGE_UNIT = 1024;
+
+/**
  * Add a redaction candidate, plus the normalizations a schema is likely to
  * have applied before the message was written.
  *
@@ -485,9 +507,22 @@ function makeEchoRedactor(candidates: Iterable<string>): {
   return {
     exhausted: (): boolean => budgetExhausted,
     redact: (message: string): string => {
+      // Charge the scan, not the call: a miss costs a full pass over the
+      // message. Checked here as well as in the loop, because accumulating
+      // only inside it lets one enormous message buy a complete pass before
+      // the first charge is levied.
+      const charge = Math.max(
+        1,
+        Math.ceil(message.length / REDACTION_CHARGE_UNIT),
+      );
+      if (charge * byLengthDesc.length > MAX_REDACTION_COMPARISONS) {
+        budgetExhausted = true;
+        return "[REDACTED]";
+      }
       let out = message;
       for (const value of byLengthDesc) {
-        if (comparisons++ > MAX_REDACTION_COMPARISONS) {
+        comparisons += charge;
+        if (comparisons > MAX_REDACTION_COMPARISONS) {
           budgetExhausted = true;
           return "[REDACTED]";
         }
