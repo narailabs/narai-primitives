@@ -1513,6 +1513,50 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     expect(large).toBeLessThan(Math.max(small, 0.5) * 8);
   }, 120_000);
 
+  it("walks a deeply nested object in linear time", async () => {
+    // Regression (Codex P2). The walker rebuilt the full dotted path at every
+    // level and rescanned that growing string with two sensitivity regexes, so
+    // depth cost O(depth^2) — measured, a 20,000-deep chain of ordinary
+    // `metadata` keys took 8539ms of synchronous work on an error path, under
+    // the `MAX_INPUT_NODES` ceiling the whole time. It is 13ms now.
+    //
+    // Ratios rather than absolute times, so this is not a CI-speed test, and
+    // best-of-three because the ratio is the assertion and one descheduling
+    // spike in either measurement moves it — the same shape as the wide
+    // validation test above, for the same reason.
+    const time = async (depth: number): Promise<number> => {
+      let node: Record<string, unknown> = { leaf: "x" };
+      for (let i = 0; i < depth; i++) node = { metadata: node };
+      const c = createConnector<{}>({
+        name: `deep-${depth}`,
+        credentials: async () => ({}),
+        sdk: async () => ({}),
+        actions: {
+          login: {
+            params: z.any(),
+            classify: { kind: "read" },
+            handler: async () => {
+              throw new Error("upstream rejected hunter2");
+            },
+          },
+        },
+      });
+      let best = Infinity;
+      for (let i = 0; i < 3; i++) {
+        const t = process.hrtime.bigint();
+        await c.fetch("login", { token: "hunter2", deep: node });
+        best = Math.min(best, Number(process.hrtime.bigint() - t) / 1e6);
+      }
+      return best;
+    };
+    await time(2_000); // warm up the JIT so the ratio measures the algorithm
+    const small = await time(5_000);
+    const large = await time(20_000);
+    // 4x the depth. Linear predicts ~4x, quadratic ~16x. A threshold of 8
+    // separates them with room for noise; measured 3.3x after the fix.
+    expect(large).toBeLessThan(Math.max(small, 0.5) * 8);
+  }, 240_000);
+
   it("redacts a one-character echoed credential", async () => {
     // The length rule used to EXCLUDE short values, so a one-character
     // credential at a non-sensitive path was neither dropped by the path

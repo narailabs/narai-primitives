@@ -600,13 +600,22 @@ function collectSensitiveInputStrings(input: unknown, out: Set<string>): boolean
   // seen only through a benign path, so a later sensitive alias must revisit.
   // A node is therefore visited at most twice, which keeps the budget's shape.
   const seen = new Map<object, boolean>();
-  const stack: Array<{ node: unknown; path: string; sensitive: boolean }> = [
-    { node: input, path: "", sensitive: false },
+  // No dotted path is carried. Sensitivity is INHERITED, and both predicates
+  // are anchored on segment boundaries, so testing the new segment is
+  // equivalent to testing the whole ancestry — an ancestor that made the
+  // subtree sensitive was tested when it was pushed, and `sensitive` carries
+  // that down. Rebuilding the full path at every level and rescanning the
+  // growing string with two regexes made this quadratic: a 20,000-deep chain
+  // of ordinary `metadata` keys cost seconds of synchronous work on an error
+  // path, under the `MAX_INPUT_NODES` ceiling the whole time. The path was
+  // read for nothing else, so it is gone rather than bounded.
+  const stack: Array<{ node: unknown; sensitive: boolean }> = [
+    { node: input, sensitive: false },
   ];
   let nodes = 0;
   while (stack.length > 0) {
     if (nodes++ > MAX_INPUT_NODES) return false;
-    const cur = stack.pop() as { node: unknown; path: string; sensitive: boolean };
+    const cur = stack.pop() as { node: unknown; sensitive: boolean };
     const v = cur.node;
     if (typeof v === "string" || typeof v === "number" || typeof v === "bigint") {
       if (cur.sensitive) addCandidate(out, String(v));
@@ -623,7 +632,7 @@ function collectSensitiveInputStrings(input: unknown, out: Set<string>): boolean
           if (nodes++ > MAX_INPUT_NODES) return false;
           // An element inherits its container's path: every entry of
           // `tokens` is as sensitive as `tokens` itself.
-          stack.push({ node: v[i], path: cur.path, sensitive: cur.sensitive });
+          stack.push({ node: v[i], sensitive: cur.sensitive });
         }
       } catch {
         return false;
@@ -634,16 +643,14 @@ function collectSensitiveInputStrings(input: unknown, out: Set<string>): boolean
     if (entries === null) return false;
     for (const [k, child] of entries) {
       if (nodes++ > MAX_INPUT_NODES) return false;
-      const childPath = cur.path === "" ? k : `${cur.path}.${k}`;
       stack.push({
         node: child,
-        path: childPath,
         // Sensitivity is inherited, not re-decided: once inside a credential
         // container everything under it is a candidate.
         sensitive:
           cur.sensitive ||
-          isSensitiveFieldPath(childPath) ||
-          isCredentialContainerPath(childPath),
+          isSensitiveFieldPath(k) ||
+          isCredentialContainerPath(k),
       });
     }
   }
