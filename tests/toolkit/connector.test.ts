@@ -670,6 +670,74 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     }
   });
 
+  it("redacts a credential whose sensitive path a transform renamed away", async () => {
+    // Regression (Codex P1). Sensitivity lives in the PATH, and a transform is
+    // precisely the operation that discards paths: `{password}` rewritten to
+    // `{value}` leaves the validated object with no sensitively-named field,
+    // so a handler throwing `rejected hunter2` collected no candidate at all
+    // and the credential reached the envelope. Both representations are now
+    // collected — the raw one still carries the field name.
+    const c = createConnector<{}>({
+      name: "transform-rename",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z
+            .object({ password: z.string() })
+            .transform((v) => ({ value: v.password })),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error("rejected hunter2");
+          },
+        },
+      },
+    });
+    const env = await c.fetch("login", { password: "hunter2" });
+    expect(env.status).toBe("error");
+    if (env.status === "error") expect(env.message).not.toContain("hunter2");
+  });
+
+  it("redacts a transform-renamed credential a hook echoes as prose", async () => {
+    // The two hook catch sites take the same rawParams argument. Fixing the
+    // handler path and not its siblings is how the previous gap on these two
+    // survived a round.
+    for (const which of ["classify", "extendDecision"] as const) {
+      const c = createConnector<{}>({
+        name: `transform-rename-${which}`,
+        credentials: async () => ({}),
+        sdk: async () => ({}),
+        actions: {
+          login: {
+            params: z
+              .object({ password: z.string() })
+              .transform((v) => ({ value: v.password })),
+            classify:
+              which === "classify"
+                ? () => {
+                    throw new Error("rejected hunter2");
+                  }
+                : { kind: "read" as const },
+            ...(which === "extendDecision" ? {} : {}),
+            handler: async () => ({}),
+          },
+        },
+        ...(which === "extendDecision"
+          ? {
+              extendDecision: (): never => {
+                throw new Error("rejected hunter2");
+              },
+            }
+          : {}),
+      } as never);
+      const env = await c.fetch("login", { password: "hunter2" });
+      expect(env.status).toBe("error");
+      if (env.status === "error") {
+        expect(env.message, `leaked via ${which}`).not.toContain("hunter2");
+      }
+    }
+  });
+
   it("fails closed on a container the walk cannot enumerate", async () => {
     // Regression (Codex P1). `Object.entries`/`Object.values` return `[]` for
     // a Map or a Set, so the walk reported a COMPLETE traversal with no

@@ -605,10 +605,31 @@ function redactSensitiveEchoes(
   message: string,
   params: unknown,
   credentials?: unknown,
+  rawParams?: unknown,
 ): string {
   const candidates = new Set<string>();
   if (params !== undefined && params !== null) {
     if (!collectSensitiveInputStrings(params, candidates)) return "[REDACTED]";
+  }
+  // Both representations, because sensitivity lives in the PATH and a
+  // transform is precisely the operation that discards paths. A schema
+  // rewriting `{ password }` into `{ value }` leaves the validated object with
+  // no sensitively-named field at all, so a handler throwing `rejected
+  // hunter2` collected no candidate and the credential reached the envelope.
+  // The validated form is what the handler saw and most likely interpolated;
+  // the raw form still carries the field names.
+  //
+  // The limit, stated so it is not discovered later: this recovers a RENAMED
+  // field, not a DERIVED one. A transform that decodes or reformats the value
+  // (`atob`, a trim, a JSON parse) produces a string present in neither
+  // collection, and no amount of path-tracking reaches it — the same
+  // "arbitrary transform is not derivable" boundary documented above
+  // {@link collectInputStrings}. This widens the net to the cases where the
+  // value survives intact, which is most of them.
+  if (rawParams !== undefined && rawParams !== null && rawParams !== params) {
+    if (!collectSensitiveInputStrings(rawParams, candidates)) {
+      return "[REDACTED]";
+    }
   }
   // Credentials contribute EVERY string, not only the sensitively-named ones.
   // A credentials object is secret by construction — that is what makes it
@@ -910,6 +931,8 @@ export function createConnector<TSdk = unknown>(
       const message = redactSensitiveEchoes(
         scrubSecrets(err instanceof Error ? err.message : String(err)),
         validated,
+        undefined,
+        params,
       );
       return errorEnvelope(
         action,
@@ -943,6 +966,8 @@ export function createConnector<TSdk = unknown>(
         const message = redactSensitiveEchoes(
           scrubSecrets(err instanceof Error ? err.message : String(err)),
           validated,
+          undefined,
+          params,
         );
         return errorEnvelope(
           action,
@@ -1051,6 +1076,8 @@ export function createConnector<TSdk = unknown>(
         start,
         undefined as unknown as TSdk,
         validated,
+        undefined,
+        params,
       );
     }
 
@@ -1090,6 +1117,7 @@ export function createConnector<TSdk = unknown>(
         sdk,
         validated,
         credentials,
+        params,
       );
     }
 
@@ -1283,6 +1311,7 @@ function mapAndBuildError<TSdk>(
   sdk: TSdk,
   params: unknown,
   credentials?: unknown,
+  rawParams?: unknown,
 ): ErrorEnvelope {
   let code: ErrorCode;
   let message: string;
@@ -1313,7 +1342,7 @@ function mapAndBuildError<TSdk>(
   // has always done, scoped to sensitive paths so an ordinary diagnostic that
   // names a benign parameter survives.
   // DO NOT REMOVE: pinned by tests/toolkit/connector.test.ts.
-  message = redactSensitiveEchoes(message, params, credentials);
+  message = redactSensitiveEchoes(message, params, credentials, rawParams);
 
   const scope = safeScope(cfg, { sdk, action, params });
 
