@@ -877,7 +877,15 @@ export async function main(
     const result: FetchResult = {
       status: "error",
       error_code: "VALIDATION_ERROR",
-      error: `Invalid JSON in --params: ${(e as Error).message}`,
+      // Same rule as `toolkit/connector.ts`: the parser quotes the offending
+      // input verbatim, so `--params "$DB_PASSWORD"` echoed the credential
+      // here. Only digits are copied out — a position cannot carry a secret.
+      error: ((): string => {
+        const pos = /\bat position (\d+)\b/.exec((e as Error).message)?.[1];
+        return pos === undefined
+          ? "Invalid JSON in --params"
+          : `Invalid JSON in --params (at position ${pos})`;
+      })(),
       execution_time_ms: 0,
     };
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");

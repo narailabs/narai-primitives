@@ -441,17 +441,27 @@ function enumerableDataEntries(
     // `MAX_INPUT_NODES` was consulted. `getOwnPropertyNames` allocates one
     // array of names, the same cost class as `Object.keys`, and now counts
     // exactly what the loop below will visit.
-    const names = Object.getOwnPropertyNames(v);
+    // `Reflect.ownKeys`, which is the COMPLETE own-key list: string keys and
+    // symbol keys, enumerable or not. Two rounds of this walk were narrowed
+    // one key-kind at a time — `Object.keys` missed non-enumerable, then
+    // `getOwnPropertyNames` missed symbols — so this stops enumerating the
+    // ways a key can hide and asks for all of them. There is no fourth kind:
+    // `Reflect.ownKeys` is the language's own definition of "own property".
+    const names = Reflect.ownKeys(v);
     if (names.length > budget) return null;
-    const descs = Object.getOwnPropertyDescriptors(v);
     const entries: Array<[string, unknown]> = [];
     for (const k of names) {
-      const d = descs[k];
+      // Per key rather than one bulk `getOwnPropertyDescriptors`: the width
+      // guard above already bounds this at `budget`, and it sidesteps
+      // indexing a string-keyed descriptor map with a symbol.
+      const d = Object.getOwnPropertyDescriptor(v, k);
       if (d === undefined) continue;
       // Accessors stay fail-closed: invoking a getter to collect a candidate
       // would run caller code inside the redaction path.
       if (d.get !== undefined || d.set !== undefined) return null;
-      entries.push([k, d.value]);
+      // A symbol has no string form of its own; `String(sym)` gives
+      // `Symbol(desc)`, which is only ever used as a display path segment.
+      entries.push([typeof k === "string" ? k : String(k), d.value]);
     }
     return entries;
   } catch {
@@ -1389,8 +1399,27 @@ export function createConnector<TSdk = unknown>(
     try {
       params = JSON.parse(paramsRaw);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      writeArgErrorEnvelope(action, `--params must be valid JSON (${msg})`);
+      // NOTHING derived from `paramsRaw` may be echoed here. The parser
+      // quotes the offending input verbatim — `JSON.parse("ghp_live_…")`
+      // throws `Unexpected token 'g', "ghp_live_…" is not valid JSON` — and
+      // `--params "$GITHUB_TOKEN"` is an ordinary shell slip, so a bare token
+      // that `scrubSecrets` cannot see reached stdout AND stderr. This path
+      // runs before any credentials load, so there is no candidate set to
+      // redact against either.
+      //
+      // Copying only DIGITS is the general form of the rule: a position can
+      // never carry a secret, whatever the parser decides to say. When the
+      // message has no position — Node omits it for the `Unexpected token`
+      // shape — the detail is simply dropped. The caller has their own input;
+      // what they need is that it did not parse.
+      const raw = err instanceof Error ? err.message : String(err);
+      const pos = /\bat position (\d+)\b/.exec(raw)?.[1];
+      writeArgErrorEnvelope(
+        action,
+        pos === undefined
+          ? "--params must be valid JSON"
+          : `--params must be valid JSON (at position ${pos})`,
+      );
       return 2;
     }
 

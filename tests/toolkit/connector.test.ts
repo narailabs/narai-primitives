@@ -254,6 +254,37 @@ describe("createConnector.fetch — validation errors", () => {
     }
   });
 
+  it("a symbol-keyed credential is still a redaction candidate", async () => {
+    // Third key-kind in this walk. `Object.keys` missed non-enumerable, then
+    // `getOwnPropertyNames` missed symbols. `Reflect.ownKeys` is the
+    // language's own definition of "own property", so there is no fourth.
+    const SYM = Symbol("shared-token");
+    const creds: Record<string | symbol, unknown> = {
+      region: "us-east-1",
+      [SYM]: "SYMBOL-SECRET-99",
+    };
+    const c = createConnector({
+      name: "symbol-test",
+      credentials: async () => creds as never,
+      sdk: async () => ({}),
+      actions: {
+        go: {
+          params: z.object({}),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error("upstream rejected SYMBOL-SECRET-99");
+          },
+        },
+      },
+    });
+    const env = await c.fetch("go", {});
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("SYMBOL-SECRET-99");
+      expect(env.message).toContain("[REDACTED]");
+    }
+  });
+
   it("a BARE token in the action slot is redacted too", async () => {
     // `scrubSecrets` matches shapes, so it caught `api_key=…` and returned
     // the likelier `--action "$GITHUB_TOKEN"` untouched. An invalid action is
@@ -2499,6 +2530,50 @@ describe("createConnector.main — CLI behavior", () => {
       expect(parsed.status).toBe("success");
     } finally {
       process.stdout.write = origWrite;
+    }
+  });
+
+  it("a malformed --params never echoes the input, whatever its shape", async () => {
+    // `JSON.parse` quotes the offending input verbatim, and `--params
+    // "$GITHUB_TOKEN"` is an ordinary shell slip. This path runs before any
+    // credentials load, so there is no candidate set to redact against and
+    // `scrubSecrets` cannot see a bare token. Nothing derived from the input
+    // is echoed — only DIGITS are copied out of the parser message, and a
+    // position can never carry a secret.
+    //
+    // Three shapes, because the previous two rounds each fixed one input and
+    // the next round arrived with a narrower one.
+    const cases: Array<[string, string]> = [
+      ["ghp_live_DEADBEEF", "ghp_live_DEADBEEF"],
+      ['{"password":hunter2}', "hunter2"],
+      ["mongodb://u:pw123@h", "pw123"],
+    ];
+    for (const [raw, secret] of cases) {
+      const c = makeAws();
+      const writes: string[] = [];
+      const errs: string[] = [];
+      const origWrite = process.stdout.write;
+      const origErr = process.stderr.write;
+      process.stdout.write = ((x: string | Uint8Array): boolean => {
+        writes.push(typeof x === "string" ? x : x.toString());
+        return true;
+      }) as typeof process.stdout.write;
+      process.stderr.write = ((x: string | Uint8Array): boolean => {
+        errs.push(typeof x === "string" ? x : x.toString());
+        return true;
+      }) as typeof process.stderr.write;
+      try {
+        const code = await c.main(["--action", "list_functions", "--params", raw]);
+        expect(code).toBe(2);
+        const all = writes.join("") + errs.join("");
+        expect(all, `leaked for input ${raw}`).not.toContain(secret);
+        // The actionable half survives on both streams.
+        expect(writes.join("")).toContain("must be valid JSON");
+        expect(errs.join("")).toContain("must be valid JSON");
+      } finally {
+        process.stdout.write = origWrite;
+        process.stderr.write = origErr;
+      }
     }
   });
 
