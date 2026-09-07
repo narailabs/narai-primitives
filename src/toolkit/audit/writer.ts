@@ -7,6 +7,22 @@
  * Secret redaction: `scrubSecrets(str)` masks common `password='...'` /
  * `token='...'` / `api_key='...'` literals before writing. Called on
  * caller-supplied strings that might contain credentials.
+ *
+ * WHERE that call belongs — the contract this file does NOT enforce for you:
+ * `logEvent` appends `JSON.stringify(record)` exactly as handed to it. It does
+ * not scrub. Redaction is the CALL SITE's job, and every existing site in
+ * `toolkit/connector.ts` carries a `DO NOT REMOVE` comment naming the test
+ * that pins it.
+ *
+ * Scrubbing centrally here was considered and rejected twice over: the text
+ * arriving from `connector.ts` has already been through `scrubSecrets`, so a
+ * second pass double-escapes it, and the stronger of the two defences
+ * (`redactSensitiveEchoes`) needs the `params`/`credentials` context that
+ * exists at the call site and not here.
+ *
+ * The consequence, stated so it is not rediscovered: a NEW error path added
+ * later inherits no protection. If you add one, scrub the message before it
+ * reaches `logEvent` and add the test that would fail without it.
  */
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
