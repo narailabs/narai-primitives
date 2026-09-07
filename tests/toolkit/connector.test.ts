@@ -117,6 +117,25 @@ describe("createConnector.fetch — validation errors", () => {
     }
   });
 
+  it("unknown action does not echo a credential shaped into the action name", async () => {
+    // This is the ONE validation path that returns before `params` and
+    // `credentials` are resolved, so `redactSensitiveEchoes` has nothing to
+    // compare against and `scrubSecrets` is the only defence. A shell mistake
+    // (`--action "$API_KEY"`) puts the credential straight into an envelope
+    // that `main` writes to stdout and the audit writer records.
+    const c = makeAws();
+    const env = await c.fetch("api_key=sk-live-DEADBEEF", {});
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.error_code).toBe("VALIDATION_ERROR");
+      expect(env.message).not.toContain("sk-live-DEADBEEF");
+      expect(env.message).toContain("[REDACTED]");
+      // The valid half survives: `validActions` is a static identifier list,
+      // so scrubbing the whole message still leaves the actionable part.
+      expect(env.message).toContain("list_functions");
+    }
+  });
+
   it("invalid params (missing required) returns VALIDATION_ERROR", async () => {
     const c = makeAws();
     const env = await c.fetch("list_functions", {});

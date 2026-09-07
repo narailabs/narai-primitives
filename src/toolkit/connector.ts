@@ -958,11 +958,21 @@ export function createConnector<TSdk = unknown>(
   const fetch = async (action: string, params: unknown): Promise<Envelope> => {
     // Argument validation: action must be registered.
     if (!validActions.has(action)) {
+      // `action` is caller-supplied and reaches stdout in this envelope. A
+      // shell mistake that expands a credential into the action slot
+      // (`--action "$API_KEY"`) echoes it here, on the one validation path
+      // that returns BEFORE `params` and `credentials` exist — so the
+      // input-echo rule below has nothing to compare against and `scrubSecrets`
+      // is the only defence available. `validActions` is a static list of
+      // identifiers, so scrubbing the whole message cannot damage the valid
+      // half. DO NOT REMOVE: pinned by tests/toolkit/connector.test.ts.
       return {
         status: "error",
         action,
         error_code: "VALIDATION_ERROR",
-        message: `Unknown action '${action}'. Valid: ${[...validActions].join(", ")}`,
+        message: scrubSecrets(
+          `Unknown action '${action}'. Valid: ${[...validActions].join(", ")}`,
+        ),
         retriable: false,
       };
     }
