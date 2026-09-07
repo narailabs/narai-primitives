@@ -182,9 +182,7 @@ function validateRule(
 ): PolicyRule {
   if (typeof value !== "string" || !VALID_RULES.has(value as PolicyRule)) {
     throw new Error(
-      `${field}: expected one of [allow, present, escalate, deny], got: ${JSON.stringify(
-        value,
-      )}`,
+      `${field}: expected one of [allow, present, escalate, deny], got: ${typeof value}`,
     );
   }
   const rule = value as PolicyRule;
@@ -237,7 +235,7 @@ function validatePolicyObject(
       case "unbounded_select":
         if (typeof v !== "string" || !VALID_UNBOUNDED_MODES.has(v as UnboundedSelectMode)) {
           throw new Error(
-            `${path}.unbounded_select: expected one of [escalate, allow], got: ${JSON.stringify(v)}`,
+            `${path}.unbounded_select: expected one of [escalate, allow], got: ${typeof v}`,
           );
         }
         out.unbounded_select = v as UnboundedSelectMode;

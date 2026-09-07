@@ -106,8 +106,18 @@ function readYaml(filePath: string): Record<string, unknown> {
   try {
     parsed = yaml.load(raw);
   } catch (exc) {
-    const msg = exc instanceof Error ? exc.message : String(exc);
-    throw new Error(`Failed to parse YAML (${filePath}): ${msg}`);
+    // Position, not the parser's prose. js-yaml quotes the offending SOURCE
+    // LINE in its message, and a policy file legitimately holds connection
+    // strings and tokens — so a syntax error one line below a credential
+    // echoed it into the CONFIG_ERROR envelope that `main` writes to stdout.
+    // Only digits are copied out; a line and column can never carry a secret,
+    // and the operator is looking at their own file.
+    const mark = (exc as { mark?: { line?: number; column?: number } }).mark;
+    const at =
+      typeof mark?.line === "number"
+        ? ` at line ${mark.line + 1}, column ${(mark.column ?? 0) + 1}`
+        : "";
+    throw new Error(`Failed to parse YAML (${filePath})${at}`);
   }
   if (parsed === null || parsed === undefined) return {};
   if (!isPlainObject(parsed)) {
@@ -127,9 +137,12 @@ function validateRule(
 ): Rule {
   if (typeof value !== "string" || !VALID_RULES.has(value as Rule)) {
     throw new Error(
-      `${field}: expected one of [success, escalate, denied], got: ${JSON.stringify(
-        value,
-      )}`,
+      // The TYPE, not the value — every other message in this file already
+      // says `got: ${typeof raw}`. An invalid rule value is config text and
+      // can be a bare credential (`policy: {read: ghp_live_…}`), which no
+      // shape-based scrub downstream can recognise. The field name and the
+      // expected set say exactly where to look, in the operator's own file.
+      `${field}: expected one of [success, escalate, denied], got: ${typeof value}`,
     );
   }
   const rule = value as Rule;
@@ -192,9 +205,7 @@ function validateApprovalMode(raw: unknown): ApprovalMode {
   if (raw === undefined || raw === null) return "auto";
   if (typeof raw !== "string" || !VALID_APPROVAL_MODES.has(raw as ApprovalMode)) {
     throw new Error(
-      `approval_mode: expected one of [auto, confirm_once, confirm_each, grant_required], got: ${JSON.stringify(
-        raw,
-      )}`,
+      `approval_mode: expected one of [auto, confirm_once, confirm_each, grant_required], got: ${typeof raw}`,
     );
   }
   return raw as ApprovalMode;

@@ -734,14 +734,27 @@ function redactSensitiveEchoes(
   credentials?: unknown,
   rawParams?: unknown,
   /**
-   * Credential strings captured BEFORE the handler ran, or `null` when that
-   * capture failed. Present on the handler-error path; `undefined` on the
-   * setup-failure path, where no handler has run and walking `credentials`
-   * live is still correct.
+   * The COMPLETE candidate set captured before the handler ran, or `null`
+   * when that capture failed. Present on the handler-error path; `undefined`
+   * everywhere else, where no handler has run and walking the live objects
+   * is still correct.
    */
-  credentialStrings?: ReadonlySet<string> | null,
+  preHandlerCandidates?: ReadonlySet<string> | null,
 ): string {
   const candidates = new Set<string>();
+  // A snapshot exists exactly when a handler has been given these objects.
+  // `params`, `rawParams` and `credentials` are ALL reachable from the
+  // handler — an identity schema (`z.any()`) hands back the caller's own
+  // object — so re-walking any of them here observes whatever the handler
+  // left behind. The previous round snapshotted credentials and left the two
+  // parameter objects live, which is the same defect one argument to the left.
+  if (preHandlerCandidates !== undefined) {
+    if (preHandlerCandidates === null) return "[REDACTED]";
+    if (preHandlerCandidates.size === 0) return message;
+    const echoPre = makeEchoRedactor(preHandlerCandidates);
+    const outPre = echoPre.redact(message);
+    return echoPre.exhausted() ? "[REDACTED]" : outPre;
+  }
   if (params !== undefined && params !== null) {
     if (!collectSensitiveInputStrings(params, candidates)) return "[REDACTED]";
   }
@@ -771,16 +784,7 @@ function redactSensitiveEchoes(
   // provider chooses (`sessionId`, `pat`, `bearer`) need not be in any
   // vocabulary. Reported as a gap after the params-only version shipped: a
   // handler echoing `ctx.credentials.token` collected no candidate at all.
-  if (credentialStrings !== undefined) {
-    // A snapshot was taken before the handler was handed the object. Walking
-    // `credentials` HERE observes whatever the handler left behind: reading
-    // `ctx.credentials.token`, deleting it, then throwing `rejected <token>`
-    // produced no candidate at all, and the old value went out in the
-    // envelope and the hardship context. The object is the handler's to
-    // mutate; the candidate set must not be.
-    if (credentialStrings === null) return "[REDACTED]";
-    for (const c of credentialStrings) candidates.add(c);
-  } else if (credentials !== undefined && credentials !== null) {
+  if (credentials !== undefined && credentials !== null) {
     if (!collectInputStrings(credentials, candidates)) return "[REDACTED]";
   }
   if (candidates.size === 0) return message;
@@ -805,6 +809,26 @@ function defaultErrorMap(
   if (isZodErrorLike(err)) {
     const inputStrings = new Set<string>();
     const collected = collectInputStrings(params, inputStrings);
+    // The keys the SCHEMA REJECTED, and only those. A key is caller text just
+    // as a value is, and zod echoes it: a strict schema given
+    // `{ghp_live_…: true}` reports `Unrecognized key(s) in object:
+    // 'ghp_live_…'` while the boolean value contributes no candidate and no
+    // shape-based scrub can see a bare token.
+    //
+    // Collecting EVERY key instead — the obvious reading — was measured and
+    // is wrong: 16 tests fail, because the field PATH is built from the key,
+    // so `region: Expected string` degrades to `[REDACTED]: Expected string`
+    // and the caller no longer learns which field failed. That is exactly
+    // what the redact-rather-than-drop design exists to preserve. Schema keys
+    // are OUR names and are safe; an UNRECOGNIZED key is by definition not
+    // one of ours, is caller text, and has no diagnostic value beyond
+    // "something unrecognized was sent".
+    for (const issue of err.issues) {
+      if (issue.code !== "unrecognized_keys") continue;
+      const keys = (issue as { keys?: unknown }).keys;
+      if (!Array.isArray(keys)) continue;
+      for (const k of keys) if (typeof k === "string") inputStrings.add(k);
+    }
     // Replace what the caller passed in, in place, rather than deciding
     // whether to drop the message around it.
     //
@@ -1304,18 +1328,32 @@ export function createConnector<TSdk = unknown>(
 
     lastCtx = { sdk, action, params: validated };
 
-    // Snapshot the credential strings BEFORE the handler is given the object.
-    // `ctx.credentials` is the handler's to mutate — rotating a token,
-    // deleting a consumed one — and collecting candidates at redaction time
-    // observed only what survived. A handler that read `ctx.credentials.token`,
-    // deleted it, then threw `rejected <token>` produced an empty candidate
-    // set and the old value went out in the envelope and the hardship context.
+    // Snapshot EVERY candidate source before the handler is given any of
+    // them. All three are reachable from the handler: `ctx.credentials` is
+    // handed over directly, and an identity schema (`z.any()`) hands back the
+    // caller's own params object, so `validated` and `params` can be the same
+    // mutable thing the handler holds. Collecting at redaction time observed
+    // only what survived, and a handler that reads a value, deletes it, then
+    // throws naming it produced an empty candidate set — the credential and
+    // the parameter cases are one defect, one argument apart.
     //
-    // `null` when the walk fails, which fails closed exactly as walking live
-    // did. DO NOT REMOVE: pinned by tests/toolkit/connector.test.ts.
-    const credentialStringsSnapshot = ((): ReadonlySet<string> | null => {
+    // The order below mirrors `redactSensitiveEchoes` exactly: sensitively-
+    // named params, then the raw form when it differs, then every credential
+    // string. `null` on any failed walk, which fails closed exactly as
+    // walking live did.
+    // DO NOT REMOVE: pinned by tests/toolkit/connector.test.ts.
+    const preHandlerCandidates = ((): ReadonlySet<string> | null => {
       const out = new Set<string>();
-      return collectInputStrings(credentials, out) ? out : null;
+      if (validated !== undefined && validated !== null) {
+        if (!collectSensitiveInputStrings(validated, out)) return null;
+      }
+      if (params !== undefined && params !== null && params !== validated) {
+        if (!collectSensitiveInputStrings(params, out)) return null;
+      }
+      if (credentials !== undefined && credentials !== null) {
+        if (!collectInputStrings(credentials, out)) return null;
+      }
+      return out;
     })();
 
     const ctx: Context<TSdk> = {
@@ -1354,7 +1392,7 @@ export function createConnector<TSdk = unknown>(
         credentials,
         params,
         false,
-        credentialStringsSnapshot,
+        preHandlerCandidates,
       );
     }
 
@@ -1587,7 +1625,7 @@ function mapAndBuildError<TSdk>(
    */
   credentialsUnavailable = false,
   /** See {@link redactSensitiveEchoes}. */
-  credentialStrings?: ReadonlySet<string> | null,
+  preHandlerCandidates?: ReadonlySet<string> | null,
 ): ErrorEnvelope {
   let code: ErrorCode;
   let message: string;
@@ -1620,7 +1658,7 @@ function mapAndBuildError<TSdk>(
   // DO NOT REMOVE: pinned by tests/toolkit/connector.test.ts.
   message = credentialsUnavailable
     ? "[REDACTED]"
-    : redactSensitiveEchoes(message, params, credentials, rawParams, credentialStrings);
+    : redactSensitiveEchoes(message, params, credentials, rawParams, preHandlerCandidates);
 
   const scope = safeScope(cfg, { sdk, action, params });
 

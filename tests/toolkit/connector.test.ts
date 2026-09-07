@@ -254,6 +254,76 @@ describe("createConnector.fetch — validation errors", () => {
     }
   });
 
+  it("a handler mutating PARAMS cannot erase the candidate set either", async () => {
+    // The sibling of the credentials case, one argument to the left. An
+    // identity schema (`z.any()`) hands the caller's own object to the
+    // handler, so `validated` and `params` are the same mutable thing —
+    // snapshotting credentials alone left this open.
+    const c = createConnector({
+      name: "mutating-params",
+      credentials: async () => ({ region: "us-east-1" }),
+      sdk: async () => ({}),
+      actions: {
+        go: {
+          params: z.any(),
+          classify: { kind: "read" },
+          handler: async (p) => {
+            const rec = p as Record<string, string>;
+            const old = rec.token;
+            delete rec.token;
+            throw new Error(`rejected ${old}`);
+          },
+        },
+      },
+    });
+    const env = await c.fetch("go", { token: "PARAM-SECRET-55" });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("PARAM-SECRET-55");
+      expect(env.message).toContain("[REDACTED]");
+    }
+  });
+
+  it("a credential used as an unrecognized KEY is redacted", async () => {
+    // zod echoes the offending key: `Unrecognized key(s) in object: 'X'`.
+    // The value contributes no candidate and no shape-based scrub sees a bare
+    // token. Only the keys the SCHEMA REJECTED are collected — see the
+    // comment at that call site for why every key is the wrong set.
+    // `.strict()` on purpose: a plain `z.object` STRIPS unknown keys and
+    // never reports them, so only a strict schema reaches this path.
+    const c = createConnector({
+      name: "strict-keys",
+      credentials: async () => ({ region: "us-east-1" }),
+      sdk: async () => ({}),
+      actions: {
+        go: {
+          params: z.object({ a: z.string().optional() }).strict(),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const env = await c.fetch("go", { ghp_live_DEADBEEF: true } as never);
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("ghp_live_DEADBEEF");
+      expect(env.message).toContain("[REDACTED]");
+    }
+  });
+
+  it("a schema field name is NOT redacted out of its own diagnostic", async () => {
+    // The control for the rule above, and the reason it is scoped to
+    // rejected keys: collecting every key redacts the field PATH, so the
+    // caller stops learning which field failed.
+    const c = makeAws();
+    const env = await c.fetch("list_functions", { region: 5 } as never);
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).toContain("region");
+      expect(env.message).not.toContain("[REDACTED]");
+    }
+  });
+
   it("a handler mutating ctx.credentials cannot erase the candidate set", async () => {
     // `ctx.credentials` is the handler's to mutate — rotating a token,
     // deleting a consumed one. Candidates were collected at redaction time,
@@ -2537,11 +2607,17 @@ describe("createConnector.fetch — runtime errors", () => {
     }
   });
 
-  it("redacts credentials surfaced through the policy-config load error", async () => {
-    // The remaining unscrubbed exposure path: `loadPolicyConfig` validation
-    // errors echo the offending value (`validateRule` interpolates it via
-    // JSON.stringify), and `policyLoadError` reaches the CONFIG_ERROR envelope
-    // that `main()` writes to stdout.
+  it("does not surface credentials through the policy-config load error", async () => {
+    // `loadPolicyConfig` validation errors USED TO echo the offending value
+    // (`validateRule` interpolated it via JSON.stringify) and `policyLoadError`
+    // reaches the CONFIG_ERROR envelope that `main()` writes to stdout.
+    //
+    // The fix moved to the PRODUCER: the loader now reports `got: <type>`, so
+    // there is no value in the message for `scrubSecrets` to find. That is
+    // why this no longer asserts `[REDACTED]` — a shape-based scrub could
+    // never have caught a bare token here anyway, which is what made the
+    // consumer-side scrub the wrong layer. It stays in place as defence in
+    // depth. See tests/toolkit/policy_config.test.ts for the producer side.
     const cfgPath = path.join(tmpCwd, "policy.yaml");
     fs.writeFileSync(
       cfgPath,
@@ -2554,7 +2630,10 @@ describe("createConnector.fetch — runtime errors", () => {
     if (env.status === "error") {
       expect(env.error_code).toBe("CONFIG_ERROR");
       expect(env.message).not.toContain("hunter2");
-      expect(env.message).toContain("[REDACTED]");
+      expect(env.message).not.toContain("postgres://");
+      // The actionable half survives: which field, and what was expected.
+      expect(env.message).toContain("policy.read");
+      expect(env.message).toContain("success, escalate, denied");
     }
   });
 });
