@@ -79,8 +79,15 @@ describe("cli main() — argument parsing", () => {
     expect(stderr).toContain("--action");
   });
 
-  it("rejects unknown --action", async () => {
+  it("rejects unknown --action without echoing it", async () => {
     // Framework: unknown action → VALIDATION_ERROR envelope on stdout, exit 1.
+    //
+    // The rejected value used to be echoed back. It no longer is: `--action`
+    // is caller text, `--action "$GITHUB_TOKEN"` is an ordinary shell slip,
+    // and this envelope goes to stdout. Shape-based scrubbing cannot help —
+    // a bare `ghp_…` has no `key=value` around it — so the value is dropped
+    // whole. Nothing actionable is lost: it is by definition not one of this
+    // connector's actions, and the message still lists the ones that are.
     const stdout = await captureStdout(async () => {
       const code = await main(["--action", "bogus"]);
       expect(code).toBe(1);
@@ -88,7 +95,10 @@ describe("cli main() — argument parsing", () => {
     const result = parseResult(stdout);
     expect(result.status).toBe("error");
     expect(result.error_code).toBe("VALIDATION_ERROR");
-    expect(result.message).toContain("bogus");
+    expect(result.message).not.toContain("bogus");
+    expect(result.message).toContain("[REDACTED]");
+    // The half that tells the caller what to do next survives.
+    expect(result.message).toContain("Valid:");
   });
 
   it("malformed --params JSON: stderr message and exit code 2", async () => {

@@ -249,7 +249,24 @@ describe("createConnector.fetch — validation errors", () => {
     expect(env.status).toBe("error");
     if (env.status === "error") {
       expect(JSON.stringify(env)).not.toContain("sk-live-DEADBEEF");
-      expect(env.action).toContain("[REDACTED]");
+      expect(env.action).toBe("[REDACTED]");
+      expect(env.message).toContain("list_functions");
+    }
+  });
+
+  it("a BARE token in the action slot is redacted too", async () => {
+    // `scrubSecrets` matches shapes, so it caught `api_key=…` and returned
+    // the likelier `--action "$GITHUB_TOKEN"` untouched. An invalid action is
+    // never diagnostic — it is by definition not one of ours, and the message
+    // already lists the ones that are — so the value goes whole rather than
+    // through a matcher that cannot see it.
+    const c = makeAws();
+    const env = await c.fetch("ghp_live_DEADBEEF", {});
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(JSON.stringify(env)).not.toContain("ghp_live_DEADBEEF");
+      expect(env.action).toBe("[REDACTED]");
+      // The actionable half survives.
       expect(env.message).toContain("list_functions");
     }
   });
@@ -2507,7 +2524,7 @@ describe("createConnector.main — CLI behavior", () => {
       expect(code).toBe(2);
       const out = writes.join("");
       expect(out).not.toContain("sk-live-CLITEST");
-      expect(JSON.parse(out.trim()).action).toContain("[REDACTED]");
+      expect(JSON.parse(out.trim()).action).toBe("[REDACTED]");
     } finally {
       process.stdout.write = origWrite;
       process.stderr.write = origErr;

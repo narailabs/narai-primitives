@@ -992,20 +992,26 @@ export function createConnector<TSdk = unknown>(
       // is the only defence available. `validActions` is a static list of
       // identifiers, so scrubbing the whole message cannot damage the valid
       // half. DO NOT REMOVE: pinned by tests/toolkit/connector.test.ts.
-      // Scrub the FIELD as well as the message. `main` serializes the whole
-      // envelope to stdout, so scrubbing only `message` moves the credential
-      // one key to the left instead of removing it. Every envelope BELOW this
-      // point is safe without the same treatment because this guard returned:
-      // past it, `action` is a member of `validActions`, i.e. an identifier
-      // the connector declared, not caller text.
-      const safeAction = scrubSecrets(action);
+      // Redact the value WHOLE rather than scrubbing it. `scrubSecrets`
+      // recognises shapes, so it caught `--action "api_key=…"` and returned
+      // the far likelier `--action "$GITHUB_TOKEN"` — a bare `ghp_…` with no
+      // `key=value` around it — completely unchanged, in both `action` and
+      // `message`. Shape matching is the wrong instrument here.
+      //
+      // Nothing is lost by dropping it. The value is by definition NOT one of
+      // this connector's actions, the message already lists the ones that are,
+      // and the caller knows what they passed. `main` serializes the whole
+      // envelope to stdout, so the field and the message both have to go.
+      //
+      // Every envelope BELOW this point keeps `action` verbatim, and must:
+      // this guard returned, so past it `action` is a member of
+      // `validActions` — an identifier the connector declared, not caller
+      // text — and mangling it would cost correlation for nothing.
       return {
         status: "error",
-        action: safeAction,
+        action: "[REDACTED]",
         error_code: "VALIDATION_ERROR",
-        message: scrubSecrets(
-          `Unknown action '${action}'. Valid: ${[...validActions].join(", ")}`,
-        ),
+        message: `Unknown action '[REDACTED]'. Valid: ${[...validActions].join(", ")}`,
         retriable: false,
       };
     }
@@ -1344,12 +1350,18 @@ export function createConnector<TSdk = unknown>(
       const scrubbed = scrubSecrets(message);
       // `action` is raw `--action` argv here — this runs BEFORE the
       // `validActions` guard, so `--action "$API_KEY" --params '<bad json>'`
-      // put the credential in this field on both stdout and stderr. The
-      // `"<unknown>"` callers are unaffected.
-      const scrubbedAction = scrubSecrets(action);
+      // put the credential in this field on both stdout and stderr.
+      //
+      // Membership, not shape. A registered action name is safe verbatim and
+      // is the useful half of this diagnostic, so it survives; anything else
+      // is caller text that may be a bare token `scrubSecrets` cannot see, so
+      // it goes whole. `"<unknown>"` is neither, and reads as the sentinel it
+      // is once redacted.
+      const safeAction =
+        validActions.has(action) || action === "<unknown>" ? action : "[REDACTED]";
       const env = {
         status: "error",
-        action: scrubbedAction,
+        action: safeAction,
         error_code: "VALIDATION_ERROR",
         message: scrubbed,
         retriable: false,
