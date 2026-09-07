@@ -10,3 +10,6 @@
 ## 2024-06-25 - Avoid array sort for Top-K in hot paths
 **Learning:** V8 engine sorting (`[...arr].sort()`) is surprisingly slow and blocks the event loop for thousands of records when fetching Top-K elements (e.g. usage statistics). It scales at O(N log N) when O(N) is sufficient for a fixed K.
 **Action:** When gathering top elements from a large data array in this codebase, manually track the top items in a single O(N) pass rather than sorting a full copy.
+## 2025-02-09 - Avoid O(N log N) Set Sorting for Sequential Indexes
+**Learning:** When scanning strings left-to-right (e.g., finding SQL statement boundaries in `src/connectors/db/lib/policy.ts`), tracking matching indices with `Set<number>` introduces significant overhead. Converting that Set back to an Array and sorting it causes unnecessary `O(N log N)` work. Because a loop traversing left-to-right natively discovers indexes in strictly increasing order, appending to an Array (`push`) automatically yields a unique, sorted collection.
+**Action:** Default to standard `number[]` arrays populated sequentially (`push`) instead of `Set`s when iterating through strings or arrays to track positions.
