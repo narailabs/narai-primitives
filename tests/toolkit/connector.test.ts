@@ -136,6 +136,132 @@ describe("createConnector.fetch — validation errors", () => {
     }
   });
 
+  it("a non-enumerable credential property is still a redaction candidate", async () => {
+    // Enumerability is a display flag, not access control. A `credentials()`
+    // loader that hides `token` behind `enumerable: false` still hands it to
+    // the handler, and the walk reported a COMPLETE candidate set while
+    // silently skipping it — worse than failing closed, because the caller
+    // was told redaction had everything it needed.
+    const creds: Record<string, unknown> = { region: "us-east-1" };
+    Object.defineProperty(creds, "token", {
+      value: "NONENUM-SECRET-7",
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    });
+    const c = createConnector({
+      name: "nonenum-test",
+      credentials: async () => creds,
+      sdk: async () => ({}),
+      actions: {
+        go: {
+          params: z.object({}),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error("upstream rejected NONENUM-SECRET-7");
+          },
+        },
+      },
+    });
+    const env = await c.fetch("go", {});
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("NONENUM-SECRET-7");
+      expect(env.message).toContain("[REDACTED]");
+    }
+  });
+
+  it("an accessor on the credential object still fails closed", async () => {
+    // The non-enumerable fix must not become a licence to invoke getters:
+    // that would run caller code inside the redaction path.
+    const creds: Record<string, unknown> = { region: "us-east-1" };
+    Object.defineProperty(creds, "token", {
+      get: () => "GETTER-SECRET",
+      enumerable: true,
+      configurable: true,
+    });
+    const c = createConnector({
+      name: "getter-test",
+      credentials: async () => creds,
+      sdk: async () => ({}),
+      actions: {
+        go: {
+          params: z.object({}),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error("upstream rejected GETTER-SECRET");
+          },
+        },
+      },
+    });
+    const env = await c.fetch("go", {});
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("GETTER-SECRET");
+    }
+  });
+
+  it("a sensitive path is dropped even when an input value mangles it", async () => {
+    // `redactEchoedInput` rewrites any span matching an input value —
+    // including a span INSIDE the field name. With `{mode: "pass"}` the path
+    // `password` displays as `[REDACTED]word`, and asking
+    // `isSensitiveFieldPath` about THAT string answered no. The message named
+    // a RESOLVED credential that was never in the raw input, so `echoesInput`
+    // could not catch it either, and it reached stdout.
+    const VAULT: Record<string, string> = { API_PASSWORD: "RESOLVED-SECRET-42" };
+    const mk = () =>
+      createConnector({
+        name: "path-test",
+        credentials: async () => ({ region: "us-east-1" }),
+        sdk: async () => ({}),
+        actions: {
+          go: {
+            params: z
+              .object({ mode: z.string(), password: z.string() })
+              .superRefine((v, ctx) => {
+                const resolved = v.password.startsWith("env:")
+                  ? VAULT[v.password.slice(4)]
+                  : v.password;
+                ctx.addIssue({
+                  code: "custom",
+                  path: ["password"],
+                  message: `upstream rejected ${resolved}`,
+                });
+              }),
+            classify: { kind: "read" },
+            handler: async () => ({}),
+          },
+        },
+      });
+    // The leaking case: `mode` is a substring of `password`.
+    const bad = await mk().fetch("go", { mode: "pass", password: "env:API_PASSWORD" });
+    expect(JSON.stringify(bad)).not.toContain("RESOLVED-SECRET-42");
+    // Control: no substring collision, and it was already correct.
+    const ok = await mk().fetch("go", { mode: "normal", password: "env:API_PASSWORD" });
+    expect(JSON.stringify(ok)).not.toContain("RESOLVED-SECRET-42");
+  });
+
+  it("unknown action scrubs the action FIELD, not only the message", async () => {
+    // `main` serializes the WHOLE envelope to stdout. Scrubbing `message`
+    // while leaving `action` moves the credential one key to the left.
+    const c = makeAws();
+    const env = await c.fetch("api_key=sk-live-DEADBEEF", {});
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(JSON.stringify(env)).not.toContain("sk-live-DEADBEEF");
+      expect(env.action).toContain("[REDACTED]");
+      expect(env.message).toContain("list_functions");
+    }
+  });
+
+  it("a registered action reaches the envelope unchanged", async () => {
+    // The guard above returns before every later envelope, so `action` is a
+    // declared identifier past that point and must not be mangled.
+    const c = makeAws();
+    const env = await c.fetch("list_functions", {});
+    expect(env.action).toBe("list_functions");
+  });
+
   it("invalid params (missing required) returns VALIDATION_ERROR", async () => {
     const c = makeAws();
     const env = await c.fetch("list_functions", {});
@@ -2356,6 +2482,35 @@ describe("createConnector.main — CLI behavior", () => {
       expect(parsed.status).toBe("success");
     } finally {
       process.stdout.write = origWrite;
+    }
+  });
+
+  it("malformed --params scrubs the action field on stdout", async () => {
+    // `writeArgErrorEnvelope` runs BEFORE the `validActions` guard, so its
+    // `action` is raw `--action` argv. This is the sibling of the
+    // unknown-action leak: same field, different path, and fixing only one
+    // leaves the other open.
+    const c = makeAws();
+    const writes: string[] = [];
+    const origWrite = process.stdout.write;
+    const origErr = process.stderr.write;
+    process.stdout.write = ((x: string | Uint8Array): boolean => {
+      writes.push(typeof x === "string" ? x : x.toString());
+      return true;
+    }) as typeof process.stdout.write;
+    process.stderr.write = (() => true) as typeof process.stderr.write;
+    try {
+      const code = await c.main([
+        "--action", "api_key=sk-live-CLITEST",
+        "--params", "not json",
+      ]);
+      expect(code).toBe(2);
+      const out = writes.join("");
+      expect(out).not.toContain("sk-live-CLITEST");
+      expect(JSON.parse(out.trim()).action).toContain("[REDACTED]");
+    } finally {
+      process.stdout.write = origWrite;
+      process.stderr.write = origErr;
     }
   });
 

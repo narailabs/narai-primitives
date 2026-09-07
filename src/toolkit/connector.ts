@@ -428,12 +428,28 @@ function enumerableDataEntries(
     // before `MAX_INPUT_NODES` was ever consulted. `Object.keys` allocates
     // one array of names, which is the cheapest way to learn the width, and
     // the walk fails closed past its remaining budget.
-    if (Object.keys(v).length > budget) return null;
+    // Own property NAMES, not `Object.keys`. Enumerability is a display flag,
+    // not an access control: a `credentials()` loader that hides `token`
+    // behind `enumerable: false` still hands it to the handler, so a message
+    // echoing it had no candidate to match and reached the envelope intact.
+    // Skipping it "succeeded" at walking the object, which is worse than
+    // failing — the caller was told the candidate set was complete.
+    //
+    // The width guard has to move with the walk. It exists because
+    // `getOwnPropertyDescriptors` materializes one object per property, so a
+    // million-key input bought seconds of synchronous work before
+    // `MAX_INPUT_NODES` was consulted. `getOwnPropertyNames` allocates one
+    // array of names, the same cost class as `Object.keys`, and now counts
+    // exactly what the loop below will visit.
+    const names = Object.getOwnPropertyNames(v);
+    if (names.length > budget) return null;
     const descs = Object.getOwnPropertyDescriptors(v);
     const entries: Array<[string, unknown]> = [];
-    for (const k of Object.keys(descs)) {
+    for (const k of names) {
       const d = descs[k];
-      if (d === undefined || !d.enumerable) continue;
+      if (d === undefined) continue;
+      // Accessors stay fail-closed: invoking a getter to collect a candidate
+      // would run caller code inside the redaction path.
       if (d.get !== undefined || d.set !== undefined) return null;
       entries.push([k, d.value]);
     }
@@ -825,10 +841,20 @@ function defaultErrorMap(
         // against a partial set would report success while leaking. A dropped
         // message keeps the path, so the caller still learns which field
         // failed.
+        // `joined`, not `path`. `path` has already been through
+        // `redactEchoedInput`, which rewrites any span matching an input
+        // value — including a span INSIDE the field name. `{mode: "pass",
+        // password: …}` turns the path into `[REDACTED]word`, and
+        // `isSensitiveFieldPath` then does not recognise it, so a message
+        // naming a RESOLVED credential (never in the raw input, so
+        // `echoesInput` cannot catch it either) reached stdout. The
+        // sensitivity question is about the field the author declared, so ask
+        // it of the original; redaction stays on the displayed copy.
+        // DO NOT REMOVE: pinned by tests/toolkit/connector.test.ts.
         const drop =
           !collected ||
           echo.exhausted() ||
-          isSensitiveFieldPath(path) ||
+          isSensitiveFieldPath(joined) ||
           (joined === "" && mentionsSensitiveField(i.message));
         return `${path}: ${drop ? "[REDACTED]" : redactEchoedInput(i.message)}`;
       })
@@ -966,9 +992,16 @@ export function createConnector<TSdk = unknown>(
       // is the only defence available. `validActions` is a static list of
       // identifiers, so scrubbing the whole message cannot damage the valid
       // half. DO NOT REMOVE: pinned by tests/toolkit/connector.test.ts.
+      // Scrub the FIELD as well as the message. `main` serializes the whole
+      // envelope to stdout, so scrubbing only `message` moves the credential
+      // one key to the left instead of removing it. Every envelope BELOW this
+      // point is safe without the same treatment because this guard returned:
+      // past it, `action` is a member of `validActions`, i.e. an identifier
+      // the connector declared, not caller text.
+      const safeAction = scrubSecrets(action);
       return {
         status: "error",
-        action,
+        action: safeAction,
         error_code: "VALIDATION_ERROR",
         message: scrubSecrets(
           `Unknown action '${action}'. Valid: ${[...validActions].join(", ")}`,
@@ -1309,9 +1342,14 @@ export function createConnector<TSdk = unknown>(
     // Exit code is 2 (CLI misuse), distinct from 1 (handled action-level error).
     const writeArgErrorEnvelope = (action: string, message: string): void => {
       const scrubbed = scrubSecrets(message);
+      // `action` is raw `--action` argv here — this runs BEFORE the
+      // `validActions` guard, so `--action "$API_KEY" --params '<bad json>'`
+      // put the credential in this field on both stdout and stderr. The
+      // `"<unknown>"` callers are unaffected.
+      const scrubbedAction = scrubSecrets(action);
       const env = {
         status: "error",
-        action,
+        action: scrubbedAction,
         error_code: "VALIDATION_ERROR",
         message: scrubbed,
         retriable: false,
