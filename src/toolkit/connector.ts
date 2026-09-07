@@ -733,6 +733,13 @@ function redactSensitiveEchoes(
   params: unknown,
   credentials?: unknown,
   rawParams?: unknown,
+  /**
+   * Credential strings captured BEFORE the handler ran, or `null` when that
+   * capture failed. Present on the handler-error path; `undefined` on the
+   * setup-failure path, where no handler has run and walking `credentials`
+   * live is still correct.
+   */
+  credentialStrings?: ReadonlySet<string> | null,
 ): string {
   const candidates = new Set<string>();
   if (params !== undefined && params !== null) {
@@ -764,7 +771,16 @@ function redactSensitiveEchoes(
   // provider chooses (`sessionId`, `pat`, `bearer`) need not be in any
   // vocabulary. Reported as a gap after the params-only version shipped: a
   // handler echoing `ctx.credentials.token` collected no candidate at all.
-  if (credentials !== undefined && credentials !== null) {
+  if (credentialStrings !== undefined) {
+    // A snapshot was taken before the handler was handed the object. Walking
+    // `credentials` HERE observes whatever the handler left behind: reading
+    // `ctx.credentials.token`, deleting it, then throwing `rejected <token>`
+    // produced no candidate at all, and the old value went out in the
+    // envelope and the hardship context. The object is the handler's to
+    // mutate; the candidate set must not be.
+    if (credentialStrings === null) return "[REDACTED]";
+    for (const c of credentialStrings) candidates.add(c);
+  } else if (credentials !== undefined && credentials !== null) {
     if (!collectInputStrings(credentials, candidates)) return "[REDACTED]";
   }
   if (candidates.size === 0) return message;
@@ -1288,6 +1304,20 @@ export function createConnector<TSdk = unknown>(
 
     lastCtx = { sdk, action, params: validated };
 
+    // Snapshot the credential strings BEFORE the handler is given the object.
+    // `ctx.credentials` is the handler's to mutate — rotating a token,
+    // deleting a consumed one — and collecting candidates at redaction time
+    // observed only what survived. A handler that read `ctx.credentials.token`,
+    // deleted it, then threw `rejected <token>` produced an empty candidate
+    // set and the old value went out in the envelope and the hardship context.
+    //
+    // `null` when the walk fails, which fails closed exactly as walking live
+    // did. DO NOT REMOVE: pinned by tests/toolkit/connector.test.ts.
+    const credentialStringsSnapshot = ((): ReadonlySet<string> | null => {
+      const out = new Set<string>();
+      return collectInputStrings(credentials, out) ? out : null;
+    })();
+
     const ctx: Context<TSdk> = {
       sdk,
       credentials,
@@ -1323,6 +1353,8 @@ export function createConnector<TSdk = unknown>(
         validated,
         credentials,
         params,
+        false,
+        credentialStringsSnapshot,
       );
     }
 
@@ -1554,6 +1586,8 @@ function mapAndBuildError<TSdk>(
    * dropped whole rather than redacted against an empty set.
    */
   credentialsUnavailable = false,
+  /** See {@link redactSensitiveEchoes}. */
+  credentialStrings?: ReadonlySet<string> | null,
 ): ErrorEnvelope {
   let code: ErrorCode;
   let message: string;
@@ -1586,7 +1620,7 @@ function mapAndBuildError<TSdk>(
   // DO NOT REMOVE: pinned by tests/toolkit/connector.test.ts.
   message = credentialsUnavailable
     ? "[REDACTED]"
-    : redactSensitiveEchoes(message, params, credentials, rawParams);
+    : redactSensitiveEchoes(message, params, credentials, rawParams, credentialStrings);
 
   const scope = safeScope(cfg, { sdk, action, params });
 

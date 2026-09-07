@@ -599,6 +599,69 @@ describe("isSensitiveFieldPath", () => {
     }
   });
 
+  it("matches a credential word after ANY prefix, not only the enumerated ones", () => {
+    // `KEY_PREFIX` enumerates credential-side prefixes (`secret`, `session`,
+    // `access`, …), which covers `secret_access_key` and misses the far
+    // commoner SERVICE-side naming. Every one of these is an ordinary field
+    // holding a real credential, and every one contributed no candidate.
+    for (const path of [
+      "github_token",
+      "githubToken",
+      "gitlab_token",
+      "slack_token",
+      "db_password",
+      "dbPassword",
+      "stripe_secret",
+      "user_api_key",
+      "userApiKey",
+      "githubApiKey",
+      "params.github_token",
+      "a[0].db_password",
+    ]) {
+      expect(isSensitiveFieldPath(path), path).toBe(true);
+    }
+  });
+
+  it("a plural count with an arbitrary prefix stays benign", () => {
+    // The `s?` plural exists for a CONTAINER (`{tokens: [...]}`), which is
+    // meaningful when the prefix is itself a credential word. With an
+    // arbitrary prefix it collides with counts, and matching those blanks an
+    // ordinary validation diagnostic. So the arbitrary-prefix rule is
+    // singular-only, while `tokens` and `api_keys` still match on their own.
+    for (const path of ["max_tokens", "estimated_tokens", "total_estimated_tokens", "maxTokens"]) {
+      expect(isSensitiveFieldPath(path), path).toBe(false);
+    }
+    for (const path of ["tokens", "api_keys"]) {
+      expect(isSensitiveFieldPath(path), path).toBe(true);
+    }
+  });
+
+  it("the run-on exclusion survives the generalized prefix", () => {
+    // A separator or a camel boundary is REQUIRED, so widening the prefix
+    // cannot start redacting a word that merely contains a credential term.
+    for (const path of [
+      "mytoken",
+      "notpassword",
+      "xsecret",
+      "author",
+      "authority",
+      "authorId",
+      "tokenizer",
+      "tokenized",
+      "passwordless",
+      "secretary",
+      "secretariat",
+    ]) {
+      expect(isSensitiveFieldPath(path), path).toBe(false);
+    }
+  });
+
+  it("the credential word must be TERMINAL under the generalized prefix", () => {
+    for (const path of ["access_key_id", "password_hint", "token_count", "tokenCount", "token_budget"]) {
+      expect(isSensitiveFieldPath(path), path).toBe(false);
+    }
+  });
+
   it("does not match a key word that is only a prefix of the segment", () => {
     // The path check throws away a whole diagnostic message, so over-matching
     // costs information rather than erring safe. `access_key_id` and

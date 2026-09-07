@@ -254,6 +254,85 @@ describe("createConnector.fetch — validation errors", () => {
     }
   });
 
+  it("a handler mutating ctx.credentials cannot erase the candidate set", async () => {
+    // `ctx.credentials` is the handler's to mutate — rotating a token,
+    // deleting a consumed one. Candidates were collected at redaction time,
+    // i.e. AFTER the handler ran, so reading `ctx.credentials.token`,
+    // deleting it, then throwing produced an empty set and the old value went
+    // out in the envelope and the hardship context. The snapshot is taken
+    // before the object is handed over.
+    const c = createConnector({
+      name: "mutating-handler",
+      credentials: async () => ({ region: "us-east-1", token: "OLD-TOKEN-77" }),
+      sdk: async () => ({}),
+      actions: {
+        go: {
+          params: z.object({}),
+          classify: { kind: "read" },
+          handler: async (_p, ctx) => {
+            const old = (ctx.credentials as Record<string, string>).token;
+            delete (ctx.credentials as Record<string, string>).token;
+            throw new Error(`rejected ${old}`);
+          },
+        },
+      },
+    });
+    const env = await c.fetch("go", {});
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("OLD-TOKEN-77");
+      expect(env.message).toContain("[REDACTED]");
+    }
+  });
+
+  it("a service-prefixed credential param is a redaction candidate", async () => {
+    for (const key of ["github_token", "githubToken", "db_password", "userApiKey"]) {
+      const c = createConnector({
+        name: `svc-${key}`,
+        credentials: async () => ({ region: "us-east-1" }),
+        sdk: async () => ({}),
+        actions: {
+          go: {
+            params: z.object({ [key]: z.string() }) as never,
+            classify: { kind: "read" },
+            handler: async () => {
+              throw new Error("rejected hunter2");
+            },
+          },
+        },
+      });
+      const env = await c.fetch("go", { [key]: "hunter2" });
+      expect(env.status).toBe("error");
+      if (env.status === "error") {
+        expect(env.message, key).not.toContain("hunter2");
+      }
+    }
+  });
+
+  it("a benign count param keeps its diagnostic", async () => {
+    // The counterpart of the rule above: widening the field-name vocabulary
+    // must not start blanking ordinary messages.
+    const c = createConnector({
+      name: "count-param",
+      credentials: async () => ({ region: "us-east-1" }),
+      sdk: async () => ({}),
+      actions: {
+        go: {
+          params: z.object({ max_tokens: z.string() }),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error("upstream said limit-exceeded-42");
+          },
+        },
+      },
+    });
+    const env = await c.fetch("go", { max_tokens: "42" });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).toContain("limit-exceeded-42");
+    }
+  });
+
   it("a symbol-keyed credential is still a redaction candidate", async () => {
     // Third key-kind in this walk. `Object.keys` missed non-enumerable, then
     // `getOwnPropertyNames` missed symbols. `Reflect.ownKeys` is the

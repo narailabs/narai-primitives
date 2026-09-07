@@ -471,6 +471,50 @@ const SENSITIVE_PATH_RE = new RegExp(
   `(?:^|[.\\[\\]])${KEY_PREFIX}(?:${SENSITIVE_WORDS})s?(?=$|[.\\[\\]])`,
   "i",
 );
+/**
+ * The same vocabulary after an ARBITRARY prefix, not only the eight in
+ * {@link KEY_PREFIX}.
+ *
+ * `KEY_PREFIX` enumerates credential-side prefixes (`secret`, `session`,
+ * `access`, …) and so covers `secret_access_key` but not the far commoner
+ * SERVICE-side naming: `github_token`, `gitlab_token`, `slack_token`,
+ * `db_password`, `user_api_key`. Those are ordinary field names, they hold
+ * real credentials, and every one of them contributed no redaction candidate.
+ * Enumerating service names would repeat the mistake one vendor at a time, so
+ * the prefix is whatever precedes a separator.
+ *
+ * Two deliberate narrowings keep this from swallowing benign fields:
+ *
+ * - The word must be TERMINAL. `access_key_id` is the public half of an AWS
+ *   pair and `password_hint` and `token_count` are not credentials; in each
+ *   the credential word is followed by more segment, so none of them match.
+ * - SINGULAR only. The `s?` on the rule above exists for a plural CONTAINER
+ *   (`{tokens: [...]}`), which is meaningful when the prefix is a credential
+ *   word. With an arbitrary prefix it collides with counts — `max_tokens`,
+ *   `estimated_tokens`, `maxTokens` — which are numbers, and matching them
+ *   would blank an ordinary validation diagnostic. Residue, stated: a plural
+ *   service-prefixed container (`github_tokens`) is not matched here.
+ *
+ * The run-on exclusion is inherited unchanged, because a separator is
+ * required: `mytoken`, `notpassword`, `passwordless`, `secretary` and
+ * `tokenized` have none.
+ */
+const SENSITIVE_PATH_COMPOUND_RE = new RegExp(
+  `(?:^|[.\\[\\]])[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*[_-](?:${SENSITIVE_WORDS})(?=$|[.\\[\\]])`,
+  "i",
+);
+/**
+ * The camelCase spelling of the same rule, and the reason it cannot live in
+ * the regex above: that one carries the `i` flag, which erases the
+ * lowercase-to-uppercase boundary this needs to see. Case-sensitive, and the
+ * vocabulary is capitalised to match `githubToken` / `dbPassword`.
+ */
+const SENSITIVE_PATH_CAMEL_RE = new RegExp(
+  `(?:^|[.\\[\\]])[A-Za-z0-9]*[a-z0-9](?:${SENSITIVE_WORDS.replace(
+    /[a-z]+/g,
+    (w) => w.charAt(0).toUpperCase() + w.slice(1),
+  )})(?=$|[.\\[\\]])`,
+);
 
 /**
  * A path segment that names a CONTAINER of credentials, such as
@@ -494,7 +538,11 @@ export function isCredentialContainerPath(path: string): boolean {
   return CREDENTIAL_CONTAINER_RE.test(path);
 }
 export function isSensitiveFieldPath(path: string): boolean {
-  return SENSITIVE_PATH_RE.test(path);
+  return (
+    SENSITIVE_PATH_RE.test(path) ||
+    SENSITIVE_PATH_COMPOUND_RE.test(path) ||
+    SENSITIVE_PATH_CAMEL_RE.test(path)
+  );
 }
 
 /**
