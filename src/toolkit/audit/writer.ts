@@ -723,8 +723,23 @@ function isUnescapedQuoteAt(text: string, i: number): boolean {
  * A sensitive key's value is never a payload to unwrap; it is a value to
  * redact, which is what `scrubOneLayer` does with the pair intact.
  */
+/**
+ * Every word the redactor treats as a sensitive KEY.
+ *
+ * `SENSITIVE_WORDS` alone is the wrong set, and the gap is not hypothetical:
+ * `authorization` is redacted by the five `SENSITIVE_AUTH_*_RE` patterns,
+ * which carry their own `\bauthorization\b` literal, so the field vocabulary
+ * never had to list it. Building this guard from the field vocabulary alone
+ * therefore left `{"authorization":"{\"ordinary\":\"hunter2\"}"}` looking
+ * like an ordinary prose payload — unwrapped, prefix scrubbed without its
+ * value, secret intact. `auth` does not cover it either: KEY_END rejects a
+ * following letter, which is what keeps `authorization failed` from matching.
+ *
+ * The union is named once so the two vocabularies cannot drift again.
+ */
+const SENSITIVE_KEY_WORDS = `${SENSITIVE_WORDS}|authorization`;
 const SENSITIVE_KEY_TAIL_RE = new RegExp(
-  `${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ}\\s*[:=]\\s*$`,
+  `${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_KEY_WORDS})${KEY_END}${KQ}\\s*[:=]\\s*$`,
   "i",
 );
 function endsWithSensitiveKey(prefix: string): boolean {

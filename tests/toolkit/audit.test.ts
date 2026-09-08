@@ -1159,6 +1159,39 @@ describe("scrubSecrets — a serialized payload behind a prefix", () => {
     expect(() => JSON.parse(out)).not.toThrow();
   });
 
+  it("a key the plain path redacts is never unwrapped as a payload", () => {
+    // The INVARIANT, not one key. `SENSITIVE_KEY_TAIL_RE` decides whether a
+    // span is a sensitive key's VALUE or a payload embedded in prose, and it
+    // was built from `SENSITIVE_WORDS` — which does not list `authorization`,
+    // because the five SENSITIVE_AUTH_*_RE patterns carry their own literal.
+    // So `{"authorization":"{\"ordinary\":\"hunter2\"}"}` was unwrapped, the
+    // prefix scrubbed without its value, and the secret survived whole while
+    // the same key's ordinary value was redacted correctly.
+    //
+    // Asserting the relation rather than the key means a vocabulary word added
+    // to one place and not the other fails here instead of in review.
+    const keys = [
+      "password", "passwd", "pwd", "token", "api_key", "apiKey", "secret",
+      "access_key", "private_key", "privateKey", "auth", "authorization",
+      "Authorization", "session_token", "secret_access_key", "secretAccessKey",
+      "refresh_token", "client_secret", "x-api-key",
+    ];
+    const drifted: string[] = [];
+    for (const k of keys) {
+      const plain = scrubSecrets(JSON.stringify({ [k]: "hunter2" }));
+      if (plain.includes("hunter2")) continue; // not in the vocabulary at all
+      const payload = scrubSecrets(
+        JSON.stringify({ [k]: JSON.stringify({ ordinary: "hunter2" }) }),
+      );
+      if (payload.includes("hunter2")) drifted.push(k);
+    }
+    expect(drifted).toEqual([]);
+    // Not vacuous: the loop must actually have reached the payload check.
+    expect(
+      scrubSecrets(JSON.stringify({ authorization: "hunter2" })),
+    ).not.toContain("hunter2");
+  });
+
   it("still unwraps a payload embedded in prose", () => {
     // The control for the two guards above: neither may disable the unwrap
     // generally. A payload behind PROSE has no sensitive key before it and
