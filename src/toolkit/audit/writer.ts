@@ -109,6 +109,21 @@ const SENSITIVE_WORDS =
  */
 const KEY_PREFIX = "(?:(?:secret|session|access|refresh|client|api|auth|private)[_-]?)?";
 /**
+ * Every word the redactor treats as a sensitive KEY.
+ *
+ * `SENSITIVE_WORDS` alone is the wrong set, and the gap is not hypothetical:
+ * `authorization` is redacted by the five `SENSITIVE_AUTH_*_RE` patterns,
+ * which carry their own `\bauthorization\b` literal, so the field vocabulary
+ * never had to list it. Building this guard from the field vocabulary alone
+ * therefore left `{"authorization":"{\"ordinary\":\"hunter2\"}"}` looking
+ * like an ordinary prose payload — unwrapped, prefix scrubbed without its
+ * value, secret intact. `auth` does not cover it either: KEY_END rejects a
+ * following letter, which is what keeps `authorization failed` from matching.
+ *
+ * The union is named once so the two vocabularies cannot drift again.
+ */
+const SENSITIVE_KEY_WORDS = `${SENSITIVE_WORDS}|authorization`;
+/**
  * Optional quote around the key: single or double, escaped or not. Single
  * quotes matter because a Python-style repr of a credential object
  * (`{'password': 'hunter2'}`) reaches these logs as readily as JSON does. A serialized object embedded
@@ -138,6 +153,36 @@ const KEY_END = "(?![A-Za-z0-9])";
  * boundary fix. Taking #95's side otherwise silently restores `\b` and stops
  * redacting `secret_access_key` / `session_token`.
  */
+/**
+ * The camelCase spelling of a sensitive KEY, for the value patterns.
+ *
+ * `KEY_PREFIX` enumerates CREDENTIAL-side prefixes (`secret`, `session`, …),
+ * so `secretAccessKey` matched and `githubToken` did not. The path matcher
+ * already accepts an arbitrary prefix — `SENSITIVE_PATH_CAMEL_RE` — so
+ * `isSensitiveFieldPath("githubToken")` was true while
+ * `scrubSecrets('{"githubToken":"hunter2"}')` left the value alone. A hook
+ * that reports an environment-derived `githubToken` reaches the envelope
+ * through `scrubSecrets` alone, with no path and no candidate set behind it.
+ *
+ * The separator spelling needs nothing: KEY_START is `(?<![A-Za-z0-9])`, and
+ * `_` is not alphanumeric, so `github_token` already matches at `token`.
+ * camelCase has no such boundary, which is the whole of the gap.
+ *
+ * It cannot join the patterns below: they carry `i`, which case-folds the
+ * uppercase transition this needs to see, and without that transition the
+ * rule degrades to "letter followed by letter" and starts redacting
+ * `mytoken`. So it is a separate, case-SENSITIVE family, exactly as the path
+ * matcher keeps `SENSITIVE_PATH_CAMEL_RE` apart from its two siblings.
+ *
+ * The path rule's two narrowings are inherited: the word is TERMINAL
+ * (`maxTokenCount` does not match) and SINGULAR (`maxTokens` is a count, not
+ * a credential).
+ */
+const KEY_CAMEL = `${KQ}(?<![A-Za-z0-9])[A-Za-z0-9]*[a-z0-9](?:${SENSITIVE_KEY_WORDS.replace(
+  /[a-z]+/g,
+  (w) => w.charAt(0).toUpperCase() + w.slice(1),
+)})(?![A-Za-z0-9])${KQ}`;
+
 const SENSITIVE_SQUOTE_RE = new RegExp(
   `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)'(?:[^'\\\\]*(?:\\\\.[^'\\\\]*)*(')|[^\\r\\n]*)`,
   "gi",
@@ -145,6 +190,15 @@ const SENSITIVE_SQUOTE_RE = new RegExp(
 const SENSITIVE_DQUOTE_RE = new RegExp(
   `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)"(?:[^"\\\\]*(?:\\\\.[^"\\\\]*)*(")|[^\\r\\n]*)`,
   "gi",
+);
+/** {@link KEY_CAMEL} twins of the two above — same bodies, no `i` flag. */
+const SENSITIVE_SQUOTE_CAMEL_RE = new RegExp(
+  `(${KEY_CAMEL})(\\s*[:=]\\s*)'(?:[^'\\\\]*(?:\\\\.[^'\\\\]*)*(')|[^\\r\\n]*)`,
+  "g",
+);
+const SENSITIVE_DQUOTE_CAMEL_RE = new RegExp(
+  `(${KEY_CAMEL})(\\s*[:=]\\s*)"(?:[^"\\\\]*(?:\\\\.[^"\\\\]*)*(")|[^\\r\\n]*)`,
+  "g",
 );
 /**
  * Authorization with a backslash-escaped quoted value, and optionally an
@@ -402,6 +456,15 @@ const SENSITIVE_UNQUOTED_RE = new RegExp(
   `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)(?:[^\\s"'{\\[\\\\][^\\s,;)\\]}]*)`,
   "gi",
 );
+/** {@link KEY_CAMEL} twins of the two above — same bodies, no `i` flag. */
+const SENSITIVE_ESCAPED_QUOTE_CAMEL_RE = new RegExp(
+  `(${KEY_CAMEL})(\\s*[:=]\\s*)\\\\+(["'])(?:\\\\\\\\.|(?!\\\\+\\3)[^\\r\\n])*(\\\\+\\3)?`,
+  "g",
+);
+const SENSITIVE_UNQUOTED_CAMEL_RE = new RegExp(
+  `(${KEY_CAMEL})(\\s*[:=]\\s*)(?:[^\\s"'{\\[\\\\][^\\s,;)\\]}]*)`,
+  "g",
+);
 /**
  * Connection-URL userinfo (`mongodb://user:hunter2@host`). Every pattern above
  * keys off a `password`-style field name; a DSN carries the credential
@@ -468,7 +531,7 @@ const URL_USERINFO_RE =
  * A path and a key look alike and are not the same question.
  */
 const SENSITIVE_PATH_RE = new RegExp(
-  `(?:^|[.\\[\\]])${KEY_PREFIX}(?:${SENSITIVE_WORDS})s?(?=$|[.\\[\\]])`,
+  `(?:^|[.\\[\\]])${KEY_PREFIX}(?:${SENSITIVE_KEY_WORDS})s?(?=$|[.\\[\\]])`,
   "i",
 );
 /**
@@ -500,7 +563,7 @@ const SENSITIVE_PATH_RE = new RegExp(
  * `tokenized` have none.
  */
 const SENSITIVE_PATH_COMPOUND_RE = new RegExp(
-  `(?:^|[.\\[\\]])[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*[_-](?:${SENSITIVE_WORDS})(?=$|[.\\[\\]])`,
+  `(?:^|[.\\[\\]])[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*[_-](?:${SENSITIVE_KEY_WORDS})(?=$|[.\\[\\]])`,
   "i",
 );
 /**
@@ -510,7 +573,7 @@ const SENSITIVE_PATH_COMPOUND_RE = new RegExp(
  * vocabulary is capitalised to match `githubToken` / `dbPassword`.
  */
 const SENSITIVE_PATH_CAMEL_RE = new RegExp(
-  `(?:^|[.\\[\\]])[A-Za-z0-9]*[a-z0-9](?:${SENSITIVE_WORDS.replace(
+  `(?:^|[.\\[\\]])[A-Za-z0-9]*[a-z0-9](?:${SENSITIVE_KEY_WORDS.replace(
     /[a-z]+/g,
     (w) => w.charAt(0).toUpperCase() + w.slice(1),
   )})(?=$|[.\\[\\]])`,
@@ -723,27 +786,25 @@ function isUnescapedQuoteAt(text: string, i: number): boolean {
  * A sensitive key's value is never a payload to unwrap; it is a value to
  * redact, which is what `scrubOneLayer` does with the pair intact.
  */
-/**
- * Every word the redactor treats as a sensitive KEY.
- *
- * `SENSITIVE_WORDS` alone is the wrong set, and the gap is not hypothetical:
- * `authorization` is redacted by the five `SENSITIVE_AUTH_*_RE` patterns,
- * which carry their own `\bauthorization\b` literal, so the field vocabulary
- * never had to list it. Building this guard from the field vocabulary alone
- * therefore left `{"authorization":"{\"ordinary\":\"hunter2\"}"}` looking
- * like an ordinary prose payload — unwrapped, prefix scrubbed without its
- * value, secret intact. `auth` does not cover it either: KEY_END rejects a
- * following letter, which is what keeps `authorization failed` from matching.
- *
- * The union is named once so the two vocabularies cannot drift again.
- */
-const SENSITIVE_KEY_WORDS = `${SENSITIVE_WORDS}|authorization`;
 const SENSITIVE_KEY_TAIL_RE = new RegExp(
   `${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_KEY_WORDS})${KEY_END}${KQ}\\s*[:=]\\s*$`,
   "i",
 );
+/**
+ * The camelCase spelling, case-SENSITIVE for the same reason {@link KEY_CAMEL}
+ * is: under `i` the uppercase transition folds away. Without this,
+ * `{"githubToken":"{\"ordinary\":\"hunter2\"}"}` was unwrapped as a prose
+ * payload while the same key's ordinary value was redacted — the drift this
+ * guard exists to prevent, one spelling further along.
+ */
+const SENSITIVE_KEY_TAIL_CAMEL_RE = new RegExp(
+  `${KEY_CAMEL}\\s*[:=]\\s*$`,
+);
 function endsWithSensitiveKey(prefix: string): boolean {
-  return SENSITIVE_KEY_TAIL_RE.test(prefix);
+  return (
+    SENSITIVE_KEY_TAIL_RE.test(prefix) ||
+    SENSITIVE_KEY_TAIL_CAMEL_RE.test(prefix)
+  );
 }
 
 function isSerializedPayload(span: string, inner: string): boolean {
@@ -895,6 +956,16 @@ function scrubOneLayer(text: string): string {
         `${key}${sep}"[REDACTED]${close ?? ""}`,
     )
     .replace(
+      SENSITIVE_SQUOTE_CAMEL_RE,
+      (_m, key: string, sep: string, close: string | undefined) =>
+        `${key}${sep}'[REDACTED]${close ?? ""}`,
+    )
+    .replace(
+      SENSITIVE_DQUOTE_CAMEL_RE,
+      (_m, key: string, sep: string, close: string | undefined) =>
+        `${key}${sep}"[REDACTED]${close ?? ""}`,
+    )
+    .replace(
       SENSITIVE_AUTH_PARAMS_RE,
       (
         _m,
@@ -977,8 +1048,22 @@ function scrubOneLayer(text: string): string {
       ) => `${key}${sep}\\${quote}[REDACTED]${close ?? ""}`,
     )
     .replace(
+      SENSITIVE_ESCAPED_QUOTE_CAMEL_RE,
+      (
+        _m,
+        key: string,
+        sep: string,
+        quote: string,
+        close: string | undefined,
+      ) => `${key}${sep}\\${quote}[REDACTED]${close ?? ""}`,
+    )
+    .replace(
       SENSITIVE_UNQUOTED_RE,
       (_m, key: string, sep: string) => `${key}${sep}"[REDACTED]"`,
+    )
+    .replace(
+      SENSITIVE_UNQUOTED_CAMEL_RE,
+      (_m, key: string, sep: string) => `${key}${sep}[REDACTED]`,
     )
     .replace(URL_USERINFO_RE, (_m, prefix: string) => `${prefix}[REDACTED]@`);
 }

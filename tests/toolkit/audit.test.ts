@@ -1159,37 +1159,69 @@ describe("scrubSecrets — a serialized payload behind a prefix", () => {
     expect(() => JSON.parse(out)).not.toThrow();
   });
 
-  it("a key the plain path redacts is never unwrapped as a payload", () => {
-    // The INVARIANT, not one key. `SENSITIVE_KEY_TAIL_RE` decides whether a
-    // span is a sensitive key's VALUE or a payload embedded in prose, and it
-    // was built from `SENSITIVE_WORDS` — which does not list `authorization`,
-    // because the five SENSITIVE_AUTH_*_RE patterns carry their own literal.
-    // So `{"authorization":"{\"ordinary\":\"hunter2\"}"}` was unwrapped, the
-    // prefix scrubbed without its value, and the secret survived whole while
-    // the same key's ordinary value was redacted correctly.
+  it("the three sensitive-key predicates agree on every spelling", () => {
+    // ONE vocabulary question, asked by three predicates that were built
+    // separately and drifted apart twice in one review cycle:
     //
-    // Asserting the relation rather than the key means a vocabulary word added
-    // to one place and not the other fails here instead of in review.
+    //   A  the SHAPE patterns          — `{"k":"hunter2"}` is redacted
+    //   B  `isSensitiveFieldPath(k)`   — the path-scoped candidate collector
+    //   C  the UNWRAP guard            — `{"k":"{\"ordinary\":\"hunter2\"}"}`
+    //
+    // `authorization` was A-only: the five SENSITIVE_AUTH_*_RE patterns carry
+    // their own literal, so the shared vocabulary never listed it. Service-
+    // prefixed camelCase was B-only: KEY_PREFIX enumerates CREDENTIAL-side
+    // prefixes, so `secretAccessKey` matched and `githubToken` did not, while
+    // the path matcher accepts an arbitrary prefix. Either disagreement is a
+    // leak on whichever caller reaches the value through the losing predicate.
+    //
+    // Asserting the RELATION means a word added to one place and not the
+    // others fails here rather than in the next review round.
     const keys = [
       "password", "passwd", "pwd", "token", "api_key", "apiKey", "secret",
       "access_key", "private_key", "privateKey", "auth", "authorization",
       "Authorization", "session_token", "secret_access_key", "secretAccessKey",
       "refresh_token", "client_secret", "x-api-key",
+      "githubToken", "dbPassword", "github_token", "db_password",
+      "stripeSecret", "gitlabToken", "linearApiKey", "awsSecretAccessKey",
+      "notionToken",
     ];
-    const drifted: string[] = [];
+    const disagreed: string[] = [];
     for (const k of keys) {
-      const plain = scrubSecrets(JSON.stringify({ [k]: "hunter2" }));
-      if (plain.includes("hunter2")) continue; // not in the vocabulary at all
-      const payload = scrubSecrets(
+      const a = !scrubSecrets(JSON.stringify({ [k]: "hunter2" })).includes("hunter2");
+      const b = isSensitiveFieldPath(k);
+      const c = !scrubSecrets(
         JSON.stringify({ [k]: JSON.stringify({ ordinary: "hunter2" }) }),
-      );
-      if (payload.includes("hunter2")) drifted.push(k);
+      ).includes("hunter2");
+      if (!(a === b && b === c)) disagreed.push(`${k} [shape=${a} path=${b} payload=${c}]`);
     }
-    expect(drifted).toEqual([]);
-    // Not vacuous: the loop must actually have reached the payload check.
-    expect(
-      scrubSecrets(JSON.stringify({ authorization: "hunter2" })),
-    ).not.toContain("hunter2");
+    expect(disagreed).toEqual([]);
+    // Not vacuous: every key above must actually be sensitive in all three.
+    expect(isSensitiveFieldPath("githubToken")).toBe(true);
+    expect(isSensitiveFieldPath("authorization")).toBe(true);
+  });
+
+  it("widening to an arbitrary camelCase prefix keeps the narrowings", () => {
+    // The control for the rule above. It inherits the path matcher's two
+    // narrowings — the credential word must be TERMINAL and SINGULAR — plus
+    // the run-on protection, which is why the case-sensitive family exists at
+    // all: under `i` the uppercase transition folds away and the rule degrades
+    // to "letter followed by letter", redacting `mytoken`.
+    const benign = [
+      "maxTokens", "max_tokens", "estimatedTokens", "tokenCount", "token_count",
+      "accessKeyId", "access_key_id", "passwordHint", "password_hint",
+      "primaryKey", "sortKey", "projectKey", "userName",
+      "mytoken", "notpassword", "passwordless", "secretary", "tokenized",
+    ];
+    const overMatched: string[] = [];
+    for (const k of benign) {
+      const out = scrubSecrets(JSON.stringify({ [k]: "ordinary-value-42" }));
+      if (!out.includes("ordinary-value-42")) overMatched.push(k);
+    }
+    expect(overMatched).toEqual([]);
+    // `myToken` DOES match, and that is the rule working, not a miss: an
+    // arbitrary prefix plus a terminal singular credential word. The path
+    // matcher has always classified it that way; the shape patterns now agree.
+    expect(scrubSecrets('{"myToken":"hunter2"}')).not.toContain("hunter2");
   });
 
   it("still unwraps a payload embedded in prose", () => {
