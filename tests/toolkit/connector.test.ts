@@ -434,6 +434,53 @@ describe("createConnector.fetch — validation errors", () => {
     }
   });
 
+  it("an SDK-only secret leaks by default, and the diagnostic is why", async () => {
+    // The default is deliberate, so it is pinned. `credentials()` fulfils and
+    // `sdk()` rejects: nothing the redactor can see matches, so the message
+    // goes through. Failing this path closed unconditionally would blank the
+    // first-run onboarding message of all seven shipped connectors, whose
+    // "credentials are missing" surfaces on exactly this path and names an
+    // environment variable rather than a secret.
+    const c = createConnector({
+      name: "sdk-default",
+      credentials: async () => ({}) as never,
+      sdk: async () => {
+        throw new Error("set GITHUB_TOKEN to continue");
+      },
+      actions: {
+        go: { params: z.object({}), classify: { kind: "read" }, handler: async () => ({}) },
+      },
+    });
+    const env = await c.fetch("go", {});
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).toContain("GITHUB_TOKEN");
+    }
+  });
+
+  it("sdkReadsOwnCredentials fails an SDK rejection closed", async () => {
+    // The opt-in for a connector whose `sdk()` holds secrets `credentials()`
+    // never returns. The contract cannot detect that — `sdk()` is an opaque
+    // thunk — so the connector declares it and the message is redacted
+    // wholesale instead of matched against a set that cannot contain it.
+    const c = createConnector({
+      name: "sdk-owns-creds",
+      sdkReadsOwnCredentials: true,
+      credentials: async () => ({}) as never,
+      sdk: async () => {
+        throw new Error("vault rejected SDKONLY-SECRET-13");
+      },
+      actions: {
+        go: { params: z.object({}), classify: { kind: "read" }, handler: async () => ({}) },
+      },
+    });
+    const env = await c.fetch("go", {});
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("SDKONLY-SECRET-13");
+    }
+  });
+
   it("a symbol-keyed PARAM is a redaction candidate", async () => {
     // The credential case above walks the credential object; params go
     // through the PATH-SCOPED walker, which asks the sensitive-path

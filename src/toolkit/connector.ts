@@ -134,6 +134,27 @@ export interface ConnectorConfig<TSdk = unknown> {
   version?: string;
   credentials: () => Promise<Credentials>;
   sdk?: () => Promise<TSdk>;
+  /**
+   * Declare that `sdk()` reads credentials of its own — ones `credentials()`
+   * never returns.
+   *
+   * Redaction of a loader failure works by matching the message against the
+   * credential strings this connector can see. When `credentials()` fulfils
+   * and `sdk()` then rejects naming a secret only IT read, there is nothing
+   * to match, and the value reaches the envelope and the hardship context.
+   * The contract cannot detect this: `sdk()` is an opaque thunk.
+   *
+   * Set this and an `sdk()` rejection is treated as unavailable sensitive
+   * context — its message is redacted wholesale instead of matched.
+   *
+   * Defaults to `false`, which is the behaviour every shipped connector
+   * needs: in all seven of them "credentials are missing" surfaces as
+   * `credentials()` succeeding and `sdk()` rejecting with *set
+   * `GITHUB_TOKEN`*. That message names an environment variable, never a
+   * secret, and failing it closed would replace every first-run onboarding
+   * diagnostic with `[REDACTED]`.
+   */
+  sdkReadsOwnCredentials?: boolean;
   /** Action registry, keyed by action name. */
   actions: Record<string, ActionSpec<any, TSdk>>;
 
@@ -1314,7 +1335,13 @@ export function createConnector<TSdk = unknown>(
     const credentialsPending = (): boolean => loadedCreds === undefined;
     // Keep a handler attached: if the credentials loader rejects first,
     // `Promise.all` settles and this one would otherwise be unhandled.
-    sdkPromise.catch(() => undefined);
+    //
+    // The flag is set HERE rather than in the outer `catch`, so it is already
+    // true by the time `Promise.all` rejects and the redactor reads it.
+    let sdkUnavailable = false;
+    sdkPromise.catch(() => {
+      sdkUnavailable = true;
+    });
     try {
       [sdk, credentials] = await Promise.all([sdkPromise, credsPromise]);
     } catch (err) {
@@ -1330,7 +1357,9 @@ export function createConnector<TSdk = unknown>(
         validated,
         loadedCreds,
         params,
-        credsUnavailable || credentialsPending(),
+        credsUnavailable ||
+          credentialsPending() ||
+          (cfg.sdkReadsOwnCredentials === true && sdkUnavailable),
       );
     }
 
