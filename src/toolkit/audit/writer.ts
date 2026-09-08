@@ -691,6 +691,46 @@ export function scrubSecrets(
  * escapes, and the result must open like a JSON document. A quoted value
  * containing an escape (`"say \"hi\""`) satisfies the first alone.
  */
+/**
+ * True when the quote at `i` is a real delimiter rather than an escaped one.
+ *
+ * The opener test accepts a quote followed by a backslash, because that is how
+ * a nested string layer begins. An ESCAPED inner quote presents the same two
+ * characters, so `{"password":"\"\"hunter2\"","tail":"K"}` offered a span
+ * starting at the escaped quote, split the real value in half and emitted
+ * malformed text with `hunter2` standing outside any span the later
+ * input-aware pass could match.
+ *
+ * Parity of the preceding backslash run decides it: an even count (including
+ * zero) leaves the quote unescaped.
+ */
+function isUnescapedQuoteAt(text: string, i: number): boolean {
+  let backslashes = 0;
+  for (let j = i - 1; j >= 0 && text.charCodeAt(j) === 92; j--) backslashes++;
+  return backslashes % 2 === 0;
+}
+
+/**
+ * True when `prefix` ends with a sensitive KEY and its separator, so the span
+ * that follows is that key's value rather than a payload embedded in prose.
+ *
+ * Unwrapping loses the outer context: the prefix is scrubbed without its
+ * value, so the field patterns have no `key = value` pair left to match, and
+ * the value is scrubbed as a document in its own right. A credential that
+ * happens to BE a JSON document — `{"password":"{\"ordinary\":\"hunter2\"}"}`
+ * — then survives whole, because nothing inside it is sensitively named.
+ *
+ * A sensitive key's value is never a payload to unwrap; it is a value to
+ * redact, which is what `scrubOneLayer` does with the pair intact.
+ */
+const SENSITIVE_KEY_TAIL_RE = new RegExp(
+  `${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ}\\s*[:=]\\s*$`,
+  "i",
+);
+function endsWithSensitiveKey(prefix: string): boolean {
+  return SENSITIVE_KEY_TAIL_RE.test(prefix);
+}
+
 function isSerializedPayload(span: string, inner: string): boolean {
   if (inner === span.slice(1, -1)) return false;
   const head = inner.charCodeAt(0);
@@ -735,7 +775,11 @@ function* jsonStringSpans(
     // unmatched " payload: "<serialized>"` yielded `" payload: "`, and the
     // real span was never offered. Skipping non-openers resynchronises
     // without pairing quotes off against each other.
-    if (text.charCodeAt(i) !== 34 || !isPayloadOpener(text.charCodeAt(i + 1))) {
+    if (
+      text.charCodeAt(i) !== 34 ||
+      !isUnescapedQuoteAt(text, i) ||
+      !isPayloadOpener(text.charCodeAt(i + 1))
+    ) {
       i++;
       continue;
     }
@@ -801,7 +845,12 @@ function scrubEmbeddedOrLayer(text: string, remainingDepth: number): string {
       if (exhausted) return out + "[REDACTED]";
       const span = rest.slice(start, end);
       const inner = unwrapJsonString(span);
-      if (inner !== null && JSON.stringify(inner) === span && isSerializedPayload(span, inner)) {
+      if (
+        inner !== null &&
+        JSON.stringify(inner) === span &&
+        isSerializedPayload(span, inner) &&
+        !endsWithSensitiveKey(rest.slice(0, start))
+      ) {
         out += scrubOneLayer(rest.slice(0, start));
         out += JSON.stringify(scrubSecrets(inner, remainingDepth - 1));
         // The remainder may hold a second payload; a message carrying two is

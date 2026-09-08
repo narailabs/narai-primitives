@@ -1131,10 +1131,43 @@ describe("scrubSecrets — a serialized payload behind a prefix", () => {
       'api_key="hunter2"',
       'unicode "a\\u0041b" span',
       '{"a":1,"password":"x","b":2}',
+      JSON.stringify({ password: '{"ordinary":"hunter2"}' }),
+      JSON.stringify({ password: '""hunter2"', tail: "K" }),
     ]) {
       const once = scrubSecrets(input);
       expect(scrubSecrets(once)).toBe(once);
     }
+  });
+
+  it("does not unwrap a sensitive key's value as a payload", () => {
+    // A credential that happens to BE a JSON document. The unwrap scrubs the
+    // prefix WITHOUT the value, so the field patterns have no `key = value`
+    // pair left to match, and the value is then scrubbed as a document in its
+    // own right — where nothing is sensitively named. A sensitive key's value
+    // is never a payload to unwrap; it is a value to redact.
+    const out = scrubSecrets(JSON.stringify({ password: '{"ordinary":"hunter2"}' }));
+    expect(out).not.toContain("hunter2");
+  });
+
+  it("does not treat an escaped quote as a payload opener", () => {
+    // The opener test accepts quote-then-backslash, which is also how an
+    // ESCAPED quote presents. The span started mid-value, split it, and
+    // emitted text that was not valid JSON any more, with the secret standing
+    // outside any span the later input-aware pass could match.
+    const out = scrubSecrets(JSON.stringify({ password: '""hunter2"', tail: "K" }));
+    expect(out).not.toContain("hunter2");
+    expect(() => JSON.parse(out)).not.toThrow();
+  });
+
+  it("still unwraps a payload embedded in prose", () => {
+    // The control for the two guards above: neither may disable the unwrap
+    // generally. A payload behind PROSE has no sensitive key before it and
+    // its opening quote is unescaped, so both guards stay out of the way.
+    const out = scrubSecrets(
+      "Error payload: " + JSON.stringify(JSON.stringify({ password: "hunter2" })),
+    );
+    expect(out).not.toContain("hunter2");
+    expect(out).toContain("[REDACTED]");
   });
 });
 
