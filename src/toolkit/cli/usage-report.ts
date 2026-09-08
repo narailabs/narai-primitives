@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { scrubSecrets } from "../audit/writer.js";
 import {
   aggregateCrossSession,
   renderCrossSessionMarkdown,
@@ -21,21 +22,25 @@ function parseArgs(argv: string[]): Parsed {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next = argv[i + 1];
-    if (a === "--connector" && next) { out.connector = next; i++; }
-    else if (a === "--since" && next) { out.since = next; i++; }
-    else if (a === "--format" && next) {
+    if (a === "--connector" && next) {
+      out.connector = next;
+      i++;
+    } else if (a === "--since" && next) {
+      out.since = next;
+      i++;
+    } else if (a === "--format" && next) {
       if (next !== "json" && next !== "md") {
         throw new Error(`--format must be 'json' or 'md', got '${next}'`);
       }
       out.format = next;
       i++;
-    }
-    else if (a === "--dir" && next) { out.dir = next; i++; }
-    else if (a === "--help" || a === "-h") {
+    } else if (a === "--dir" && next) {
+      out.dir = next;
+      i++;
+    } else if (a === "--help" || a === "-h") {
       process.stdout.write(HELP);
       process.exit(0);
-    }
-    else {
+    } else {
       throw new Error(`Unknown arg: ${a}`);
     }
   }
@@ -75,6 +80,8 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
+  process.stderr.write(
+    `error: ${scrubSecrets(err instanceof Error ? err.message : String(err))}\n`,
+  );
   process.exit(1);
 });

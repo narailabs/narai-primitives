@@ -1,3 +1,4 @@
+import { scrubSecrets } from "./audit/writer.js";
 /**
  * _optional.ts — shared helpers for graceful degradation when an optional
  * dependency is missing.
@@ -36,7 +37,8 @@ export async function importOptional<T>(
     return (await import(modName)) as T;
   } catch (e) {
     const err = e as NodeJS.ErrnoException;
-    const msg = typeof err.message === "string" ? err.message : "";
+    const msg =
+      typeof err.message === "string" ? scrubSecrets(err.message) : "";
     // Match both Node's native loader (`ERR_MODULE_NOT_FOUND`) and
     // Vitest/Vite's loader (message-shaped errors). Real syntax errors
     // from inside a resolved module produce `SyntaxError` (name), which

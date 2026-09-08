@@ -1,3 +1,4 @@
+import { scrubSecrets } from "./audit/writer.js";
 /**
  * http_client.ts — shared HTTP client used by every HTTP-based connector.
  *
@@ -154,7 +155,8 @@ export class HttpClient {
     this._allowedMethods = opts.allowedMethods ?? DEFAULT_ALLOWED_METHODS;
     this._defaultHeaders = opts.defaultHeaders ?? {};
     this._rateLimitPerMin = opts.rateLimitPerMin ?? DEFAULT_RATE_LIMIT_PER_MIN;
-    this._connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+    this._connectTimeoutMs =
+      opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
     this._readTimeoutMs = opts.readTimeoutMs ?? DEFAULT_READ_TIMEOUT_MS;
     this._maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
     this._fetch = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
@@ -298,8 +300,7 @@ export class HttpClient {
             contentType:
               response.headers.get("content-type") ??
               "application/octet-stream",
-            filename:
-              cdName ?? opts.filenameFallback ?? filenameFromPath(path),
+            filename: cdName ?? opts.filenameFallback ?? filenameFromPath(path),
           };
           return { ok: true, data: data as unknown as T, status };
         }
@@ -310,9 +311,10 @@ export class HttpClient {
         const data = (await response.json()) as T;
         return { ok: true, data, status };
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const aborted =
-          err instanceof DOMException || /abort/i.test(message);
+        const message = scrubSecrets(
+          err instanceof Error ? err.message : String(err),
+        );
+        const aborted = err instanceof DOMException || /abort/i.test(message);
         lastError = {
           ok: false,
           code: aborted ? "TIMEOUT" : "NETWORK_ERROR",
@@ -358,10 +360,7 @@ export class HttpClient {
     this._requestTimestamps.push(Date.now());
   }
 
-  private _buildUrl(
-    path: string,
-    query?: HttpRequestOptions["query"],
-  ): string {
+  private _buildUrl(path: string, query?: HttpRequestOptions["query"]): string {
     const isAbsolute = /^[a-z][a-z0-9+.\-]*:\/\//i.test(path);
     const url = isAbsolute
       ? path
@@ -393,8 +392,7 @@ export class HttpClient {
       ...(opts.headers ?? {}),
     };
     const hasBody = opts.body !== undefined && opts.body !== null;
-    const headerHasCT =
-      "Content-Type" in headers || "content-type" in headers;
+    const headerHasCT = "Content-Type" in headers || "content-type" in headers;
     // Only inject Content-Type for serialized JSON bodies. FormData/Blob/
     // ArrayBuffer / typed-array bodies need fetch to set their own
     // Content-Type (multipart boundary, binary mime, etc.).
@@ -501,7 +499,7 @@ export function mapHttpError(
     if (err instanceof ConnectorError) {
       return {
         error_code: codeMap[err.code] ?? defaultCode,
-        message: err.message,
+        message: scrubSecrets(err.message),
         retriable: err.retriable,
       };
     }
