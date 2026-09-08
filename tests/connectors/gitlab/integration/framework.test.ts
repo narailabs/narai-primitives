@@ -165,7 +165,9 @@ describe("floor enforcement", () => {
     });
     expect(result.status).toBe("error");
     expect((result as { error_code?: string }).error_code).toBe("CONFIG_ERROR");
-    expect((result as { message?: string }).message).toMatch(/aspects.delete/);
+    // `policy.aspects[0]`, not `policy.aspects.delete`: an aspect key is
+    // config text and takes a bare credential as readily as a rule value.
+    expect((result as { message?: string }).message).toMatch(/aspects\[\d+\]/);
   });
 });
 

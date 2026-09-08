@@ -83,7 +83,9 @@ describe("validatePluginConfig", () => {
           dev: { driver: "sqlite", policy: { admin: "allow" } },
         },
       }),
-    ).toThrow(/servers.dev.policy.admin: 'allow' is not permitted/);
+      // The POSITION, not the alias. `'allow'` stays: it is one of OUR rule
+      // names from a closed set, not config text.
+    ).toThrow(/servers\[0\].policy.admin: 'allow' is not permitted/);
   });
 
   it("requires the servers map", () => {
@@ -103,7 +105,7 @@ describe("validatePluginConfig", () => {
       validatePluginConfig({
         servers: { dev: { host: "x" } },
       }),
-    ).toThrow(/servers.dev.driver: required/);
+    ).toThrow(/servers\[0\].driver: required/);
   });
 
   it("rejects unknown top-level keys", () => {
@@ -122,7 +124,7 @@ describe("validatePluginConfig", () => {
         policy: { read: "allow", writes: "allow" },
         servers: { dev: { driver: "sqlite" } },
       }),
-    ).toThrow(/policy: unknown key 'writes'/);
+    ).toThrow(/policy: unknown key \(expected: read, write, delete, admin/);
   });
 
   it("allows admin: escalate (safety floor permits escalate)", () => {
@@ -241,7 +243,9 @@ describe("validatePluginConfig", () => {
         servers: { orders: { driver: "sqlite", database: ":memory:" } },
         default: "ghost",
       }),
-    ).toThrow(/default.*'ghost'.*not found.*orders/i);
+      // Neither the requested name nor the alias list survives: both are
+      // config text, and a bare credential in either slot reached stdout.
+    ).toThrow(/default: not found in servers \(1 defined\)/);
   });
 
   it("rejects non-string `default`", () => {
@@ -324,7 +328,7 @@ describe("pluginConfigFromSlice — default field", () => {
           default: "ghost",
         },
       }),
-    ).toThrow(/default.*'ghost'.*not found/i);
+    ).toThrow(/default: not found in servers \(1 defined\)/);
   });
 });
 

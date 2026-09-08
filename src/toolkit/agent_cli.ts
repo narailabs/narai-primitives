@@ -32,6 +32,16 @@ export interface FlagSpec {
  *
  * Throws on any positional, bare `-x`, or unrecognised `--name`.
  */
+/**
+ * The accepted flags, rendered for an error message.
+ *
+ * These are OUR names, from the caller's own `FlagSpec`, so they are always
+ * safe to print — unlike the argument that was rejected.
+ */
+function flagList(spec: FlagSpec): string {
+  return [...spec.flags.map((f) => `--${f}`), "-h"].join(", ");
+}
+
 export function parseAgentArgs(
   argv: readonly string[],
   spec: FlagSpec,
@@ -51,7 +61,12 @@ export function parseAgentArgs(
       continue;
     }
     if (!a.startsWith("--")) {
-      throw new Error(`unrecognized argument: ${a}`);
+      // A REJECTED name is caller text. The accepted set is the diagnostic
+// half of this message; the caller's own token is not, and it can be a bare
+// credential that no shape-based scrub downstream recognises. Same rule this
+// file already applies to an invalid rule VALUE, and the one an invalid action
+// gets in connector.ts.
+      throw new Error(`unrecognized argument (expected ${flagList(spec)})`);
     }
     let name: string;
     let value: string | undefined;
@@ -66,7 +81,7 @@ export function parseAgentArgs(
       i += 2;
     }
     if (!valid.has(name)) {
-      throw new Error(`unrecognized argument: --${name}`);
+      throw new Error(`unrecognized flag (expected ${flagList(spec)})`);
     }
     if (name === "action") {
       out.action = value ?? "";

@@ -38,13 +38,30 @@ describe("parseAgentArgs", () => {
   it("throws on unknown --flag", () => {
     expect(() =>
       parseAgentArgs(["--bogus", "x"], { flags: STD_FLAGS }),
-    ).toThrow(/unrecognized argument: --bogus/);
+    ).toThrow(/unrecognized flag \(expected --action, --params, -h\)/);
   });
 
   it("throws on positional argument", () => {
     expect(() => parseAgentArgs(["get_page"], { flags: STD_FLAGS })).toThrow(
-      /unrecognized argument: get_page/,
+      /unrecognized argument \(expected --action, --params, -h\)/,
     );
+  });
+
+  it("never echoes the rejected argument", () => {
+    // The reason the two messages above lost their interpolation. A parser
+    // error reaches stdout and stderr through `writeArgErrorEnvelope`, and
+    // `scrubSecrets` matches credential-bearing SHAPES — a bare token in a
+    // positional slot has none, so it went through unchanged.
+    for (const argv of [["ghp_live_DEADBEEF"], ["--ghp_live_DEADBEEF", "x"]]) {
+      let msg = "";
+      try {
+        parseAgentArgs(argv, { flags: STD_FLAGS });
+      } catch (e) {
+        msg = e instanceof Error ? e.message : String(e);
+      }
+      expect(msg).not.toBe("");
+      expect(msg).not.toContain("ghp_live_DEADBEEF");
+    }
   });
 
   it("treats a missing trailing value as empty string", () => {

@@ -182,19 +182,28 @@ function validateRules(
         }
         const aspects: Record<string, Rule> = {};
         const floorSet = new Set(floorAspects);
-        for (const [aspect, rule] of Object.entries(v)) {
+        // The POSITION, not the aspect name. An aspect key is config text and
+        // takes a bare credential as readily as a rule value does — the same
+        // reason `validateRule` above reports a type instead of a value. The
+        // index locates the entry in the operator's own file.
+        Object.entries(v).forEach(([aspect, rule], i) => {
           aspects[aspect] = validateRule(
-            `policy.aspects.${aspect}`,
+            `policy.aspects[${i}]`,
             rule,
             floorSet.has(aspect),
           );
-        }
+        });
         out.aspects = aspects;
         break;
       }
       default:
         throw new Error(
-          `policy: unknown key '${k}' (expected: read, write, admin, aspects)`,
+          // A REJECTED name is caller text. The accepted set is the diagnostic
+// half of this message; the caller's own token is not, and it can be a bare
+// credential that no shape-based scrub downstream recognises. Same rule this
+// file already applies to an invalid rule VALUE, and the one an invalid action
+// gets in connector.ts.
+          `policy: unknown key (expected: read, write, admin, aspects)`,
         );
     }
   }

@@ -204,6 +204,7 @@ describe("default-server resolution", () => {
     const result = await dispatcherFetch("query", { server: "orders", sql: "SELECT 1" });
     expect(result["status"]).toBe("error");
     expect(String(result["error_code"])).toBe("CONFIG_ERROR");
-    expect(String(result["error"])).toMatch(/default.*'ghost'.*not found/i);
+    expect(String(result["error"])).toMatch(/default: not found in servers/);
+    expect(String(result["error"])).not.toContain("ghost");
   });
 });

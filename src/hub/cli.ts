@@ -29,6 +29,8 @@ function parseHubArgs(argv: readonly string[]): RawArgs {
   // `action` / `params` / `help`. Reimplement the same shape with the hub's
   // flags. (Same throw-on-unknown semantics.)
   const valid = new Set(["prompt", "consumer", "environment", "extra-context"]);
+  // OUR names, so they are safe to print; the rejected argument is not.
+  const HUB_FLAG_LIST = [...valid].map((f) => `--${f}`).join(", ");
   const out: RawArgs = {};
   let i = 0;
   while (i < argv.length) {
@@ -43,7 +45,12 @@ function parseHubArgs(argv: readonly string[]): RawArgs {
       continue;
     }
     if (!a.startsWith("--")) {
-      throw new Error(`unrecognized argument: ${a}`);
+      // A REJECTED name is caller text. The accepted set is the diagnostic
+// half of this message; the caller's own token is not, and it can be a bare
+// credential that no shape-based scrub downstream recognises. Same rule this
+// file already applies to an invalid rule VALUE, and the one an invalid action
+// gets in connector.ts.
+      throw new Error(`unrecognized argument (expected ${HUB_FLAG_LIST})`);
     }
     const eq = a.indexOf("=");
     let name: string;
@@ -58,7 +65,7 @@ function parseHubArgs(argv: readonly string[]): RawArgs {
       i += 2;
     }
     if (!valid.has(name)) {
-      throw new Error(`unrecognized argument: --${name}`);
+      throw new Error(`unrecognized flag (expected ${HUB_FLAG_LIST})`);
     }
     (out as Record<string, string | undefined>)[name] = value ?? "";
   }
