@@ -434,6 +434,38 @@ describe("createConnector.fetch — validation errors", () => {
     }
   });
 
+  it("a symbol-keyed PARAM is a redaction candidate", async () => {
+    // The credential case above walks the credential object; params go
+    // through the PATH-SCOPED walker, which asks the sensitive-path
+    // vocabulary about each segment. `String(sym)` renders `Symbol("token")`
+    // as `Symbol(token)`, which no predicate recognises — so making symbols
+    // visible to the walk left their values outside the candidate set.
+    // The description is the name the author actually chose.
+    const SYM = Symbol("token");
+    const params: Record<string | symbol, unknown> = { region: "us-east-1" };
+    params[SYM] = "SYM-PARAM-SECRET-31";
+    const c = createConnector({
+      name: "symbol-param-test",
+      credentials: async () => ({}) as never,
+      sdk: async () => ({}),
+      actions: {
+        go: {
+          params: z.any(),
+          classify: { kind: "read" },
+          handler: async (p: Record<string | symbol, unknown>) => {
+            throw new Error(`rejected ${String(p[SYM])}`);
+          },
+        },
+      },
+    });
+    const env = await c.fetch("go", params as never);
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("SYM-PARAM-SECRET-31");
+      expect(env.message).toContain("[REDACTED]");
+    }
+  });
+
   it("a BARE token in the action slot is redacted too", async () => {
     // `scrubSecrets` matches shapes, so it caught `api_key=…` and returned
     // the likelier `--action "$GITHUB_TOKEN"` untouched. An invalid action is

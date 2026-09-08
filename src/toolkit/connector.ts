@@ -459,9 +459,17 @@ function enumerableDataEntries(
       // Accessors stay fail-closed: invoking a getter to collect a candidate
       // would run caller code inside the redaction path.
       if (d.get !== undefined || d.set !== undefined) return null;
-      // A symbol has no string form of its own; `String(sym)` gives
-      // `Symbol(desc)`, which is only ever used as a display path segment.
-      entries.push([typeof k === "string" ? k : String(k), d.value]);
+      // The symbol's DESCRIPTION, not `String(sym)`. The latter yields
+      // `Symbol(token)`, which no sensitive-path predicate recognises — so
+      // making symbols visible to the walk (previous round) left their values
+      // outside the path-scoped candidate set, and a handler sharing the
+      // symbol could echo one. The description is the name the author chose
+      // and is what the vocabulary should see. A symbol without one keeps the
+      // `String(sym)` form, which is unmatchable but also unnameable.
+      entries.push([
+        typeof k === "string" ? k : (k.description ?? String(k)),
+        d.value,
+      ]);
     }
     return entries;
   } catch {
