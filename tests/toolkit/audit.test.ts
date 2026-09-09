@@ -925,6 +925,29 @@ describe("scrubSecrets — PEM private keys", () => {
     expect(JSON.parse(json)).toMatchObject({ user: "bob", n: 7 });
   });
 
+  it("keeps the redacted payload parseable for a camelCase key", () => {
+    // `scrubSecrets` is exported and preserves JSON-shaped payloads, but the
+    // service-prefixed branch emitted a BARE marker while the `_`-separated
+    // spelling of the same key emitted a quoted one. So a non-string scalar
+    // under a camelCase key produced `{"githubToken":[REDACTED]}`, which does
+    // not parse — the two spellings disagreed on the same input.
+    for (const raw of [
+      '{"githubToken":123456}',
+      '{"githubToken":true}',
+      '{"githubToken":null}',
+      '{"gitlabToken":42,"user":"bob"}',
+    ]) {
+      const out = scrubSecrets(raw);
+      expect(out).not.toContain("123456");
+      expect(() => JSON.parse(out)).not.toThrow();
+    }
+    // The value is gone and the rest of the object survives.
+    const parsed = JSON.parse(scrubSecrets('{"gitlabToken":42,"user":"bob"}'));
+    expect(parsed).toMatchObject({ gitlabToken: "[REDACTED]", user: "bob" });
+    // The `_` spelling is unchanged, and the two now agree.
+    expect(scrubSecrets('{"github_token":123456}')).toBe(scrubSecrets('{"github_token":123456}'));
+  });
+
   it("redacts every line of an oversized body, terminated or not", () => {
     // The body repetition was capped at 256 lines, so a longer block matched
     // the header plus the first 256 lines and left the rest standing verbatim

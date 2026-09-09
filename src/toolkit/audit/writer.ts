@@ -1074,8 +1074,14 @@ function scrubOneLayer(text: string): string {
       (_m, key: string, sep: string) => `${key}${sep}"[REDACTED]"`,
     )
     .replace(
+      // Quoted, exactly like SENSITIVE_UNQUOTED_RE above. `scrubSecrets` is
+      // exported and preserves JSON-shaped payloads, and this branch is the
+      // one that saw a service-prefixed key with a non-string scalar:
+      // `{"githubToken":123456}` became `{"githubToken":[REDACTED]}`, which
+      // does not parse. The `_`-separated spelling of the same key went
+      // through the branch above and stayed valid, so the two disagreed.
       SENSITIVE_UNQUOTED_CAMEL_RE,
-      (_m, key: string, sep: string) => `${key}${sep}[REDACTED]`,
+      (_m, key: string, sep: string) => `${key}${sep}"[REDACTED]"`,
     )
     .replace(URL_USERINFO_RE, (_m, prefix: string) => `${prefix}[REDACTED]@`);
 }
