@@ -10,3 +10,6 @@
 ## 2024-06-25 - Avoid array sort for Top-K in hot paths
 **Learning:** V8 engine sorting (`[...arr].sort()`) is surprisingly slow and blocks the event loop for thousands of records when fetching Top-K elements (e.g. usage statistics). It scales at O(N log N) when O(N) is sufficient for a fixed K.
 **Action:** When gathering top elements from a large data array in this codebase, manually track the top items in a single O(N) pass rather than sorting a full copy.
+## 2024-05-26 - SQL Statement Boundary Parsing
+**Learning:** During sequential string processing where indices of found characters (e.g. semicolons) are collected into an array, they are inherently discovered in strictly increasing order. Thus, inserting these indices into a `Set` only to convert the set to an array and re-sort it later (`Array.from(set).sort()`) introduces unnecessary memory allocation and an O(N log N) performance overhead for an operation that can be simply O(N) by using `Array.prototype.push`.
+**Action:** When gathering boundary indices via sequential scanning (such as in `_boundarySemicolons`), collect them directly into an array using `push`. Do not use a `Set` or apply `.sort()` since the collection order is already sorted.
