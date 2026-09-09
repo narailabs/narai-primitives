@@ -925,6 +925,64 @@ describe("scrubSecrets — PEM private keys", () => {
     expect(JSON.parse(json)).toMatchObject({ user: "bob", n: 7 });
   });
 
+  it("redacts a PEM whose line breaks are JSON escapes", () => {
+    // An SDK or mapped error that serializes a response object writes the
+    // PEM's newlines as the two characters `\\` `n`. The body class accepted
+    // only real line breaks, so only the header matched — via the truncated
+    // fallback — and every base64 line plus the end marker stood.
+    const L = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj";
+    const pem = `-----BEGIN PRIVATE KEY-----\n${L}\n${L}\n-----END PRIVATE KEY-----`;
+    const truncated = `-----BEGIN PRIVATE KEY-----\n${L}\n${L}`;
+    for (const body of [pem, truncated]) {
+      const out = scrubSecrets(JSON.stringify({ message: body, user: "bob", n: 7 }));
+      expect(out).not.toContain(L);
+      expect(out).not.toContain("-----END PRIVATE KEY-----");
+      // Payload preserved: this is a redaction, not a truncation.
+      expect(JSON.parse(out)).toMatchObject({ user: "bob", n: 7 });
+    }
+    // A CERTIFICATE is still published by design, escaped or not.
+    const cert = `-----BEGIN CERTIFICATE-----\n${L}\n-----END CERTIFICATE-----`;
+    expect(scrubSecrets(JSON.stringify({ message: cert }))).toContain(L);
+  });
+
+  it("consumes an escaped quote inside an inline Authorization value", () => {
+    // Inside JSON a quote in the value is `\\"`. The unquoted branch excluded
+    // the backslash, so it stopped there and reported a partial match as
+    // complete, leaving the rest of the token standing.
+    const out = scrubSecrets(
+      JSON.stringify({ message: 'err Authorization: Bearer pre"SECRETVALUE', z: "tail" }),
+    );
+    expect(out).not.toContain("SECRETVALUE");
+    expect(JSON.parse(out)).toMatchObject({ z: "tail" });
+  });
+
+  it("bounds an unterminated value at the JSON string, not the end of input", () => {
+    // A value whose closing quote never arrives fell to a `[^\\r\\n]*`
+    // fallback, and a serialized payload has no newline — so it ran to the end
+    // of the document. The credential was redacted and the message destroyed:
+    // invalid JSON, every sibling field after it gone.
+    //
+    // The report named the Authorization parameter form. Measuring the class
+    // found the same fallback in the key/value patterns and the escaped-quote
+    // patterns: six reachable shapes, all of them doing it.
+    const shapes = [
+      "request Authorization: Bearer ='x",
+      "request Authorization: Bearer 'x",
+      "db failed password='x",
+      'db failed password="x',
+      "svc failed githubToken='x",
+      'svc failed githubToken="x',
+    ];
+    for (const message of shapes) {
+      const out = scrubSecrets(JSON.stringify({ message, z: "tail" }));
+      expect(() => JSON.parse(out), message).not.toThrow();
+      expect(JSON.parse(out), message).toMatchObject({ z: "tail" });
+      // Still redacted — the bound must not cost the redaction.
+      expect(out, message).toContain("[REDACTED]");
+      expect(out, message).not.toMatch(/=['"]?x/);
+    }
+  });
+
   it("keeps the redacted payload parseable for a camelCase key", () => {
     // `scrubSecrets` is exported and preserves JSON-shaped payloads, but the
     // service-prefixed branch emitted a BARE marker while the `_`-separated

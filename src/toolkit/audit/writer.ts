@@ -183,21 +183,40 @@ const KEY_CAMEL = `${KQ}(?<![A-Za-z0-9])[A-Za-z0-9]*[a-z0-9](?:${SENSITIVE_KEY_W
   (w) => w.charAt(0).toUpperCase() + w.slice(1),
 )})(?![A-Za-z0-9])${KQ}`;
 
+/**
+ * The unterminated-value fallback, bounded at the containing JSON string.
+ *
+ * Every quoted-value pattern below needs a fallback for a value whose closing
+ * quote never arrives — a truncated parser error routinely produces one. That
+ * fallback used to be `[^\r\n]*`, and inside a serialized payload there is no
+ * newline to stop at, so it ran to the end of the whole document: the
+ * credential was redacted, but the JSON came back truncated and every sibling
+ * field after the message was deleted. EIGHT patterns shared the fallback and
+ * all of them did it — the report named one.
+ *
+ * A JSON string ends at an unescaped `"` followed by `,`, `]`, `}` or the end
+ * of input. Stopping there keeps the redaction and gives the payload back.
+ * Only the double quote counts as a terminator: an apostrophe is a value quote
+ * in this grammar, and admitting it would end the fallback early on ordinary
+ * prose.
+ */
+const UNTERMINATED_TAIL = `(?:(?!\\\\*"\\s*(?:[,\\]}]|$))[^\\r\\n])*`;
+
 const SENSITIVE_SQUOTE_RE = new RegExp(
-  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)'(?:[^'\\\\]*(?:\\\\.[^'\\\\]*)*(')|[^\\r\\n]*)`,
+  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)'(?:[^'\\\\]*(?:\\\\.[^'\\\\]*)*(')|${UNTERMINATED_TAIL})`,
   "gi",
 );
 const SENSITIVE_DQUOTE_RE = new RegExp(
-  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)"(?:[^"\\\\]*(?:\\\\.[^"\\\\]*)*(")|[^\\r\\n]*)`,
+  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)"(?:[^"\\\\]*(?:\\\\.[^"\\\\]*)*(")|${UNTERMINATED_TAIL})`,
   "gi",
 );
 /** {@link KEY_CAMEL} twins of the two above — same bodies, no `i` flag. */
 const SENSITIVE_SQUOTE_CAMEL_RE = new RegExp(
-  `(${KEY_CAMEL})(\\s*[:=]\\s*)'(?:[^'\\\\]*(?:\\\\.[^'\\\\]*)*(')|[^\\r\\n]*)`,
+  `(${KEY_CAMEL})(\\s*[:=]\\s*)'(?:[^'\\\\]*(?:\\\\.[^'\\\\]*)*(')|${UNTERMINATED_TAIL})`,
   "g",
 );
 const SENSITIVE_DQUOTE_CAMEL_RE = new RegExp(
-  `(${KEY_CAMEL})(\\s*[:=]\\s*)"(?:[^"\\\\]*(?:\\\\.[^"\\\\]*)*(")|[^\\r\\n]*)`,
+  `(${KEY_CAMEL})(\\s*[:=]\\s*)"(?:[^"\\\\]*(?:\\\\.[^"\\\\]*)*(")|${UNTERMINATED_TAIL})`,
   "g",
 );
 /**
@@ -265,13 +284,13 @@ const AUTH_SCHEME = "[A-Za-z0-9!#$%&*+^_~|.-]+";
 const AUTH_PARAM_VALUE =
   "[^\\s,\"'\\r\\n\\]}]*'[^\\s,\"'\\r\\n\\]}]*'[^\\s,\"'\\r\\n\\]}]*|[^\\s,\"'\\r\\n\\]}]+";
 const SENSITIVE_AUTH_PARAMS_RE = new RegExp(
-  `((?<!\\\\)\\\\*["']?|["']?)(\\bauthorization\\b)(\\\\*["']?)(\\s*[:=]\\s*)(${AUTH_SCHEME}\\s+)?${AUTH_PARAM_NAME}\\s*=\\s*(?:(\\\\*["'])(?:(?:(?!\\6)(?:\\\\.|[^\\\\\\r\\n]))*\\6|[^\\r\\n]*)|${AUTH_PARAM_VALUE})(?:\\s*,\\s*${AUTH_PARAM_NAME}\\s*=\\s*(?:(\\\\*["'])(?:(?:(?!\\7)(?:\\\\.|[^\\\\\\r\\n]))*\\7|[^\\r\\n]*)|${AUTH_PARAM_VALUE}))*`,
+  `((?<!\\\\)\\\\*["']?|["']?)(\\bauthorization\\b)(\\\\*["']?)(\\s*[:=]\\s*)(${AUTH_SCHEME}\\s+)?${AUTH_PARAM_NAME}\\s*=\\s*(?:(\\\\*["'])(?:(?:(?!\\6)(?:\\\\.|[^\\\\\\r\\n]))*\\6|${UNTERMINATED_TAIL})|${AUTH_PARAM_VALUE})(?:\\s*,\\s*${AUTH_PARAM_NAME}\\s*=\\s*(?:(\\\\*["'])(?:(?:(?!\\7)(?:\\\\.|[^\\\\\\r\\n]))*\\7|${UNTERMINATED_TAIL})|${AUTH_PARAM_VALUE}))*`,
   "gi",
 );
 const SENSITIVE_AUTH_ESCAPED_RE =
   /((?<!\\)\\*["']?|["']?)(\bauthorization\b)(\\*["']?)(\s*[:=]\s*)((?:bearer|basic)\s+)?\\+(["'])((?:bearer|basic)\s+)?(?:\\\\.|(?!\\+\6)[^\r\n])*(\\+\6)?/gi;
 const SENSITIVE_AUTH_QUOTED_RE =
-  /(?<=["'])(\bauthorization\b)(\\*["']?)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\5)[^\r\n\\])*(\5)|[^\r\n]*)|(?:[^"'\r\n\\]|["'](?![\s]*(?:[,;)\]}]|$)))+)/gi;
+  /(?<=["'])(\bauthorization\b)(\\*["']?)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\5)[^\r\n\\])*(\5)|(?:(?!\\*"\s*(?:[,\]}]|$))[^\r\n])*)|(?:[^"'\r\n\\]|["'](?![\s]*(?:[,;)\]}]|$)))+)/gi;
 const SENSITIVE_AUTH_LINE_RE =
   /(?:^|(?<=[\r\n]))(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?[^\r\n]+/gi;
 /**
@@ -337,7 +356,7 @@ const SENSITIVE_AUTH_LINE_RE =
  * carrying the header — the safety property an end-of-line rule lacks.
  */
 const SENSITIVE_AUTH_INLINE_RE =
-  /(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\4)[^\r\n\\])*(\4)|[^\r\n]*)|(?:[^"'\r\n\\]|["'](?=\s*,\s*[^\s,="'\r\n]+\s*=)|["'](?![\s]*(?:[,;)\]}]|$)))+)/gi;
+  /(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\4)[^\r\n\\])*(\4)|(?:(?!\\*"\s*(?:[,\]}]|$))[^\r\n])*)|(?:\\["']|[^"'\r\n\\]|["'](?=\s*,\s*[^\s,="'\r\n]+\s*=)|["'](?![\s]*(?:[,;)\]}]|$)))+)/gi;
 /**
  * Unquoted-value form (`password:hunter2`). Parser errors echo the offending
  * source fragment, so `--params '{"password":hunter2}'` surfaces the raw
@@ -421,7 +440,7 @@ const SENSITIVE_AUTH_INLINE_RE =
  * requirement for this file.
  */
 const PEM_BLOCK_RE =
-  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[A-Za-z0-9+/=\s]{0,8192}?-----END [A-Z0-9 ]*PRIVATE KEY-----/g;
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[A-Za-z0-9+/=\s]|\\[rn]){0,8192}?-----END [A-Z0-9 ]*PRIVATE KEY-----/g;
 
 /**
  * A PEM block whose `-----END` marker never arrived.
@@ -458,10 +477,10 @@ const PEM_BLOCK_RE =
  * {@link PEM_BLOCK_RE}'s terminator search, and that cap is untouched.
  */
 const PEM_TRUNCATED_RE =
-  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[ \t]*[\r\n]+[A-Za-z0-9+/=]{16,})*(?:[ \t]*[\r\n]+[A-Za-z0-9+/=]{1,15}(?=[ \t]*(?:[\r\n]|$)))?[ \t]*[\r\n]*/g;
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[ \t]*(?:[\r\n]|\\[rn])+[A-Za-z0-9+/=]{16,})*(?:[ \t]*(?:[\r\n]|\\[rn])+[A-Za-z0-9+/=]{1,15}(?=[ \t]*(?:[\r\n]|\\[rn]|"|$)))?[ \t]*(?:[\r\n]|\\[rn])*/g;
 
 const SENSITIVE_ESCAPED_QUOTE_RE = new RegExp(
-  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)\\\\+(["'])(?:\\\\\\\\.|(?!\\\\+\\3)[^\\r\\n])*(\\\\+\\3)?`,
+  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)\\\\+(["'])(?:\\\\\\\\.|(?!\\\\+\\3)(?!\\\\*"\\s*(?:[,\\]}]|$))[^\\r\\n])*(\\\\+\\3)?`,
   "gi",
 );
 const SENSITIVE_UNQUOTED_RE = new RegExp(
@@ -470,7 +489,7 @@ const SENSITIVE_UNQUOTED_RE = new RegExp(
 );
 /** {@link KEY_CAMEL} twins of the two above — same bodies, no `i` flag. */
 const SENSITIVE_ESCAPED_QUOTE_CAMEL_RE = new RegExp(
-  `(${KEY_CAMEL})(\\s*[:=]\\s*)\\\\+(["'])(?:\\\\\\\\.|(?!\\\\+\\3)[^\\r\\n])*(\\\\+\\3)?`,
+  `(${KEY_CAMEL})(\\s*[:=]\\s*)\\\\+(["'])(?:\\\\\\\\.|(?!\\\\+\\3)(?!\\\\*"\\s*(?:[,\\]}]|$))[^\\r\\n])*(\\\\+\\3)?`,
   "g",
 );
 const SENSITIVE_UNQUOTED_CAMEL_RE = new RegExp(
