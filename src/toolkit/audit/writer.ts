@@ -443,10 +443,22 @@ const PEM_BLOCK_RE =
  * and stops at ordinary words.
  *
  * Runs immediately after {@link PEM_BLOCK_RE}, so it only ever sees blocks
- * that genuinely had no terminator.
+ * that genuinely had no terminator — and blocks whose terminator sat beyond
+ * that pattern's 8192-character cap, which is why this one has no cap of its
+ * own. A capped body redacts the header plus the first N lines and leaves the
+ * rest verbatim, which is a partial match treated as complete: at 256 lines,
+ * a 257-line body leaked one line, a 300-line body 44, and a 600-line body
+ * 344 — for a terminated block as well as a truncated one.
+ *
+ * Removing the cap does not cost the linear scan this file requires. A body
+ * line must begin with a newline and carry 16+ unbroken base64 characters, so
+ * the repetition is a single forward pass with no terminator to hunt and
+ * nothing to rescan; measured, bounded and unbounded run within noise of each
+ * other on the repeated-header shape. What bounds cost here is
+ * {@link PEM_BLOCK_RE}'s terminator search, and that cap is untouched.
  */
 const PEM_TRUNCATED_RE =
-  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[ \t]*[\r\n]+[A-Za-z0-9+/=]{16,}){0,256}(?:[ \t]*[\r\n]+[A-Za-z0-9+/=]{1,15}(?=[ \t]*(?:[\r\n]|$)))?[ \t]*[\r\n]*/g;
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[ \t]*[\r\n]+[A-Za-z0-9+/=]{16,})*(?:[ \t]*[\r\n]+[A-Za-z0-9+/=]{1,15}(?=[ \t]*(?:[\r\n]|$)))?[ \t]*[\r\n]*/g;
 
 const SENSITIVE_ESCAPED_QUOTE_RE = new RegExp(
   `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)\\\\+(["'])(?:\\\\\\\\.|(?!\\\\+\\3)[^\\r\\n])*(\\\\+\\3)?`,

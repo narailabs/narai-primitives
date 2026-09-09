@@ -925,6 +925,44 @@ describe("scrubSecrets — PEM private keys", () => {
     expect(JSON.parse(json)).toMatchObject({ user: "bob", n: 7 });
   });
 
+  it("redacts every line of an oversized body, terminated or not", () => {
+    // The body repetition was capped at 256 lines, so a longer block matched
+    // the header plus the first 256 lines and left the rest standing verbatim
+    // — a partial match treated as complete. Measured on the capped version:
+    // 257 lines leaked 1, 300 leaked 44, 600 leaked 344.
+    //
+    // The same defect sat at a second site. PEM_BLOCK_RE caps its body at
+    // 8192 base64 characters, so a *terminated* block longer than that fails
+    // to match and falls through here — where the 256-line cap then leaked
+    // 344 of its 600 lines. Removing this cap closes both, because a
+    // terminated block's `-----END` line is not base64 and stops the scan on
+    // its own.
+    //
+    // The cap was never what bounds the cost: a body line must start with a
+    // newline and carry 16+ unbroken base64 characters, so the scan is a
+    // single forward pass with nothing to rescan. The linear-time test below
+    // still holds. What bounds cost is PEM_BLOCK_RE's terminator search, and
+    // that cap is untouched.
+    const LINE = "A".repeat(64);
+    for (const n of [256, 257, 300, 600]) {
+      const body = Array(n).fill(LINE).join("\n");
+      const truncated = `-----BEGIN PRIVATE KEY-----\n${body}`;
+      expect(scrubSecrets(truncated)).not.toContain(LINE);
+      const terminated = `${truncated}\n-----END PRIVATE KEY-----`;
+      expect(scrubSecrets(terminated)).not.toContain(LINE);
+    }
+
+    // Still a redaction, not a message drop: the diagnostic after a 500-line
+    // body survives.
+    const long = Array(500).fill(LINE).join("\n");
+    const out = scrubSecrets(
+      `parse failed\n-----BEGIN PRIVATE KEY-----\n${long}\nfailed at line 12`,
+    );
+    expect(out).not.toContain(LINE);
+    expect(out).toContain("parse failed");
+    expect(out).toContain("failed at line 12");
+  });
+
   it("redacts a body truncated inside its first line", () => {
     // The truncated-block body is matched as base64 LINES of 16+ characters,
     // which is what keeps it from running into prose. A cut inside the first
