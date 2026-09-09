@@ -35,15 +35,34 @@ describe("parseAgentArgs", () => {
     expect(parseAgentArgs(["-h"], { flags: STD_FLAGS }).help).toBe(true);
   });
 
-  it("throws on unknown --flag", () => {
+  it("throws on unknown --flag, naming the accepted flags and not the rejected one", () => {
+    // Asserts the INTENT, not the old wording. The message used to quote the
+    // rejected name back, and a credential passed as an argument therefore
+    // reached stdout and stderr through writeArgErrorEnvelope. `scrubSecrets`
+    // is shape-based and cannot recognise a bare token, so the fix is to not
+    // build it into the message at all.
     expect(() =>
       parseAgentArgs(["--bogus", "x"], { flags: STD_FLAGS }),
-    ).toThrow(/unrecognized argument: --bogus/);
+    ).toThrow(/unrecognized flag/);
+    expect(() =>
+      parseAgentArgs(["--bogus", "x"], { flags: STD_FLAGS }),
+    ).toThrow(/--action/);
+    expect(() =>
+      parseAgentArgs(["--bogus", "x"], { flags: STD_FLAGS }),
+    ).not.toThrow(/bogus/);
   });
 
-  it("throws on positional argument", () => {
-    expect(() => parseAgentArgs(["get_page"], { flags: STD_FLAGS })).toThrow(
-      /unrecognized argument: get_page/,
+  it("throws on a positional argument without echoing it", () => {
+    const secret = "ghp_AAAABBBBCCCCDDDD";
+    expect(() => parseAgentArgs([secret], { flags: STD_FLAGS })).toThrow(
+      /unrecognized argument/,
+    );
+    expect(() => parseAgentArgs([secret], { flags: STD_FLAGS })).not.toThrow(
+      new RegExp(secret),
+    );
+    // Our own flag names are the diagnostic half and must survive.
+    expect(() => parseAgentArgs([secret], { flags: STD_FLAGS })).toThrow(
+      /--action/,
     );
   });
 

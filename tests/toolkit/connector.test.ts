@@ -436,6 +436,66 @@ describe("createConnector.main — CLI behavior", () => {
     }
   });
 
+  it("never echoes the offending --params value, on stdout or stderr", async () => {
+    // The parser quotes the input back. Measured on current Node: a source up
+    // to 18 characters is echoed IN FULL, and a longer one as a 10-character
+    // prefix plus an ellipsis. Both are leaks — plenty of real credentials are
+    // under 18 characters — and `scrubSecrets` is shape-based, so a bare token
+    // presents nothing for it to match. `writeArgErrorEnvelope` writes to BOTH
+    // streams, so both are captured.
+    //
+    // A 24-character secret alone would NOT catch this: only its prefix
+    // appears, so `not.toContain(secret)` passes while the leak is live.
+    const cases = [
+      { secret: "hunter2", probe: "hunter2" },
+      { secret: "p@ssw0rd-short-18c", probe: "p@ssw0rd-short-18c" },
+      { secret: "ghp_AAAABBBBCCCCDDDDEEEE", probe: "ghp_AAAAB" },
+    ];
+    for (const { secret, probe } of cases) {
+      const c = makeAws();
+      const origErr = process.stderr.write;
+      const origOut = process.stdout.write;
+      const seen: string[] = [];
+      const cap = ((x: string | Uint8Array): boolean => {
+        seen.push(typeof x === "string" ? x : Buffer.from(x).toString("utf-8"));
+        return true;
+      }) as typeof process.stderr.write;
+      process.stderr.write = cap;
+      process.stdout.write = cap as typeof process.stdout.write;
+      try {
+        const code = await c.main(["--action", "list_functions", "--params", secret]);
+        expect(code).toBe(2);
+      } finally {
+        process.stderr.write = origErr;
+        process.stdout.write = origOut;
+      }
+      const all = seen.join("");
+      expect(all, `leaked for ${secret}`).not.toContain(probe);
+      // The actionable half survives.
+      expect(all).toContain("--params must be valid JSON");
+    }
+  });
+
+  it("keeps the position from a real parser failure, which cannot carry a secret", async () => {
+    const c = makeAws();
+    const origErr = process.stderr.write;
+    const origOut = process.stdout.write;
+    const seen: string[] = [];
+    const cap = ((x: string | Uint8Array): boolean => {
+      seen.push(typeof x === "string" ? x : Buffer.from(x).toString("utf-8"));
+      return true;
+    }) as typeof process.stderr.write;
+    process.stderr.write = cap;
+    process.stdout.write = cap as typeof process.stdout.write;
+    try {
+      await c.main(["--action", "list_functions", "--params", '{"a":1,,}']);
+    } finally {
+      process.stderr.write = origErr;
+      process.stdout.write = origOut;
+    }
+    expect(seen.join("")).toMatch(/--params must be valid JSON \(at position \d+\)/);
+  });
+
   it("missing --action exits 2", async () => {
     const c = makeAws();
     const origErr = process.stderr.write;

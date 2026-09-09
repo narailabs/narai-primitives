@@ -32,6 +32,15 @@ export interface FlagSpec {
  *
  * Throws on any positional, bare `-x`, or unrecognised `--name`.
  */
+/**
+ * The accepted flag names, for a rejection message. OUR names, so they are
+ * safe to print; the caller's rejected token is not, and `scrubSecrets` is
+ * shape-based — it cannot recognise a bare credential passed as an argument.
+ */
+function flagList(spec: FlagSpec): string {
+  return [...spec.flags.map((f) => `--${f}`), "-h"].join(", ");
+}
+
 export function parseAgentArgs(
   argv: readonly string[],
   spec: FlagSpec,
@@ -51,7 +60,7 @@ export function parseAgentArgs(
       continue;
     }
     if (!a.startsWith("--")) {
-      throw new Error(`unrecognized argument: ${a}`);
+      throw new Error(`unrecognized argument (expected ${flagList(spec)})`);
     }
     let name: string;
     let value: string | undefined;
@@ -66,7 +75,7 @@ export function parseAgentArgs(
       i += 2;
     }
     if (!valid.has(name)) {
-      throw new Error(`unrecognized argument: --${name}`);
+      throw new Error(`unrecognized flag (expected ${flagList(spec)})`);
     }
     if (name === "action") {
       out.action = value ?? "";

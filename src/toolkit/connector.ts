@@ -599,10 +599,19 @@ export function createConnector<TSdk = unknown>(
     try {
       params = JSON.parse(paramsRaw);
     } catch (err) {
-      const msg = scrubSecrets(err instanceof Error ? err.message : String(err));
+      // NOTHING derived from `paramsRaw` may be echoed. The parser quotes the
+      // offending input verbatim — on current Node, `JSON.parse("ghp_AAAA…")`
+      // reports `Unexpected token 'g', "ghp_AAAA…" is not valid JSON` — and
+      // `scrubSecrets` is shape-based, so a bare token presents nothing for it
+      // to match. Only digits are copied out; a position cannot carry a secret.
+      const pos = /\bat position (\d+)\b/.exec(
+        err instanceof Error ? err.message : String(err),
+      )?.[1];
       writeArgErrorEnvelope(
         action,
-        `--params must be valid JSON (${msg})`,
+        pos === undefined
+          ? "--params must be valid JSON"
+          : `--params must be valid JSON (at position ${pos})`,
       );
       return 2;
     }
