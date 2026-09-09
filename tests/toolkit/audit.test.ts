@@ -926,6 +926,31 @@ describe("scrubSecrets — PEM private keys", () => {
     expect(JSON.parse(json)).toMatchObject({ user: "bob", n: 7 });
   });
 
+  it("keeps the payload parseable for a container-valued authorization", () => {
+    // The scalar branch added last round covered number/boolean/null and left
+    // the other two JSON value types out, so the catch-all still ran through
+    // the container and the structure after it. Five shapes, not the one
+    // reported: `{}`, a populated object, `[]`, a populated array, and a
+    // nested object.
+    for (const raw of [
+      '{"authorization":{},"tail":"K"}',
+      '{"authorization":{"scheme":"Bearer","t":"abc"},"tail":"K"}',
+      '{"authorization":[],"tail":"K"}',
+      '{"authorization":["Bearer abc"],"tail":"K"}',
+      '{"authorization":{"a":{"b":1}},"tail":"K"}',
+      '{"authorization":{"a":[1,2,{"b":3}]},"tail":"K"}',
+      // A brace or bracket inside a string must not unbalance the count.
+      '{"authorization":{"t":"a}b{c"},"tail":"K"}',
+      '{"authorization":["a]b[c"],"tail":"K"}',
+      '{"authorization":{"t":"a\\"b"},"tail":"K"}',
+    ]) {
+      const out = scrubSecrets(raw);
+      expect(out, raw).toContain('"[REDACTED]"');
+      expect(JSON.parse(out), raw).toMatchObject({ tail: "K" });
+      expect(out, raw).not.toContain("abc");
+    }
+  });
+
   it("keeps the payload parseable for an authorization scalar", () => {
     // The camelCase branch was corrected to a quoted marker last round; this
     // one still emitted a bare `[REDACTED]`. That was only half the defect:
