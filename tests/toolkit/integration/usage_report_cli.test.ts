@@ -96,6 +96,29 @@ describe("usage-report CLI", () => {
     expect(r.stderr).toContain("--format must be");
   });
 
+  it("never echoes a rejected --format value, credential-shaped or bare", () => {
+    // `parseArgs` throws synchronously, so `main().catch` never sees this —
+    // the inner catch is what reaches stderr. Both shapes matter: the quoted
+    // one `scrubSecrets` can recognise, and the bare one it cannot, which is
+    // why the message names the accepted values instead of the rejected token.
+    for (const secret of ["password='s3cret'", "hunter2", "ghp_AAAABBBBCCCC"]) {
+      const r = run(["--format", secret]);
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain("--format must be");
+      expect(r.stderr).not.toContain(secret);
+    }
+  });
+
+  it("never echoes a rejected argument token", () => {
+    const secret = "--token=ghp_AAAABBBBCCCCDDDDEEEEFFFF";
+    const r = run([secret]);
+    expect(r.status).toBe(2);
+    // Our own flag names are the diagnostic half and must survive.
+    expect(r.stderr).toContain("--connector");
+    expect(r.stderr).not.toContain(secret);
+    expect(r.stderr).not.toContain("ghp_AAAABBBBCCCCDDDDEEEEFFFF");
+  });
+
   it("shows help on --help and exits 0", () => {
     const r = run(["--help"]);
     expect(r.status).toBe(0);

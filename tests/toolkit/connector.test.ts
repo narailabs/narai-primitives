@@ -276,6 +276,69 @@ describe("createConnector.fetch — runtime errors", () => {
       expect(env.message).toBe("override");
     }
   });
+
+  it("scrubs a credential in the mapError override before it reaches the envelope", async () => {
+    // The production AWS, GCP and DB mappers relay `err.message` from the
+    // vendor SDK verbatim, and those messages carry connection strings. The
+    // `defaultErrorMap` path already scrubbed; the override path did not, so
+    // it was the one route to an unredacted envelope. Scrubbing lives in
+    // `mapAndBuildError` so every mapper is covered, present and future.
+    const c = createConnector({
+      name: "db-test",
+      credentials: async () => ({}),
+      actions: {
+        query: {
+          params: z.object({}),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error("connect failed");
+          },
+        },
+      },
+      mapError: () => ({
+        error_code: "CONNECTION_ERROR",
+        message: "connect failed for user 'admin' password='hunter2'",
+        retriable: false,
+      }),
+    });
+    const env = await c.fetch("query", {});
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("hunter2");
+      expect(env.message).toContain("[REDACTED]");
+      // The non-credential half of the message must survive — this is a
+      // redaction, not a message drop.
+      expect(env.message).toContain("connect failed");
+    }
+  });
+
+  it("scrubbing the override is idempotent with a mapper that already scrubbed", async () => {
+    // `mapHttpError` scrubs inside the mapper, so six connectors reach
+    // `mapAndBuildError` pre-scrubbed. Re-scrubbing must not double-mangle
+    // the value into `password='[REDACTED]'`-of-`[REDACTED]`.
+    const c = createConnector({
+      name: "http-test",
+      credentials: async () => ({}),
+      actions: {
+        get: {
+          params: z.object({}),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error("boom");
+          },
+        },
+      },
+      mapError: () => ({
+        error_code: "AUTH_ERROR",
+        message: "denied password='[REDACTED]'",
+        retriable: false,
+      }),
+    });
+    const env = await c.fetch("get", {});
+    if (env.status === "error") {
+      expect(env.message).toBe("denied password='[REDACTED]'");
+    }
+  });
 });
 
 describe("createConnector.fetch — extendDecision hook", () => {

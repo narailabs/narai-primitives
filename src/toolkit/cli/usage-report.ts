@@ -13,6 +13,9 @@ interface Parsed {
   dir: string;
 }
 
+/** OUR flag names, so they are safe to echo in a rejection message. */
+const FLAG_LIST = "--connector, --since, --format, --dir, --help";
+
 function parseArgs(argv: string[]): Parsed {
   const out: Parsed = {
     since: "30d",
@@ -30,7 +33,12 @@ function parseArgs(argv: string[]): Parsed {
       i++;
     } else if (a === "--format" && next) {
       if (next !== "json" && next !== "md") {
-        throw new Error(`--format must be 'json' or 'md', got '${next}'`);
+        // Name the accepted values, never the rejected one. The rejected token
+        // is caller text and can be a bare credential, which `scrubSecrets` —
+        // shape-based, keyed on `password='...'`-style `key = "value"` pairs —
+        // cannot recognise. Same rule `src/hub/cli.ts` and
+        // `src/toolkit/extract_multimodal.ts` apply to a rejected flag.
+        throw new Error("--format must be 'json' or 'md'");
       }
       out.format = next;
       i++;
@@ -41,7 +49,9 @@ function parseArgs(argv: string[]): Parsed {
       process.stdout.write(HELP);
       process.exit(0);
     } else {
-      throw new Error(`Unknown arg: ${a}`);
+      // Our own flag names are safe to print; the caller's rejected token is
+      // not. See the `--format` case above.
+      throw new Error(`Unknown argument (expected ${FLAG_LIST})`);
     }
   }
   return out;
@@ -62,7 +72,12 @@ async function main(): Promise<void> {
   try {
     parsed = parseArgs(process.argv.slice(2));
   } catch (err) {
-    process.stderr.write(`error: ${(err as Error).message}\n\n${HELP}`);
+    // Defence in depth: the messages above no longer echo caller tokens, but a
+    // future one might, and this catch is what reaches stderr — `main().catch`
+    // never sees a synchronous `parseArgs` throw.
+    process.stderr.write(
+      `error: ${scrubSecrets((err as Error).message)}\n\n${HELP}`,
+    );
     process.exit(2);
   }
 

@@ -820,7 +820,17 @@ function mapAndBuildError<TSdk>(
   const override = cfg.mapError?.(err, action);
   if (override?.error_code !== undefined && override?.message !== undefined) {
     code = override.error_code;
-    message = override.message;
+    // Scrub here, not in each mapper. `cfg.mapError` is connector-supplied and
+    // most production mappers relay `err.message` verbatim from the vendor SDK
+    // (`connectors/aws/index.ts`, `connectors/gcp/index.ts`,
+    // `connectors/db/connector.ts`), where a connection string or auth header
+    // can be embedded. `defaultErrorMap` below already scrubs, so without this
+    // the override branch was the one path that reached the returned envelope
+    // unredacted. Scrubbing at this boundary covers every current mapper and
+    // any future one, including `mapHttpError`, whose own scrub this repeats
+    // harmlessly (`scrubSecrets` is idempotent — a `[REDACTED]` value re-matches
+    // to itself).
+    message = scrubSecrets(override.message);
     retriable = override.retriable ?? RETRIABLE_CODES.has(code);
   } else {
     const def = defaultErrorMap(err);
