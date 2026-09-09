@@ -280,8 +280,8 @@ describe("createConnector.fetch — runtime errors", () => {
   it("scrubs a credential in the mapError override before it reaches the envelope", async () => {
     // The production AWS, GCP and DB mappers relay `err.message` from the
     // vendor SDK verbatim, and those messages carry connection strings. The
-    // `defaultErrorMap` path already scrubbed; the override path did not, so
-    // it was the one route to an unredacted envelope. Scrubbing lives in
+    // `defaultErrorMap` branch scrubs; the override branch did not, so it was
+    // the one route to an unredacted envelope. The scrub lives in
     // `mapAndBuildError` so every mapper is covered, present and future.
     const c = createConnector({
       name: "db-test",
@@ -306,16 +306,14 @@ describe("createConnector.fetch — runtime errors", () => {
     if (env.status === "error") {
       expect(env.message).not.toContain("hunter2");
       expect(env.message).toContain("[REDACTED]");
-      // The non-credential half of the message must survive — this is a
-      // redaction, not a message drop.
+      // A redaction, not a message drop — the diagnostic half survives.
       expect(env.message).toContain("connect failed");
     }
   });
 
   it("scrubbing the override is idempotent with a mapper that already scrubbed", async () => {
-    // `mapHttpError` scrubs inside the mapper, so six connectors reach
-    // `mapAndBuildError` pre-scrubbed. Re-scrubbing must not double-mangle
-    // the value into `password='[REDACTED]'`-of-`[REDACTED]`.
+    // `mapHttpError` scrubs inside the mapper, so six connectors arrive
+    // pre-scrubbed. Re-scrubbing must not double-mangle the placeholder.
     const c = createConnector({
       name: "http-test",
       credentials: async () => ({}),
