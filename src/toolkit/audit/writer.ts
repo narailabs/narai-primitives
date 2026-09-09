@@ -290,7 +290,7 @@ const SENSITIVE_AUTH_PARAMS_RE = new RegExp(
 const SENSITIVE_AUTH_ESCAPED_RE =
   /((?<!\\)\\*["']?|["']?)(\bauthorization\b)(\\*["']?)(\s*[:=]\s*)((?:bearer|basic)\s+)?\\+(["'])((?:bearer|basic)\s+)?(?:\\\\.|(?!\\+\6)[^\r\n])*(\\+\6)?/gi;
 const SENSITIVE_AUTH_QUOTED_RE =
-  /(?<=["'])(\bauthorization\b)(\\*["']?)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\5)[^\r\n\\])*(\5)|(?:(?!\\*"\s*(?:[,\]}]|$))[^\r\n])*)|(?:[^"'\r\n\\]|["'](?![\s]*(?:[,;)\]}]|$)))+)/gi;
+  /(?<=["'])(\bauthorization\b)(\\*["']?)(\s*[:=]\s*)((?:bearer|basic)\s+)?(?:(["'])((?:bearer|basic)\s+)?(?:(?:\\.|(?!\5)[^\r\n\\])*(\5)|(?:(?!\\*"\s*(?:[,\]}]|$))[^\r\n])*)|(-?\d[\d.eE+-]*|true|false|null)(?=\s*[,}\]])|(?:[^"'\r\n\\]|["'](?![\s]*(?:[,;)\]}]|$)))+)/gi;
 const SENSITIVE_AUTH_LINE_RE =
   /(?:^|(?<=[\r\n]))(\bauthorization\b)(\s*[:=]\s*)((?:bearer|basic)\s+)?[^\r\n]+/gi;
 /**
@@ -654,7 +654,18 @@ export function isSensitiveFieldPath(path: string): boolean {
  * Over-matching here only ever costs a dropped message, never a leak.
  */
 const SENSITIVE_MENTION_RE = new RegExp(
-  `(?:^|[^A-Za-z0-9])${KEY_PREFIX}(?:${SENSITIVE_WORDS})(?=$|[^A-Za-z0-9])`,
+  // The FULL key vocabulary, not `SENSITIVE_WORDS`. The narrow set omits
+  // `authorization`, which the dedicated AUTH patterns cover for a `key =
+  // value` literal — but this predicate reads PROSE, where there is no literal
+  // for them to find. So `authorization rejected hunter2`, raised at the root
+  // by a refinement, matched nothing here: `auth` is rejected by the run-on
+  // lookahead (the next character is a letter) and the full word was not in
+  // the set, so the message went out unredacted whenever the resolved value
+  // was not among the raw-input candidates.
+  //
+  // The key/value patterns above keep the narrow set on purpose; adding the
+  // word there would duplicate what the AUTH patterns already do.
+  `(?:^|[^A-Za-z0-9])${KEY_PREFIX}(?:${SENSITIVE_KEY_WORDS})(?=$|[^A-Za-z0-9])`,
   "i",
 );
 export function mentionsSensitiveField(text: string): boolean {
@@ -1033,12 +1044,23 @@ function scrubOneLayer(text: string): string {
         valQuote: string | undefined,
         schemeInside: string | undefined,
         closeQuote: string | undefined,
+        jsonScalar: string | undefined,
       ) => {
         if (valQuote !== undefined) {
           // Same terminator rule as everywhere else: re-emit the closer only
           // when the source had one.
           const close = closeQuote === undefined ? "" : valQuote;
           return `${kw}${keyQuote}${sep}${schemeOutside ?? ""}${valQuote}${schemeInside ?? ""}[REDACTED]${close}`;
+        }
+        if (jsonScalar !== undefined) {
+          // A JSON scalar under a quoted key. The marker replaces a value that
+          // had no quotes of its own, so it must supply them — the generic and
+          // camelCase branches already do this. Quoting alone is not enough:
+          // the general branch below also consumed the `,` and the NEXT
+          // key/value pair, so `{"authorization":123,"tail":"K"}` came back as
+          // `{"authorization":[REDACTED]"}` — invalid, and the sibling gone.
+          // Matching the scalar itself stops at its own boundary.
+          return `${kw}${keyQuote}${sep}${schemeOutside ?? ""}"[REDACTED]"`;
         }
         return `${kw}${keyQuote}${sep}${schemeOutside ?? ""}[REDACTED]`;
       },

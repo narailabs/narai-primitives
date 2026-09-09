@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createAuditWriter,
   isSensitiveFieldPath,
+  mentionsSensitiveField,
   scrubSecrets,
 } from "../../src/toolkit/audit/writer.js";
 
@@ -923,6 +924,57 @@ describe("scrubSecrets — PEM private keys", () => {
     );
     expect(json).not.toContain(B);
     expect(JSON.parse(json)).toMatchObject({ user: "bob", n: 7 });
+  });
+
+  it("keeps the payload parseable for an authorization scalar", () => {
+    // The camelCase branch was corrected to a quoted marker last round; this
+    // one still emitted a bare `[REDACTED]`. That was only half the defect:
+    // the general unquoted branch also ran past the scalar, consuming the `,`
+    // and the NEXT key/value pair, so quoting alone still produced invalid
+    // JSON —
+    //   before        {"authorization":[REDACTED]"}
+    //   quoting only  {"authorization":"[REDACTED]""}
+    // Matching the JSON scalar itself stops at its own boundary.
+    for (const raw of [
+      '{"authorization":123,"tail":"K"}',
+      '{"authorization":true,"tail":"K"}',
+      '{"authorization":null,"tail":"K"}',
+      '{"Authorization":123,"tail":"K"}',
+    ]) {
+      const out = scrubSecrets(raw);
+      expect(out, raw).toContain('"[REDACTED]"');
+      expect(JSON.parse(out), raw).toMatchObject({ tail: "K" });
+    }
+    // A quoted value is untouched by the new branch, scheme preserved.
+    expect(scrubSecrets('{"authorization":"Bearer abc","tail":"K"}')).toBe(
+      '{"authorization":"Bearer [REDACTED]","tail":"K"}',
+    );
+    // And a bare header outside JSON keeps its unquoted marker.
+    expect(scrubSecrets("authorization: Bearer abc123")).toBe(
+      "authorization: Bearer [REDACTED]",
+    );
+  });
+
+  it("names authorization as a sensitive field in prose", () => {
+    // `isSensitiveFieldPath` keys off a structured path; a refinement raised
+    // on the object has none, so this prose predicate is the only guard. It
+    // used the NARROW vocabulary, which omits `authorization` — the AUTH
+    // patterns cover that word for a `key = value` literal, and prose has no
+    // literal for them to find. `auth` alone is rejected by the run-on
+    // lookahead, so the word matched nothing at all.
+    expect(mentionsSensitiveField("authorization rejected hunter2")).toBe(true);
+    expect(mentionsSensitiveField("auth failed")).toBe(true);
+    expect(mentionsSensitiveField("password rejected")).toBe(true);
+    // Run-on words are still not matches — over-matching here costs a dropped
+    // message, so the boundary still has to hold.
+    for (const t of [
+      "unauthorized request",
+      "authorize the user",
+      "authenticator broke",
+      "ordinary failure",
+    ]) {
+      expect(mentionsSensitiveField(t), t).toBe(false);
+    }
   });
 
   it("redacts a PEM whose line breaks are JSON escapes", () => {
