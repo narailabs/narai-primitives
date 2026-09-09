@@ -280,7 +280,13 @@ export class HttpClient {
           return {
             ok: false,
             code: classifyHttpStatus(status),
-            message: `${this._serviceName} HTTP ${status}: ${truncate(bodyText, 200)}`,
+            // Scrub BEFORE truncating. `scrubSecrets` matches a quoted value
+            // by finding its closing quote, and a 200-character cut lands
+            // inside a long one — a JWT in `{"token":"…"}` loses its closing
+            // quote, no pattern matches, and the prefix survives into the
+            // envelope. Scrubbing first replaces the whole value with a short
+            // marker, so the truncation then has little left to cut.
+            message: `${this._serviceName} HTTP ${status}: ${truncate(scrubSecrets(bodyText), 200)}`,
             retriable: false,
             status,
           };
@@ -311,10 +317,15 @@ export class HttpClient {
         const data = (await response.json()) as T;
         return { ok: true, data, status };
       } catch (err) {
-        const message = scrubSecrets(
-          err instanceof Error ? err.message : String(err),
-        );
-        const aborted = err instanceof DOMException || /abort/i.test(message);
+        // Classify from the RAW message and return the scrubbed one, for the
+        // same reason `defaultErrorMap` does: `SENSITIVE_AUTH_LINE_RE` runs to
+        // the end of the line, so a flattened `Authorization: … aborted`
+        // scrubs to `Authorization: [REDACTED]` and the abort marker goes with
+        // it. The request would then be reported NETWORK_ERROR instead of the
+        // documented TIMEOUT.
+        const raw = err instanceof Error ? err.message : String(err);
+        const message = scrubSecrets(raw);
+        const aborted = err instanceof DOMException || /abort/i.test(raw);
         lastError = {
           ok: false,
           code: aborted ? "TIMEOUT" : "NETWORK_ERROR",

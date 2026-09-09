@@ -412,6 +412,55 @@ describe("HttpClient.request rate-limit throttle", () => {
   });
 });
 
+describe("HttpClient.request credential handling", () => {
+  it("scrubs an error body before truncating it", async () => {
+    // `scrubSecrets` matches a quoted value by finding its CLOSING quote, and
+    // a 200-character cut lands inside a long one. Truncating first therefore
+    // hands the scrub an unterminated value it cannot match, and the prefix
+    // survives into the envelope every HTTP connector returns.
+    const jwt = `eyJhbGciOiJIUzI1NiJ9.${"A".repeat(300)}.sig`;
+    const body = `{"error":"bad","token":"${jwt}"}`;
+    const { client } = makeClient([mockResponse({ status: 400, body })]);
+    const r = await client.request("GET", "/x");
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.message).not.toContain("eyJhbGciOiJIUzI1NiJ9");
+      expect(r.message).toContain("[REDACTED]");
+      // The diagnostic half survives — this is a redaction, not a drop.
+      expect(r.message).toContain("HTTP 400");
+    }
+  });
+
+  it("classifies an abort from the raw message, not the scrubbed one", async () => {
+    // `SENSITIVE_AUTH_LINE_RE` runs to the end of the line, so a flattened
+    // `Authorization: … aborted` scrubs to `Authorization: [REDACTED]` and
+    // takes the abort marker with it — the request is then reported
+    // NETWORK_ERROR instead of the documented TIMEOUT.
+    const { client } = makeClient(() => {
+      throw new Error("Authorization: Bearer abc123 The operation was aborted");
+    });
+    const r = await client.request("GET", "/x");
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe("TIMEOUT");
+      expect(r.message).toBe("Request timed out");
+    }
+  });
+
+  it("still scrubs the message it returns for a non-abort failure", async () => {
+    const { client } = makeClient(() => {
+      throw new Error(`connect failed password="hunter2"`);
+    });
+    const r = await client.request("GET", "/x");
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe("NETWORK_ERROR");
+      expect(r.message).not.toContain("hunter2");
+      expect(r.message).toContain("[REDACTED]");
+    }
+  });
+});
+
 describe("HttpClient.request error-body truncation", () => {
   it("truncates large error bodies in the surfaced message", async () => {
     const huge = "x".repeat(500);
