@@ -229,9 +229,17 @@ function defaultErrorMap(err: unknown): { error_code: ErrorCode; message: string
       .join("; ");
     return { error_code: "VALIDATION_ERROR", message: scrubSecrets(msg) };
   }
-  const message = scrubSecrets(err instanceof Error ? err.message : String(err));
+  // Classify from the RAW message and return the scrubbed one. Scrubbing first
+  // loses the signal the classification reads: `SENSITIVE_AUTH_LINE_RE` runs to
+  // the end of the line, so a flattened header
+  // `Authorization: Bearer abc 401 Unauthorized` scrubs to
+  // `Authorization: Bearer [REDACTED]` and takes the `401`/`unauthor` with it.
+  // The fall-through is CONNECTION_ERROR, which is in RETRIABLE_CODES, so the
+  // error also became retriable — an auth failure retried as a network blip.
+  const raw = err instanceof Error ? err.message : String(err);
+  const message = scrubSecrets(raw);
   // Heuristic mapping — connectors override via mapError for service-specific codes.
-  const lower = message.toLowerCase();
+  const lower = raw.toLowerCase();
   if (lower.includes("enotfound") || lower.includes("econnrefused") || lower.includes("network")) {
     return { error_code: "CONNECTION_ERROR", message };
   }

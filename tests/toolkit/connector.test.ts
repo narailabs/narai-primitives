@@ -311,6 +311,38 @@ describe("createConnector.fetch — runtime errors", () => {
     }
   });
 
+  it("classifies from the raw message, not the scrubbed one", async () => {
+    // `SENSITIVE_AUTH_LINE_RE` runs to the end of the line, so a flattened
+    // header takes the status text with it:
+    //   "Authorization: Bearer abc 401 Unauthorized"
+    //     -> "Authorization: Bearer [REDACTED]"
+    // Classifying off that loses `401`/`unauthor`, falls through to
+    // CONNECTION_ERROR — which is in RETRIABLE_CODES — and an auth failure is
+    // then retried as a network blip.
+    const c = createConnector({
+      name: "http-test",
+      credentials: async () => ({}),
+      actions: {
+        get: {
+          params: z.object({}),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error("Authorization: Bearer abc123 401 Unauthorized");
+          },
+        },
+      },
+    });
+    const env = await c.fetch("get", {});
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.error_code).toBe("AUTH_ERROR");
+      expect(env.retriable).toBe(false);
+      // Still redacted on the way out.
+      expect(env.message).not.toContain("abc123");
+      expect(env.message).toContain("[REDACTED]");
+    }
+  });
+
   it("scrubbing the override is idempotent with a mapper that already scrubbed", async () => {
     // `mapHttpError` scrubs inside the mapper, so six connectors arrive
     // pre-scrubbed. Re-scrubbing must not double-mangle the placeholder.
