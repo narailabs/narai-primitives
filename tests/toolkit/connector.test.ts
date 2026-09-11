@@ -1317,6 +1317,68 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     expect(reads, "the walk executed an indexed accessor").toBe(0);
   });
 
+  it("collects a credential held as an array's non-index own property", async () => {
+    // Regression (Codex P1). An array is an ordinary object underneath, and
+    // the array branch iterated `0..length-1` and then reported a COMPLETE
+    // walk. `Object.assign([], { token: "hunter2" })` passes an identity
+    // schema on a programmatic `fetch()`, reaches the handler as
+    // `params.token`, and contributed no candidate — so a handler echoing it
+    // in prose had nothing to match, exactly as the non-enumerable and
+    // symbol-key rounds did for objects.
+    const arr = Object.assign([1, 2], { token: "hunter2" });
+    const c = createConnector<{}>({
+      name: "array-own-prop",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.any(),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error("upstream rejected hunter2");
+          },
+        },
+      },
+    });
+    const env = await c.fetch("login", arr);
+    expect(env.status).toBe("error");
+    if (env.status === "error") expect(env.message).not.toContain("hunter2");
+  });
+
+  it("fails closed on an accessor at an array's non-index own property", async () => {
+    // The policy copied from `enumerableDataEntries`: never run caller code
+    // to collect a candidate. Same rule the indexed-accessor case above
+    // enforces, on the key class this walk newly visits.
+    let reads = 0;
+    const arr: unknown[] = [1];
+    Object.defineProperty(arr, "token", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        reads++;
+        return "hunter2";
+      },
+    });
+    const c = createConnector<{}>({
+      name: "array-own-accessor",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.any(),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error("upstream rejected hunter2");
+          },
+        },
+      },
+    });
+    const env = await c.fetch("login", { creds: arr });
+    expect(env.status).toBe("error");
+    if (env.status === "error") expect(env.message).not.toContain("hunter2");
+    expect(reads, "the walk executed an own-property accessor").toBe(0);
+  });
+
   it("redacts a credential the SDK loader echoes when it rejects", async () => {
     // Regression (Codex P1). `Promise.all` left the destructuring unassigned
     // when `sdk()` rejected, so `credentials` reached the redactor as

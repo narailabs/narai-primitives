@@ -409,6 +409,60 @@ function addCandidate(out: Set<string>, value: string): void {
  * present. Both walkers go through this for the same reason they share
  * {@link enumerableDataEntries}.
  */
+/**
+ * An array's own properties that are NOT elements.
+ *
+ * The array branch of the walk iterated `0..length-1` and then reported a
+ * COMPLETE walk. An array is an ordinary object underneath, so
+ * `Object.assign([], { token: "hunter2" })` survives an identity schema on a
+ * programmatic `fetch()`, reaches the handler as `params.token`, and
+ * contributed no candidate — a handler throwing `rejected hunter2` left
+ * nothing for prose redaction to match. Reporting completeness while skipping
+ * a whole class of own keys is the fail-open this walk exists to prevent, and
+ * it is the same one `enumerableDataEntries` was widened twice to close for
+ * objects: first non-enumerable keys, then symbols.
+ *
+ * `enumerableDataEntries` cannot be reused here — it rejects any prototype
+ * other than `Object.prototype`/`null`, so an array fails it closed — but the
+ * policy is copied from it verbatim: `Reflect.ownKeys` for the complete key
+ * list, per-key descriptors, fail closed on an accessor rather than run
+ * caller code, and a symbol contributes its description.
+ *
+ * `length` is skipped. It is an own non-enumerable data property on every
+ * array, it is always a number, and the index loop has already used it.
+ */
+function arrayNonIndexEntries(
+  arr: readonly unknown[],
+  budget: number,
+): Array<[string, unknown]> | null {
+  try {
+    const keys = Reflect.ownKeys(arr).filter(
+      (k) =>
+        !(typeof k === "string" && (k === "length" || isArrayIndexKey(k))),
+    );
+    if (keys.length > budget) return null;
+    const entries: Array<[string, unknown]> = [];
+    for (const k of keys) {
+      const d = Object.getOwnPropertyDescriptor(arr, k);
+      if (d === undefined) continue;
+      if (d.get !== undefined || d.set !== undefined) return null;
+      entries.push([
+        typeof k === "string" ? k : (k.description ?? String(k)),
+        d.value,
+      ]);
+    }
+    return entries;
+  } catch {
+    return null;
+  }
+}
+
+/** A canonical array index, the form `Reflect.ownKeys` returns for elements. */
+function isArrayIndexKey(k: string): boolean {
+  const n = Number(k);
+  return Number.isInteger(n) && n >= 0 && String(n) === k;
+}
+
 function arrayElementValue(
   arr: readonly unknown[],
   i: number,
@@ -727,6 +781,22 @@ function collectSensitiveInputStrings(input: unknown, out: Set<string>): boolean
         }
       } catch {
         return false;
+      }
+      // Elements are not all of an array's own properties. See
+      // {@link arrayNonIndexEntries}.
+      const extra = arrayNonIndexEntries(v, MAX_INPUT_NODES - nodes);
+      if (extra === null) return false;
+      for (const [k, child] of extra) {
+        if (nodes++ > MAX_INPUT_NODES) return false;
+        stack.push({
+          node: child,
+          // Named like an object property, so it decides sensitivity like
+          // one — unlike an element, which only inherits.
+          sensitive:
+            cur.sensitive ||
+            isSensitiveFieldPath(k) ||
+            isCredentialContainerPath(k),
+        });
       }
       continue;
     }

@@ -352,10 +352,86 @@ describe("scrubSecrets", () => {
   });
 
   it("leaves well-formed nested structures alone", () => {
-    // The structure openers `{` and `[` must NOT match in first position:
-    // redacting from `[` would stop at the inner `,` and mangle the array.
-    expect(scrubSecrets(`{"token":[1,2]}`)).toBe(`{"token":[1,2]}`);
-    expect(scrubSecrets(`{"token":{"v":1}}`)).toBe(`{"token":{"v":1}}`);
+    // This test used to assert that a container under a SENSITIVE key was
+    // left untouched, because the regex that would have claimed it stopped at
+    // the inner `,` and mangled the payload. The stated intent was payload
+    // integrity, and the mechanism it settled on bought that by leaking:
+    // `{"token":{"v":1}}` was returned verbatim, and so was
+    // `{"password":{"value":"hunter2"}}`.
+    //
+    // `scrubContainerValues` replaces the whole BALANCED span, so integrity no
+    // longer depends on leaving the value alone. The intent is asserted
+    // directly below: nothing leaks, and the document still parses.
+    for (const src of [
+      `{"token":[1,2]}`,
+      `{"token":{"v":1}}`,
+      `{"password":{"value":"hunter2"}}`,
+    ]) {
+      const out = scrubSecrets(src);
+      expect(out).toContain("[REDACTED]");
+      expect(out).not.toContain("hunter2");
+      expect(() => JSON.parse(out)).not.toThrow();
+    }
+    // A NON-sensitive key keeps its container — this is the half of "leaves
+    // well-formed nested structures alone" that still has to hold.
+    expect(scrubSecrets(`{"config":{"v":1},"items":[1,2]}`)).toBe(
+      `{"config":{"v":1},"items":[1,2]}`,
+    );
+  });
+
+  it("redacts a container value under every sensitive key, at any depth", () => {
+    // Codex P1: `SENSITIVE_UNQUOTED_RE` excludes `{` and `[` from its value
+    // class, so no pattern claimed a container and every sensitive key except
+    // `authorization` leaked one.
+    for (const key of ["password", "token", "api_key", "secret", "private_key"]) {
+      const out = scrubSecrets(`{"${key}":{"value":"hunter2"}}`);
+      expect(out).not.toContain("hunter2");
+      expect(() => JSON.parse(out)).not.toThrow();
+    }
+    // Codex P2: `authorization` was the exception only because its pattern
+    // hand-unrolled three levels of nesting. At four the alternation failed
+    // and the catch-all returned `{"authorization":[REDACTED]"}}}},...` —
+    // redacted but unparseable. Depth is unbounded in the grammar, so the
+    // scan counts delimiters instead of enumerating levels.
+    const deep = `{"authorization":{"a":{"b":{"c":{"d":"hunter2"}}}},"tail":"K"}`;
+    const out = scrubSecrets(deep);
+    expect(out).not.toContain("hunter2");
+    expect(JSON.parse(out).tail).toBe("K");
+    // A delimiter inside a string value must not move the depth.
+    const braceInString = `{"token":{"a":"}"},"tail":"K"}`;
+    expect(JSON.parse(scrubSecrets(braceInString)).tail).toBe("K");
+  });
+
+  it("redacts an encrypted PEM including its RFC 1421 metadata", () => {
+    // Codex P1: `Proc-Type:` and `DEK-Info:` carry `:`, `,` and `-`, which are
+    // outside the base64 body class, so the complete-block match failed and
+    // the truncated-block fallback removed only the BEGIN header — the
+    // metadata, the body and the END marker all survived.
+    const body =
+      "MIIEowIBAAKCAQEAvBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+    const lines = [
+      "-----BEGIN RSA PRIVATE KEY-----",
+      "Proc-Type: 4,ENCRYPTED",
+      "DEK-Info: AES-128-CBC,7A9B2C3D4E5F60718293A4B5C6D7E8F9",
+      "",
+      body,
+      "-----END RSA PRIVATE KEY-----",
+    ];
+    // Real newlines and the `\n` escapes a serialized PEM arrives with.
+    for (const sep of ["\n", "\\n"]) {
+      const out = scrubSecrets(`load failed: ${lines.join(sep)} (retry)`);
+      expect(out).not.toContain("DEK-Info");
+      expect(out).not.toContain(body);
+      expect(out).not.toContain("END RSA PRIVATE KEY");
+      expect(out).toContain("[REDACTED]");
+      expect(out).toContain("(retry)");
+    }
+    // A truncated encrypted block — metadata present, END marker absent.
+    const truncated = scrubSecrets(`load failed: ${lines.slice(0, 5).join("\n")}`);
+    expect(truncated).not.toContain("DEK-Info");
+    expect(truncated).not.toContain(body);
+    // `Proc-Type:` outside a PEM is ordinary prose.
+    expect(scrubSecrets("Proc-Type: not a pem")).toBe("Proc-Type: not a pem");
   });
 
   it("unquoted redaction is idempotent and leaves quoted forms alone", () => {

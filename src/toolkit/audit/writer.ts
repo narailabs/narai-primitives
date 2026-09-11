@@ -439,8 +439,31 @@ const SENSITIVE_AUTH_INLINE_RE =
  * comfortably above a 4096-bit key. Round 7 made linear scan cost a standing
  * requirement for this file.
  */
-const PEM_BLOCK_RE =
-  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[A-Za-z0-9+/=\s]|\\[rn]){0,8192}?-----END [A-Z0-9 ]*PRIVATE KEY-----/g;
+/**
+ * An encrypted PEM carries RFC 1421 metadata between the BEGIN marker and the
+ * base64 body — `Proc-Type: 4,ENCRYPTED` and `DEK-Info: AES-128-CBC,<iv>`.
+ * Their `:`, `,` and `-` are outside the base64 body class, so the complete
+ * block never matched, and {@link PEM_TRUNCATED_RE} then removed only the
+ * header: the metadata, the body and the END marker were all returned intact.
+ *
+ * Bounded at four lines, one separator each. RFC 1421 defines exactly two
+ * (`Proc-Type` and `DEK-Info`), so four is slack, and a fixed ceiling keeps
+ * the group from being a nested quantifier — `(?:sep+ line)*` over a long run
+ * of separators is the shape that backtracks, and this file has a linear-time
+ * test that measures it.
+ *
+ * The metadata section is matched as its own optional prefix rather than by
+ * widening the body class, which would let the block run through arbitrary
+ * text between two markers. The value excludes the backslash so it stops at a
+ * `\n` escape in a serialized PEM instead of consuming the rest of the
+ * document.
+ */
+const PEM_META_LINES = String.raw`(?:[ \t]*(?:[\r\n]|\\[rn])[ \t]*[A-Za-z][A-Za-z0-9-]*:[^\r\n\\]{0,200}){0,4}`;
+
+const PEM_BLOCK_RE = new RegExp(
+  String.raw`-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----${PEM_META_LINES}(?:[A-Za-z0-9+/=\s]|\\[rn]){0,8192}?-----END [A-Z0-9 ]*PRIVATE KEY-----`,
+  "g",
+);
 
 /**
  * A PEM block whose `-----END` marker never arrived.
@@ -476,8 +499,10 @@ const PEM_BLOCK_RE =
  * other on the repeated-header shape. What bounds cost here is
  * {@link PEM_BLOCK_RE}'s terminator search, and that cap is untouched.
  */
-const PEM_TRUNCATED_RE =
-  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[ \t]*(?:[\r\n]|\\[rn])+[A-Za-z0-9+/=]{16,})*(?:[ \t]*(?:[\r\n]|\\[rn])+[A-Za-z0-9+/=]{1,15}(?=[ \t]*(?:[\r\n]|\\[rn]|"|$)))?[ \t]*(?:[\r\n]|\\[rn])*/g;
+const PEM_TRUNCATED_RE = new RegExp(
+  String.raw`-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----${PEM_META_LINES}(?:[ \t]*(?:[\r\n]|\\[rn])+[A-Za-z0-9+/=]{16,})*(?:[ \t]*(?:[\r\n]|\\[rn])+[A-Za-z0-9+/=]{1,15}(?=[ \t]*(?:[\r\n]|\\[rn]|"|$)))?[ \t]*(?:[\r\n]|\\[rn])*`,
+  "g",
+);
 
 const SENSITIVE_ESCAPED_QUOTE_RE = new RegExp(
   `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)\\\\+(["'])(?:\\\\\\\\.|(?!\\\\+\\3)(?!\\\\*"\\s*(?:[,\\]}]|$))[^\\r\\n])*(\\\\+\\3)?`,
@@ -983,8 +1008,107 @@ function scrubEmbeddedOrLayer(text: string, remainingDepth: number): string {
 }
 
 /** The pattern chain itself, applied to one fully-decoded layer. */
+/**
+ * A sensitive key whose value is a CONTAINER, matched structurally rather
+ * than with a regex.
+ *
+ * Two reports landed on the same predicate from opposite sides, which is the
+ * tell that a regex was being asked to parse a recursive grammar:
+ *
+ *   - `SENSITIVE_UNQUOTED_RE`'s value class excludes `{` and `[` so the branch
+ *     cannot escape into a surrounding payload. That exclusion also means no
+ *     pattern claims the value at all, so
+ *     `scrubSecrets('{"password":{"value":"hunter2"}}')` returned the
+ *     credential verbatim. Every sensitive key except `authorization` leaked
+ *     a container value.
+ *   - `authorization` was the exception because
+ *     `SENSITIVE_AUTH_QUOTED_RE` hand-unrolls `{...}` and `[...]` three levels
+ *     deep. At four levels the alternation fails and the catch-all consumes an
+ *     incomplete value:
+ *     `'{"authorization":{"a":{"b":{"c":{"d":"hunter2"}}}},"tail":"K"}'` came
+ *     back as `{"authorization":[REDACTED]"}}}},"tail":"K"}` — redacted, but
+ *     no longer parseable, which is the payload-integrity failure the
+ *     unterminated-value fallback was fixed for.
+ *
+ * Adding a fourth alternation level answers neither report; it moves the
+ * boundary. Nesting depth is unbounded in the grammar, so the structural tell
+ * is the brace itself: find the value's extent by counting delimiters, and the
+ * depth stops mattering. One balanced span in, one `[REDACTED]` out, so the
+ * document stays parseable at any depth and the whole key vocabulary is
+ * covered by the same rule.
+ *
+ * Bounded like the rest of this file: {@link MAX_CONTAINER_SPAN} caps how far
+ * the scan will look for the closing delimiter. An unbalanced or oversized
+ * container is left to the pattern chain below, which fails closed on it.
+ */
+const MAX_CONTAINER_SPAN = 64 * 1024;
+const REDACTED_MARKER = "[REDACTED]";
+
+const SENSITIVE_CONTAINER_KEY_RE = new RegExp(
+  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_KEY_WORDS})${KEY_END}${KQ}|${KEY_CAMEL})(\\s*[:=]\\s*)(?=[{[])`,
+  "gi",
+);
+
+/**
+ * The index just past the container that starts at `open`, or -1 when it is
+ * unbalanced, oversized, or not a container.
+ *
+ * Quotes are tracked so a delimiter inside a string value cannot move the
+ * depth — `{"a":"}"}` is one container, not two — and a backslash escapes the
+ * next character inside a string, so an escaped quote does not end it.
+ */
+function containerEnd(text: string, open: number): number {
+  const first = text[open];
+  if (first !== "{" && first !== "[") return -1;
+  const limit = Math.min(text.length, open + MAX_CONTAINER_SPAN);
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = open; i < limit; i++) {
+    const c = text[i] as string;
+    if (quote !== null) {
+      if (c === "\\") i++;
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") quote = c;
+    else if (c === "{" || c === "[") depth++;
+    else if (c === "}" || c === "]") {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
+/** Replace every sensitive key's container value with a single marker. */
+function scrubContainerValues(text: string): string {
+  SENSITIVE_CONTAINER_KEY_RE.lastIndex = 0;
+  let out = "";
+  let cursor = 0;
+  let m: RegExpExecArray | null;
+  while ((m = SENSITIVE_CONTAINER_KEY_RE.exec(text)) !== null) {
+    const open = m.index + m[0].length;
+    const end = containerEnd(text, open);
+    if (end === -1) continue;
+    // The marker this function writes is itself bracket-delimited, so an
+    // unquoted `authorization: [REDACTED]` left by another pattern looks like
+    // a container on the next pass and would be rewritten to
+    // `authorization: "[REDACTED]"`. That is a redaction either way, but it
+    // makes `scrubSecrets` non-idempotent, and this file is applied more than
+    // once — the depth-unwrapping loop above re-enters it per layer.
+    if (text.slice(open, end) === REDACTED_MARKER) continue;
+    // Quoted, like every other value this file replaces (`{"token":abc}` ->
+    // `{"token":"[REDACTED]"}`). A bare marker in a JSON value position is not
+    // valid JSON, which would trade the mangling this fix removes for another.
+    out += text.slice(cursor, m.index) + m[1] + m[2] + '"[REDACTED]"';
+    cursor = end;
+    SENSITIVE_CONTAINER_KEY_RE.lastIndex = end;
+  }
+  return cursor === 0 ? text : out + text.slice(cursor);
+}
+
 function scrubOneLayer(text: string): string {
-  return text
+  return scrubContainerValues(text)
     .replace(PEM_BLOCK_RE, "[REDACTED]")
     .replace(PEM_TRUNCATED_RE, "[REDACTED]")
     .replace(
