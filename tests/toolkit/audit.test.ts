@@ -402,6 +402,52 @@ describe("scrubSecrets", () => {
     expect(JSON.parse(scrubSecrets(braceInString)).tail).toBe("K");
   });
 
+  it("fails closed when the container scan cannot vouch for the extent", () => {
+    // Codex P1, the round after the container fix. `containerEnd` returning
+    // "not a container" on an oversized span was a fail-OPEN: the generic
+    // patterns deliberately refuse values starting with `{`/`[`, so nothing
+    // claimed the value at all.
+    const pad = "x".repeat(66 * 1024);
+    const oversized = `{"password":{"pad":"${pad}","value":"hunter2"}}`;
+    expect(scrubSecrets(oversized)).not.toContain("hunter2");
+
+    // Codex P1, same round: a combined depth let a `]` close a `{`, so only
+    // `{]` was replaced and the bare credential stayed in the tail. The scan
+    // stacks delimiter TYPES.
+    expect(scrubSecrets(`{"password":{]hunter2,"tail":"K"}`)).not.toContain(
+      "hunter2",
+    );
+    // An unterminated container is the truncated-payload shape and is unsafe
+    // for the same reason.
+    expect(scrubSecrets(`{"password":{"value":"hunter2"`)).not.toContain(
+      "hunter2",
+    );
+    // A balanced container is still redacted precisely, tail intact.
+    expect(JSON.parse(scrubSecrets(`{"password":{"v":1},"tail":"K"}`)).tail).toBe(
+      "K",
+    );
+  });
+
+  it("does not treat a run-on word as sensitive just because its value is a container", () => {
+    // Codex P2, same round. `KEY_CAMEL` needs a case-SENSITIVE match to see
+    // the lowercase-to-uppercase boundary; folding it into a combined `gi`
+    // regex case-folded that boundary away, so `mytoken` and `notpassword`
+    // matched and their containers were deleted — while the scalar patterns
+    // kept them. This is the trap documented above SENSITIVE_WORDS, reached
+    // from the other side.
+    for (const k of ["mytoken", "notpassword", "xsecret"]) {
+      expect(scrubSecrets(`{"${k}":{"ordinary":"safe"}}`)).toBe(
+        `{"${k}":{"ordinary":"safe"}}`,
+      );
+    }
+    // A genuine camelCase credential key still loses its container.
+    for (const k of ["myToken", "clientSecret", "apiKey"]) {
+      const out = scrubSecrets(`{"${k}":{"v":"hunter2"}}`);
+      expect(out).not.toContain("hunter2");
+      expect(out).toContain("[REDACTED]");
+    }
+  });
+
   it("redacts an encrypted PEM including its RFC 1421 metadata", () => {
     // Codex P1: `Proc-Type:` and `DEK-Info:` carry `:`, `,` and `-`, which are
     // outside the base64 body class, so the complete-block match failed and
@@ -1257,8 +1303,15 @@ describe("scrubSecrets — PEM private keys", () => {
       }
       return best;
     };
-    const small = Math.max(cost(40_000), 0.5);
-    const large = cost(160_000);
+    // n raised from 40k/160k. The threshold is untouched — the failure it
+    // started producing was noise, not complexity. Measured best-of-5 at five
+    // sizes, each doubling costs exactly 2.00x (0.64 / 1.16 / 2.33 / 4.66 /
+    // 9.27 ms at 20k..320k), so the scan is linear; at 40k the real work is
+    // ~1.2ms and one GC pause inside the full suite moved `large` enough to
+    // clear 8x. Bigger inputs put the work far above that noise floor and
+    // keep the ratio the assertion.
+    const small = Math.max(cost(160_000), 0.5);
+    const large = cost(640_000);
     // 4x the input; linear predicts ~4x, quadratic ~16x.
     expect(large).toBeLessThan(small * 8);
   });

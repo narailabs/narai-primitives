@@ -1044,24 +1044,57 @@ function scrubEmbeddedOrLayer(text: string, remainingDepth: number): string {
 const MAX_CONTAINER_SPAN = 64 * 1024;
 const REDACTED_MARKER = "[REDACTED]";
 
+/**
+ * Two matchers, not one alternation, because they need different flags.
+ *
+ * `KEY_CAMEL` locates the lowercase-to-uppercase transition in `myToken`, and
+ * that boundary only exists under a case-SENSITIVE match. Folding it into a
+ * combined `gi` regex case-folds the transition to "letter followed by
+ * letter", so `mytoken` and `notpassword` — the run-on words the boundary
+ * exists to reject — matched, and their containers were deleted while the
+ * scalar patterns kept them. The same trap is documented above SENSITIVE_WORDS
+ * for KEY_START, and this walked into it from the other side.
+ */
 const SENSITIVE_CONTAINER_KEY_RE = new RegExp(
-  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_KEY_WORDS})${KEY_END}${KQ}|${KEY_CAMEL})(\\s*[:=]\\s*)(?=[{[])`,
+  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_KEY_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)(?=[{[])`,
   "gi",
+);
+const SENSITIVE_CONTAINER_KEY_CAMEL_RE = new RegExp(
+  `(${KEY_CAMEL})(\\s*[:=]\\s*)(?=[{[])`,
+  "g",
 );
 
 /**
- * The index just past the container that starts at `open`, or -1 when it is
- * unbalanced, oversized, or not a container.
+ * Where a sensitive key's container value ends.
+ *
+ *   - `{ kind: "end" }`   — a balanced close was found at `index`.
+ *   - `{ kind: "unsafe" }` — the scan cannot vouch for the extent: the span
+ *     bound was reached, or a closer did not match its opener. The caller
+ *     must fail CLOSED on this. Returning "not a container" here was a
+ *     fail-open: the generic patterns deliberately refuse values that begin
+ *     with `{` or `[`, so nothing else claimed the value and a
+ *     `{"password":{"pad":<66 KiB>,"value":"hunter2"}}` came back intact.
+ *   - `{ kind: "none" }`  — not a container at all.
+ *
+ * Delimiter TYPES are stacked, not just counted. A combined depth let a `]`
+ * close a `{`, so `{"password":{]hunter2,"tail":"K"}` matched `{]` and left
+ * the bare credential in the tail.
  *
  * Quotes are tracked so a delimiter inside a string value cannot move the
- * depth — `{"a":"}"}` is one container, not two — and a backslash escapes the
- * next character inside a string, so an escaped quote does not end it.
+ * stack — `{"a":"}"}` is one container — and a backslash escapes the next
+ * character inside a string, so an escaped quote does not end it.
  */
-function containerEnd(text: string, open: number): number {
+type ContainerScan =
+  | { kind: "end"; index: number }
+  | { kind: "unsafe" }
+  | { kind: "none" };
+
+function containerEnd(text: string, open: number): ContainerScan {
   const first = text[open];
-  if (first !== "{" && first !== "[") return -1;
-  const limit = Math.min(text.length, open + MAX_CONTAINER_SPAN);
-  let depth = 0;
+  if (first !== "{" && first !== "[") return { kind: "none" };
+  const hardEnd = open + MAX_CONTAINER_SPAN;
+  const limit = Math.min(text.length, hardEnd);
+  const stack: string[] = [];
   let quote: string | null = null;
   for (let i = open; i < limit; i++) {
     const c = text[i] as string;
@@ -1071,25 +1104,41 @@ function containerEnd(text: string, open: number): number {
       continue;
     }
     if (c === '"' || c === "'") quote = c;
-    else if (c === "{" || c === "[") depth++;
+    else if (c === "{" || c === "[") stack.push(c);
     else if (c === "}" || c === "]") {
-      depth--;
-      if (depth === 0) return i + 1;
+      const want = c === "}" ? "{" : "[";
+      if (stack.pop() !== want) return { kind: "unsafe" };
+      if (stack.length === 0) return { kind: "end", index: i + 1 };
     }
   }
-  return -1;
+  // Ran out of input as well as budget: an unterminated container is the
+  // truncated-payload shape, and it is unsafe for the same reason.
+  return { kind: "unsafe" };
 }
 
-/** Replace every sensitive key's container value with a single marker. */
-function scrubContainerValues(text: string): string {
-  SENSITIVE_CONTAINER_KEY_RE.lastIndex = 0;
+/**
+ * Replace every sensitive key's container value with a single marker.
+ *
+ * Run once per matcher — see {@link SENSITIVE_CONTAINER_KEY_RE}. The second
+ * pass sees the first pass's markers, and the marker guard below stops it
+ * from treating one as a container.
+ */
+function scrubContainerValues(text: string, re: RegExp): string {
+  re.lastIndex = 0;
   let out = "";
   let cursor = 0;
   let m: RegExpExecArray | null;
-  while ((m = SENSITIVE_CONTAINER_KEY_RE.exec(text)) !== null) {
+  while ((m = re.exec(text)) !== null) {
     const open = m.index + m[0].length;
-    const end = containerEnd(text, open);
-    if (end === -1) continue;
+    const scan = containerEnd(text, open);
+    if (scan.kind === "none") continue;
+    if (scan.kind === "unsafe") {
+      // Fail closed. The extent is unknown, so everything from the value on
+      // is dropped rather than handed to patterns that will not claim it.
+      // Quoted, like the balanced case, so a JSON prefix stays parseable.
+      return out + text.slice(cursor, m.index) + m[1] + m[2] + '"[REDACTED]"';
+    }
+    const end = scan.index;
     // The marker this function writes is itself bracket-delimited, so an
     // unquoted `authorization: [REDACTED]` left by another pattern looks like
     // a container on the next pass and would be rewritten to
@@ -1102,13 +1151,16 @@ function scrubContainerValues(text: string): string {
     // valid JSON, which would trade the mangling this fix removes for another.
     out += text.slice(cursor, m.index) + m[1] + m[2] + '"[REDACTED]"';
     cursor = end;
-    SENSITIVE_CONTAINER_KEY_RE.lastIndex = end;
+    re.lastIndex = end;
   }
   return cursor === 0 ? text : out + text.slice(cursor);
 }
 
 function scrubOneLayer(text: string): string {
-  return scrubContainerValues(text)
+  return scrubContainerValues(
+    scrubContainerValues(text, SENSITIVE_CONTAINER_KEY_RE),
+    SENSITIVE_CONTAINER_KEY_CAMEL_RE,
+  )
     .replace(PEM_BLOCK_RE, "[REDACTED]")
     .replace(PEM_TRUNCATED_RE, "[REDACTED]")
     .replace(

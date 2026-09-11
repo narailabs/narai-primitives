@@ -1379,6 +1379,56 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     expect(reads, "the walk executed an own-property accessor").toBe(0);
   });
 
+  it("collects an array own property in the all-input collector too", async () => {
+    // Codex P1, the round after the array fix: `collectInputStrings` is the
+    // SECOND walker with this branch, and fixing only the sensitive-path
+    // walker left this one reporting a complete pass. A custom identity or
+    // refinement schema echoing the value then reached `defaultErrorMap` with
+    // no candidate for it.
+    const arr = Object.assign([1], { extra: "hunter2" });
+    const c = createConnector<{}>({
+      name: "array-collector",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.any().refine(() => false, { message: "rejected hunter2" }),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const env = await c.fetch("login", arr);
+    expect(env.status).toBe("error");
+    if (env.status === "error") expect(env.message).not.toContain("hunter2");
+  });
+
+  it("visits a property past the array-index ceiling", async () => {
+    // Codex P2, same round. A JavaScript array index stops at `2**32 - 2`, so
+    // `arr["4294967295"]` leaves `length` at 0 — the index loop visits
+    // nothing — and classifying it as an index excluded it from the
+    // own-property pass as well, so it was never visited at all.
+    const arr: unknown[] = [];
+    (arr as unknown as Record<string, unknown>)["4294967295"] = "hunter2";
+    const c = createConnector<{}>({
+      name: "array-index-ceiling",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.any(),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error("upstream rejected hunter2");
+          },
+        },
+      },
+    });
+    const env = await c.fetch("login", { tokens: arr });
+    expect(env.status).toBe("error");
+    if (env.status === "error") expect(env.message).not.toContain("hunter2");
+  });
+
   it("redacts a credential the SDK loader echoes when it rejects", async () => {
     // Regression (Codex P1). `Promise.all` left the destructuring unassigned
     // when `sdk()` rejected, so `credentials` reached the redactor as

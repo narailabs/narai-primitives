@@ -457,10 +457,20 @@ function arrayNonIndexEntries(
   }
 }
 
-/** A canonical array index, the form `Reflect.ownKeys` returns for elements. */
+/**
+ * A canonical array index, the form `Reflect.ownKeys` returns for elements.
+ *
+ * The upper bound is load-bearing, not pedantry. A JavaScript array index
+ * stops at `2**32 - 2`, so `arr["4294967295"] = "hunter2"` leaves `length` at
+ * 0: the index loop visits nothing, and treating the key as an index here
+ * excluded it from the own-property pass too, so the value was never visited
+ * while the walk reported a complete pass.
+ */
+const MAX_ARRAY_INDEX = 2 ** 32 - 2;
+
 function isArrayIndexKey(k: string): boolean {
   const n = Number(k);
-  return Number.isInteger(n) && n >= 0 && String(n) === k;
+  return Number.isInteger(n) && n >= 0 && n <= MAX_ARRAY_INDEX && String(n) === k;
 }
 
 function arrayElementValue(
@@ -599,6 +609,19 @@ function collectInputStrings(input: unknown, out: Set<string>): boolean {
         }
       } catch {
         return false;
+      }
+      // The SECOND walker with this branch. Fixing only the sensitive-path
+      // walker left this one reporting a complete pass over
+      // `Object.assign([], { extra: "hunter2" })`, so a custom identity or
+      // refinement schema echoing that value had no candidate and
+      // `defaultErrorMap` left the credential in the validation envelope.
+      // This collector is unscoped — every string is a candidate — so the
+      // values go on the stack without a sensitivity decision.
+      const extra = arrayNonIndexEntries(cur, MAX_INPUT_NODES - nodes);
+      if (extra === null) return false;
+      for (const [, child] of extra) {
+        if (nodes++ > MAX_INPUT_NODES) return false;
+        stack.push(child);
       }
       continue;
     }
