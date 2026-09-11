@@ -3,7 +3,11 @@ import {
   aggregateCrossSession,
   renderCrossSessionMarkdown,
 } from "../usage/aggregate-cross-session.js";
+import { scrubSecrets } from "../audit/writer.js";
 import { join } from "node:path";
+
+/** OUR flag names, so they are safe to echo in a rejection message. */
+const FLAG_LIST = "--connector, --since, --format, --dir, --help";
 
 interface Parsed {
   connector?: string;
@@ -25,7 +29,11 @@ function parseArgs(argv: string[]): Parsed {
     else if (a === "--since" && next) { out.since = next; i++; }
     else if (a === "--format" && next) {
       if (next !== "json" && next !== "md") {
-        throw new Error(`--format must be 'json' or 'md', got '${next}'`);
+        // A REJECTED value is caller text. The accepted set is the diagnostic
+        // half of this message; the caller's own token is not, and it can be a
+        // bare credential that no shape-based scrub downstream recognises.
+        // Same rule src/hub/cli.ts and src/connectors/db/config.ts apply.
+        throw new Error("--format must be 'json' or 'md'");
       }
       out.format = next;
       i++;
@@ -36,7 +44,9 @@ function parseArgs(argv: string[]): Parsed {
       process.exit(0);
     }
     else {
-      throw new Error(`Unknown arg: ${a}`);
+      // See the --format case above: our own flag names are safe to print,
+      // the caller's rejected token is not.
+      throw new Error(`Unknown argument (expected ${FLAG_LIST})`);
     }
   }
   return out;
@@ -57,7 +67,12 @@ async function main(): Promise<void> {
   try {
     parsed = parseArgs(process.argv.slice(2));
   } catch (err) {
-    process.stderr.write(`error: ${(err as Error).message}\n\n${HELP}`);
+    // Defence in depth: the throws above no longer echo caller tokens, but a
+    // future one might, and this catch is the sink that reaches stderr —
+    // main().catch never sees a synchronous parseArgs throw.
+    process.stderr.write(
+      `error: ${scrubSecrets((err as Error).message)}\n\n${HELP}`,
+    );
     process.exit(2);
   }
 
@@ -75,6 +90,8 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
+  process.stderr.write(
+    `error: ${scrubSecrets(err instanceof Error ? err.message : String(err))}\n`,
+  );
   process.exit(1);
 });

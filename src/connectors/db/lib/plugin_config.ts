@@ -243,10 +243,10 @@ function validatePolicyObject(
       default:
         throw new Error(
           // A REJECTED name is caller text. The accepted set is the diagnostic
-// half of this message; the caller's own token is not, and it can be a bare
-// credential that no shape-based scrub downstream recognises. Same rule this
-// file already applies to an invalid rule VALUE, and the one an invalid action
-// gets in connector.ts.
+          // half of this message; the caller's own token is not, and it can be a bare
+          // credential that no shape-based scrub downstream recognises. Same rule this
+          // file already applies to an invalid rule VALUE, and the one an invalid action
+          // gets in connector.ts.
           `${path}: unknown key (expected: read, write, delete, admin, privilege, unbounded_select)`,
         );
     }
