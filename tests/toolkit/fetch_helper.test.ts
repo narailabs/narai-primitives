@@ -97,6 +97,33 @@ describe("fetchWithCaps", () => {
     ).rejects.toThrow();
   });
 
+  it("aborts when the server trickle-feeds the body (Slowloris)", async () => {
+    globalThis.fetch = vi.fn((_url: unknown, init?: RequestInit) => {
+      const stream = new ReadableStream({
+        async start(controller) {
+          // Send one chunk
+          controller.enqueue(new Uint8Array([1]));
+
+          // Wait indefinitely to simulate a stalled response body
+          await new Promise((resolve, reject) => {
+            if (init?.signal) {
+              if (init.signal.aborted) {
+                reject(init.signal.reason);
+                return;
+              }
+              init.signal.addEventListener("abort", () => reject(init.signal?.reason));
+            }
+          });
+        }
+      });
+      return Promise.resolve(new Response(stream, { status: 200 }));
+    }) as unknown as typeof globalThis.fetch;
+
+    await expect(
+      fetchWithCaps("https://example.com/trickle", {}, { timeoutMs: 50 }),
+    ).rejects.toThrow();
+  });
+
   it("composes an external AbortSignal with the internal timeout", async () => {
     mockFetchAwaitsAbort();
     const ctl = new AbortController();
