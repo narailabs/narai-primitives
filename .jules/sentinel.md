@@ -37,3 +37,7 @@
 **Vulnerability:** When implementing timeouts for streaming fetch requests using `AbortController`, the `clearTimeout()` call was placed in a `finally` block immediately after the initial fetch (header) resolved.
 **Learning:** This implementation allows a Slowloris-style DoS attack, where a malicious server can indefinitely trickle the response body without triggering the timeout.
 **Prevention:** Ensure the timeout timer is cleared only after the entire response body stream has been fully read.
+## 2026-10-27 - [Fix Fetch Slowloris DOS Vulnerability] (Duplicate)
+**Vulnerability:** When implementing timeouts for streaming fetch requests using `AbortController`, the `clearTimeout()` call was placed in a `finally` block immediately after the initial fetch (header) resolved.
+**Learning:** A PR for this was closed as a duplicate of #112. The preferred approach was to route `fetchAttachment` through `fetchWithCaps` to avoid re-implementing cap checks, and to ensure the AbortController throws a `DOMException` named `AbortError` to match caller expectations.
+**Prevention:** Always check for existing open PRs addressing a vulnerability, and consolidate duplicate logic (e.g. timeout logic) into a single utility function rather than repeating it across multiple files.
