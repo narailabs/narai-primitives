@@ -1429,6 +1429,107 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     if (env.status === "error") expect(env.message).not.toContain("hunter2");
   });
 
+  it("snapshots inputs before safeParse, which runs caller code", async () => {
+    // Codex P1. The snapshot was taken before `spec.handler`, which is one
+    // call too late: `superRefine` runs inside `safeParse` and can read
+    // `p.token`, delete it, and put the bare value in its own issue message.
+    // `defaultErrorMap` then walked a `params` the value was no longer in,
+    // and prose carries no shape for `scrubSecrets`.
+    const c = createConnector<{}>({
+      name: "refine-mutates",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.any().superRefine((p: Record<string, string>, ctx) => {
+            const t = p["token"];
+            delete p["token"];
+            ctx.addIssue({ code: "custom", message: `rejected ${t}` });
+          }),
+          classify: { kind: "read" },
+          handler: async () => ({}),
+        },
+      },
+    });
+    const env = await c.fetch("login", { token: "hunter2" });
+    expect(env.status).toBe("error");
+    if (env.status === "error") expect(env.message).not.toContain("hunter2");
+  });
+
+  it("snapshots inputs before the classify and extendDecision hooks", async () => {
+    // Codex P1, the sibling ordering. Both hooks receive an object reachable
+    // from `params` — an identity schema hands back the caller's own object —
+    // so either can delete the key before throwing with the value in prose.
+    const mk = (which: "classify" | "extend") =>
+      createConnector<{}>({
+        name: `hook-mutates-${which}`,
+        credentials: async () => ({}),
+        sdk: async () => ({}),
+        ...(which === "classify"
+          ? {
+              classify: async (_a: string, v: unknown) => {
+                const p = v as Record<string, string>;
+                const t = p["token"];
+                delete p["token"];
+                throw new Error(`rejected ${t}`);
+              },
+            }
+          : {
+              extendDecision: (_d: unknown, ctx: { params: unknown }) => {
+                const p = ctx.params as Record<string, string>;
+                const t = p["token"];
+                delete p["token"];
+                throw new Error(`rejected ${t}`);
+              },
+            }),
+        actions: {
+          login: {
+            params: z.any(),
+            classify: { kind: "read" },
+            handler: async () => ({}),
+          },
+        },
+      } as never);
+    for (const which of ["classify", "extend"] as const) {
+      const env = await mk(which).fetch("login", { token: "hunter2" });
+      expect(env.status).toBe("error");
+      if (env.status === "error") {
+        expect(env.message, `${which} hook leaked`).not.toContain("hunter2");
+      }
+    }
+  });
+
+  it("fails closed on an array whose prototype cannot be vouched for", async () => {
+    // Codex P1. `Array.isArray` tests the exotic object, not the prototype,
+    // so a subclass reaches the array branch. A prototype can define
+    // `token`, which `Reflect.ownKeys` does not report, so the walk would
+    // claim a complete pass over a value the handler reads as `params.token`.
+    class Tokens extends Array {}
+    Object.defineProperty(Tokens.prototype, "token", {
+      value: "hunter2",
+      enumerable: true,
+    });
+    const arr = new Tokens();
+    arr.push(1);
+    const c = createConnector<{}>({
+      name: "array-proto",
+      credentials: async () => ({}),
+      sdk: async () => ({}),
+      actions: {
+        login: {
+          params: z.any(),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error("upstream rejected hunter2");
+          },
+        },
+      },
+    });
+    const env = await c.fetch("login", { creds: arr });
+    expect(env.status).toBe("error");
+    if (env.status === "error") expect(env.message).not.toContain("hunter2");
+  });
+
   it("redacts a credential the SDK loader echoes when it rejects", async () => {
     // Regression (Codex P1). `Promise.all` left the destructuring unassigned
     // when `sdk()` rejected, so `credentials` reached the redactor as

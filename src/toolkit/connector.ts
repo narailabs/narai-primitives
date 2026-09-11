@@ -436,6 +436,14 @@ function arrayNonIndexEntries(
   budget: number,
 ): Array<[string, unknown]> | null {
   try {
+    // The PROTOTYPE, exactly as `enumerableDataEntries` checks it for an
+    // object. `Array.isArray` tests the exotic object, not the prototype, so
+    // a subclass or a replaced prototype still reaches here — and a prototype
+    // can define `token = "hunter2"`, which `Reflect.ownKeys` does not see.
+    // The walk would then report a COMPLETE pass over a value the handler can
+    // read as `params.token`. Own keys are the only thing this function can
+    // vouch for, so anything else fails closed rather than under-reporting.
+    if (Object.getPrototypeOf(arr) !== Array.prototype) return null;
     const keys = Reflect.ownKeys(arr).filter(
       (k) =>
         !(typeof k === "string" && (k === "length" || isArrayIndexKey(k))),
@@ -918,6 +926,15 @@ function redactSensitiveEchoes(
 function defaultErrorMap(
   err: unknown,
   params?: unknown,
+  /**
+   * Strings captured from `params` BEFORE any caller code ran, or `null` when
+   * that capture failed. `safeParse` runs caller code — a `superRefine` can
+   * read `p.token`, delete it, and put the value in its own issue message —
+   * so by the time this walks `params` the candidate is gone and the bare
+   * value has no shape for `scrubSecrets`. Walking live is only correct when
+   * nothing has had a chance to mutate the object.
+   */
+  preCallerStrings?: ReadonlySet<string> | null,
 ): {
   error_code: ErrorCode;
   message: string;
@@ -930,7 +947,16 @@ function defaultErrorMap(
   // of module identity.
   if (isZodErrorLike(err)) {
     const inputStrings = new Set<string>();
-    const collected = collectInputStrings(params, inputStrings);
+    // Prefer the snapshot; it is the only view of `params` that predates
+    // every caller call. `null` means that capture failed, which fails closed
+    // exactly as a failed live walk does.
+    const collected =
+      preCallerStrings === undefined
+        ? collectInputStrings(params, inputStrings)
+        : preCallerStrings !== null;
+    if (preCallerStrings != null) {
+      for (const v of preCallerStrings) inputStrings.add(v);
+    }
     // The keys the SCHEMA REJECTED, and only those. A key is caller text just
     // as a value is, and zod echoes it: a strict schema given
     // `{ghp_live_…: true}` reports `Unrecognized key(s) in object:
@@ -1200,10 +1226,37 @@ export function createConnector<TSdk = unknown>(
     const spec = cfg.actions[action]!;
     const start = Date.now();
 
+    // Candidates captured before ANY caller code runs.
+    //
+    // The snapshot used to be taken just before `spec.handler`, which was the
+    // right idea one call too late: `safeParse` runs caller code (a
+    // `superRefine` body), and so do `cfg.classify`, `spec.classify` and
+    // `cfg.extendDecision`. Each receives an object reachable from `params` —
+    // an identity schema hands back the caller's own object — so any of them
+    // can read `token`, delete it, and throw or reject with the bare value in
+    // the message. Every redactor downstream then walks an object the value
+    // is no longer in, and `scrubSecrets` sees no shape in prose.
+    //
+    // Taken once, here, and threaded through every error path below. Two
+    // scopes because the two redactors ask different questions: the Zod path
+    // redacts ANY echoed input string, the prose path only sensitively-named
+    // ones. `null` means the walk could not finish, which fails closed.
+    // DO NOT REMOVE: pinned by tests/toolkit/connector.test.ts.
+    const preCallerStrings = ((): ReadonlySet<string> | null => {
+      const out = new Set<string>();
+      if (params === undefined || params === null) return out;
+      return collectInputStrings(params, out) ? out : null;
+    })();
+    const preCallerSensitive = ((): ReadonlySet<string> | null => {
+      const out = new Set<string>();
+      if (params === undefined || params === null) return out;
+      return collectSensitiveInputStrings(params, out) ? out : null;
+    })();
+
     // 1. Validate params via Zod.
     const parsed = spec.params.safeParse(params);
     if (!parsed.success) {
-      const mapped = defaultErrorMap(parsed.error, params);
+      const mapped = defaultErrorMap(parsed.error, params, preCallerStrings);
       // Zod issue text is author-controlled and routinely interpolates the
       // rejected value (`superRefine` with a custom message, enum/literal
       // mismatches). `defaultErrorMap` concatenates every issue message, so a
@@ -1261,6 +1314,7 @@ export function createConnector<TSdk = unknown>(
         validated,
         undefined,
         params,
+        preCallerSensitive,
       );
       return errorEnvelope(
         action,
@@ -1296,6 +1350,7 @@ export function createConnector<TSdk = unknown>(
           validated,
           undefined,
           params,
+          preCallerSensitive,
         );
         return errorEnvelope(
           action,
@@ -1474,6 +1529,11 @@ export function createConnector<TSdk = unknown>(
     // DO NOT REMOVE: pinned by tests/toolkit/connector.test.ts.
     const preHandlerCandidates = ((): ReadonlySet<string> | null => {
       const out = new Set<string>();
+      // Seeded with the pre-caller snapshot: a hook that already deleted a
+      // key means the walks below can no longer see it, and the union is the
+      // only complete view.
+      if (preCallerSensitive === null) return null;
+      for (const v of preCallerSensitive) out.add(v);
       if (validated !== undefined && validated !== null) {
         if (!collectSensitiveInputStrings(validated, out)) return null;
       }
