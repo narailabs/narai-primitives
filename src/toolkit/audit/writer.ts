@@ -1309,7 +1309,13 @@ function containerMarker(quote: string | null): string {
     : REDACTED_MARKER;
 }
 
-function unquotedMarker(match: string, key: string, sep: string): string {
+function unquotedMarker(
+  match: string,
+  key: string,
+  sep: string,
+  whole: string,
+  offset: number,
+): string {
   // The value class is deliberately greedy — it excludes `,`, `;`, `)`, `]`
   // and `}` but not a quote — because under-matching a value LEAKS while
   // over-matching only redacts a little extra. Inside a JSON string that
@@ -1317,10 +1323,17 @@ function unquotedMarker(match: string, key: string, sep: string): string {
   // match ended on instead of narrowing the class and trading a malformed
   // payload for an escaped secret.
   const tail = /["']$/.exec(match)?.[0] ?? "";
-  const member = MEMBER_KEY_RE.exec(key);
-  return member !== null
-    ? `${key}${sep}${member[1]}[REDACTED]${member[1]}${tail}`
-    : `${key}${sep}[REDACTED]${tail}`;
+  // Resolved from the TEXT, not from the capture, for the reason spelled out
+  // above {@link memberQuote}: `KEY_START` is satisfied by `_`, so on
+  // `{"github_token":123456}` this pattern starts at the `token` suffix and the
+  // capture has no opening quote to read. The container pass was corrected one
+  // commit ago and this site was not, which is the same rule-versus-sites miss
+  // in the same area — there are exactly two places in this file that decide
+  // membership from a key, and they now share the decision.
+  const quote = memberQuote(whole, offset, key);
+  return quote !== null
+    ? `${key}${sep}${quote}${REDACTED_MARKER}${quote}${tail}`
+    : `${key}${sep}${REDACTED_MARKER}${tail}`;
 }
 
 function containerEnd(text: string, open: number): ContainerScan {
@@ -1553,7 +1566,8 @@ function scrubOneLayer(text: string): string {
     )
     .replace(
       SENSITIVE_UNQUOTED_RE,
-      (m: string, key: string, sep: string) => unquotedMarker(m, key, sep),
+      (m: string, key: string, sep: string, offset: number, whole: string) =>
+        unquotedMarker(m, key, sep, whole, offset),
     )
     .replace(
       // Quoted, exactly like SENSITIVE_UNQUOTED_RE above. `scrubSecrets` is
@@ -1563,7 +1577,8 @@ function scrubOneLayer(text: string): string {
       // does not parse. The `_`-separated spelling of the same key went
       // through the branch above and stayed valid, so the two disagreed.
       SENSITIVE_UNQUOTED_CAMEL_RE,
-      (m: string, key: string, sep: string) => unquotedMarker(m, key, sep),
+      (m: string, key: string, sep: string, offset: number, whole: string) =>
+        unquotedMarker(m, key, sep, whole, offset),
     )
     .replace(URL_USERINFO_RE, (_m, prefix: string) => `${prefix}[REDACTED]@`);
 }

@@ -607,6 +607,35 @@ describe("scrubSecrets", () => {
     expect(out).not.toContain("AKIA/foo");
   });
 
+  it("keeps a SCALAR member quoted when the key matched at its suffix", () => {
+    // Codex P2, and the twin of the container case below — the same defect at
+    // the other of the only two sites in this file that decide membership from
+    // a key. Fixing one and not the other is what produced this round.
+    //
+    // Both now call `memberQuote`, which resolves it from the text; there is
+    // no third site, because every other marker this file writes mirrors a
+    // quote it actually matched (backtick, single, double, escaped, auth) or
+    // has no key at all (PEM, URL userinfo).
+    for (const k of [
+      "github_token",
+      "github_password",
+      "refresh-token",
+      "token",
+      "githubToken",
+    ]) {
+      const out = scrubSecrets(JSON.stringify({ [k]: 123456, tail: "K" }));
+      expect(out, k).not.toContain("123456");
+      expect(() => JSON.parse(out), `${k} -> ${out}`).not.toThrow();
+      expect((JSON.parse(out) as { tail: string }).tail, k).toBe("K");
+    }
+    // Prose keeps a bare marker, at both spellings of the separator.
+    for (const message of ["github_token=abc", "prefix token: abc"]) {
+      const out = scrubSecrets(JSON.stringify({ message, tail: "K" }));
+      expect(out).not.toContain("abc");
+      expect(() => JSON.parse(out), out).not.toThrow();
+    }
+  });
+
   it("keeps a container member quoted when the key matched at its SUFFIX", () => {
     // Codex P2, against my own previous commit. The container matchers anchor
     // on KEY_START, which `_` satisfies, so on `{"github_token":…}` the match
