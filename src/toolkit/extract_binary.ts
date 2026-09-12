@@ -397,10 +397,15 @@ function parseCli(argv: readonly string[]): CliArgs {
       continue;
     }
     if (a.startsWith("-")) {
-      throw new Error(`unrecognized arguments: ${a}`);
+      // A REJECTED name is caller text. The accepted set is the diagnostic
+      // half of this message; the caller's own token is not, and it can be a bare
+      // credential that no shape-based scrub downstream recognises. Same rule this
+      // file already applies to an invalid rule VALUE, and the one an invalid action
+      // gets in connector.ts.
+      throw new Error("unrecognized flag");
     }
     if (out.inputFile !== undefined) {
-      throw new Error(`unrecognized arguments: ${a}`);
+      throw new Error("unrecognized argument (one input file only)");
     }
     out.inputFile = a;
     i++;

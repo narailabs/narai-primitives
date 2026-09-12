@@ -155,15 +155,19 @@ describe("main()", () => {
   });
 
   it("returns 2 on unrecognized positional argument", () => {
+    // The message names the ACCEPTED flag, never the rejected argument: that
+    // slot is caller text and takes a bare credential just as happily.
     const code = main(["positional-arg"]);
     expect(code).toBe(2);
-    expect(stderr).toMatch(/unrecognized argument: positional-arg/);
+    expect(stderr).toMatch(/unrecognized argument \(expected --config\)/);
+    expect(stderr).not.toContain("positional-arg");
   });
 
   it("returns 2 on unrecognized --flag", () => {
     const code = main(["--bogus", "x"]);
     expect(code).toBe(2);
-    expect(stderr).toMatch(/unrecognized argument: --bogus/);
+    expect(stderr).toMatch(/unrecognized flag \(expected --config\)/);
+    expect(stderr).not.toContain("bogus");
   });
 
   it("treats an --option with no value as empty string", () => {

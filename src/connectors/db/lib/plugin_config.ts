@@ -182,9 +182,7 @@ function validateRule(
 ): PolicyRule {
   if (typeof value !== "string" || !VALID_RULES.has(value as PolicyRule)) {
     throw new Error(
-      `${field}: expected one of [allow, present, escalate, deny], got: ${JSON.stringify(
-        value,
-      )}`,
+      `${field}: expected one of [allow, present, escalate, deny], got: ${typeof value}`,
     );
   }
   const rule = value as PolicyRule;
@@ -237,14 +235,19 @@ function validatePolicyObject(
       case "unbounded_select":
         if (typeof v !== "string" || !VALID_UNBOUNDED_MODES.has(v as UnboundedSelectMode)) {
           throw new Error(
-            `${path}.unbounded_select: expected one of [escalate, allow], got: ${JSON.stringify(v)}`,
+            `${path}.unbounded_select: expected one of [escalate, allow], got: ${typeof v}`,
           );
         }
         out.unbounded_select = v as UnboundedSelectMode;
         break;
       default:
         throw new Error(
-          `${path}: unknown key '${k}' (expected: read, write, delete, admin, privilege, unbounded_select)`,
+          // A REJECTED name is caller text. The accepted set is the diagnostic
+          // half of this message; the caller's own token is not, and it can be a bare
+          // credential that no shape-based scrub downstream recognises. Same rule this
+          // file already applies to an invalid rule VALUE, and the one an invalid action
+          // gets in connector.ts.
+          `${path}: unknown key (expected: read, write, delete, admin, privilege, unbounded_select)`,
         );
     }
   }
@@ -259,14 +262,23 @@ function validatePolicyObject(
   };
 }
 
-function validateServer(alias: string, raw: unknown): ServerConfig {
+/**
+ * `label` is a POSITION (`servers[2]`), never the alias.
+ *
+ * A server alias is the operator's own key, and this file already refuses to
+ * echo a rule VALUE for the same reason: config text can be a bare credential
+ * (`servers: {ghp_live_…: {...}}`), and no shape-based scrub downstream can
+ * recognise one. The position locates the entry in the operator's own file
+ * exactly as a YAML line number does, and cannot carry a secret.
+ */
+function validateServer(label: string, raw: unknown): ServerConfig {
   if (!isPlainObject(raw)) {
-    throw new Error(`servers.${alias}: expected an object, got: ${typeof raw}`);
+    throw new Error(`${label}: expected an object, got: ${typeof raw}`);
   }
   const driverRaw = raw["driver"];
   if (typeof driverRaw !== "string" || driverRaw.length === 0) {
     throw new Error(
-      `servers.${alias}.driver: required string field (e.g. "sqlite", "postgresql", "mongodb", ...)`,
+      `${label}.driver: required string field (e.g. "sqlite", "postgresql", "mongodb", ...)`,
     );
   }
   const policyRaw = raw["policy"];
@@ -274,7 +286,7 @@ function validateServer(alias: string, raw: unknown): ServerConfig {
     policyRaw === undefined
       ? undefined
       : (validatePolicyObject(
-          `servers.${alias}.policy`,
+          `${label}.policy`,
           policyRaw,
           true,
         ) as Partial<PolicyRules>);
@@ -285,7 +297,7 @@ function validateServer(alias: string, raw: unknown): ServerConfig {
     typeof approvalModeRaw !== "string"
   ) {
     throw new Error(
-      `servers.${alias}.approval_mode: expected string, got: ${typeof approvalModeRaw}`,
+      `${label}.approval_mode: expected string, got: ${typeof approvalModeRaw}`,
     );
   }
   const out: ServerConfig = { driver: driverRaw };
@@ -335,9 +347,12 @@ function validateDefault(
     throw new Error(`default: expected non-empty string`);
   }
   if (!Object.prototype.hasOwnProperty.call(servers, raw)) {
-    const available = Object.keys(servers).join(", ");
+    // Neither the requested name nor the alias list: both are config text.
+    // The count says whether any server is defined at all, which is the part
+    // that is not already in front of the operator.
+    const defined = Object.keys(servers).length;
     throw new Error(
-      `default: '${raw}' not found in servers (available: [${available || "none"}])`,
+      `default: not found in servers (${defined} defined)`,
     );
   }
   return raw;
@@ -372,9 +387,9 @@ export function validatePluginConfig(raw: unknown): PluginConfig {
     throw new Error(`servers: must contain at least one named server`);
   }
   const servers: Record<string, ServerConfig> = {};
-  for (const [alias, rawSrv] of Object.entries(serversRaw)) {
-    servers[alias] = validateServer(alias, rawSrv);
-  }
+  Object.entries(serversRaw).forEach(([alias, rawSrv], i) => {
+    servers[alias] = validateServer(`servers[${i}]`, rawSrv);
+  });
 
   const audit = validateAudit(raw["audit"]);
   const defaultServer = validateDefault(raw["default"], servers);
@@ -460,9 +475,9 @@ export function pluginConfigFromSlice(slice: {
     throw new Error(`servers: must contain at least one named server`);
   }
   const servers: Record<string, ServerConfig> = {};
-  for (const [alias, rawSrv] of Object.entries(serversRaw)) {
-    servers[alias] = validateServer(alias, rawSrv);
-  }
+  Object.entries(serversRaw).forEach(([alias, rawSrv], i) => {
+    servers[alias] = validateServer(`servers[${i}]`, rawSrv);
+  });
 
   const audit = validateAudit(options["audit"]);
   const defaultServer = validateDefault(options["default"], servers);

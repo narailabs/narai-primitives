@@ -162,3 +162,53 @@ describe("loadPolicyConfig — discovery + merge", () => {
     ).toThrow(/safety floor/);
   });
 });
+
+describe("policy config errors do not echo the offending value", () => {
+  // A policy file legitimately holds connection strings and tokens, and its
+  // load error is cached and returned in EVERY CONFIG_ERROR envelope that
+  // `main` writes to stdout. A bare credential as a rule value has no
+  // key/value shape for the downstream scrub to recognise, so the value must
+  // not be echoed in the first place. Third site of this rule after the
+  // `--action` slot and the `--params` parser text.
+  it("an invalid rule value reports its TYPE, not the value", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "policy-echo-"));
+    const file = path.join(dir, "policy.yaml");
+    fs.writeFileSync(file, "policy:\n  read: ghp_live_DEADBEEF\n");
+    try {
+      let msg = "";
+      try {
+        loadPolicyConfig({ name: "t", floorAspects: [], explicitPath: file });
+      } catch (e) {
+        msg = e instanceof Error ? e.message : String(e);
+      }
+      expect(msg).not.toContain("ghp_live_DEADBEEF");
+      expect(msg).toContain("got: string");
+      // The actionable half survives: which field, and what was expected.
+      expect(msg).toContain("policy.read");
+      expect(msg).toContain("success, escalate, denied");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a YAML syntax error reports position, not the source line", () => {
+    // js-yaml quotes the offending SOURCE LINE, so a syntax error one line
+    // below a credential echoed it. Only digits are copied out.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "policy-yaml-"));
+    const file = path.join(dir, "policy.yaml");
+    fs.writeFileSync(file, "policy:\n  token: ghp_live_DEADBEEF\n  read: [unclosed\n");
+    try {
+      let msg = "";
+      try {
+        loadPolicyConfig({ name: "t", floorAspects: [], explicitPath: file });
+      } catch (e) {
+        msg = e instanceof Error ? e.message : String(e);
+      }
+      expect(msg).not.toContain("ghp_live_DEADBEEF");
+      expect(msg).toContain("Failed to parse YAML");
+      expect(msg).toMatch(/at line \d+, column \d+/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

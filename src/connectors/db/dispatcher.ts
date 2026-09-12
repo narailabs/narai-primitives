@@ -867,22 +867,43 @@ export async function main(
 
   const paramsRaw = args.params ?? "{}";
   let params: Params;
-  try {
-    const parsed: unknown = JSON.parse(paramsRaw);
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error("params must be a JSON object");
+  const parseOutcome = ((): { error: string } | { params: Params } => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(paramsRaw);
+    } catch (e) {
+      // Same rule as `toolkit/connector.ts`: the parser quotes the offending
+      // input verbatim, so `--params "$DB_PASSWORD"` echoed the credential
+      // here. Only digits are copied out — a position cannot carry a secret.
+      const pos = /\bat position (\d+)\b/.exec((e as Error).message)?.[1];
+      return {
+        error:
+          pos === undefined
+            ? "Invalid JSON in --params"
+            : `Invalid JSON in --params (at position ${pos})`,
+      };
     }
-    params = parsed as Params;
-  } catch (e) {
+    // A SHAPE error is not a syntax error. This message is a constant we
+    // wrote, carries nothing derived from `paramsRaw`, and is the actionable
+    // one: `--params '[]'` is valid JSON, and reporting it as malformed sends
+    // the caller looking for a syntax mistake that is not there. Checked
+    // outside the parse so the two cannot be conflated.
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { error: "params must be a JSON object" };
+    }
+    return { params: parsed as Params };
+  })();
+  if ("error" in parseOutcome) {
     const result: FetchResult = {
       status: "error",
       error_code: "VALIDATION_ERROR",
-      error: `Invalid JSON in --params: ${(e as Error).message}`,
+      error: parseOutcome.error,
       execution_time_ms: 0,
     };
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");
     return 1;
   }
+  params = parseOutcome.params;
 
   const result = await fetch(args.action, params);
   process.stdout.write(JSON.stringify(result, null, 2) + "\n");

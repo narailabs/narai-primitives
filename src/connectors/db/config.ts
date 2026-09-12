@@ -101,14 +101,19 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
         i += 2;
       }
     } else {
-      throw new Error(`unrecognized argument: ${a}`);
+      // A REJECTED name is caller text. The accepted set is the diagnostic
+      // half of this message; the caller's own token is not, and it can be a bare
+      // credential that no shape-based scrub downstream recognises. Same rule this
+      // file already applies to an invalid rule VALUE, and the one an invalid action
+      // gets in connector.ts.
+      throw new Error("unrecognized argument (expected --config)");
     }
     switch (name) {
       case "config":
         out.config = value ?? "";
         break;
       default:
-        throw new Error(`unrecognized argument: --${name}`);
+        throw new Error("unrecognized flag (expected --config)");
     }
   }
   return out;
