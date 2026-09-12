@@ -415,6 +415,33 @@ describe("createConnector.fetch — validation errors", () => {
     }
   });
 
+  it("a revoked proxy in params is an incomplete walk, not a rejection", async () => {
+    // Codex P2. `Array.isArray` is not a safe predicate on an arbitrary caller
+    // value: on a revoked proxy it throws, and it sat OUTSIDE the `try` the
+    // rest of that branch is wrapped in, so the throw escaped the walk and
+    // turned `fetch()` into a rejection instead of an error envelope.
+    const { proxy, revoke } = Proxy.revocable([] as unknown[], {});
+    revoke();
+    const c = createConnector({
+      name: "revoked-proxy",
+      credentials: async () => ({ region: "us-east-1" }),
+      sdk: async () => ({}),
+      actions: {
+        go: {
+          params: z.any() as never,
+          classify: { kind: "read" },
+          handler: async () => ({ ok: true }),
+        },
+      },
+    });
+    // The contract is an envelope, never a thrown error. The walk fails closed
+    // on the value it cannot inspect, which costs the candidate set — but the
+    // handler never touches the proxy, so the call still completes.
+    await expect(
+      c.fetch("go", { creds: proxy } as never),
+    ).resolves.toMatchObject({ status: "success" });
+  });
+
   it("a SCALAR credentials param keeps its path in the diagnostic", async () => {
     // Codex P2. `isCredentialContainerPath` alone marked a scalar sensitive,
     // so `{credentials: "./creds.json"}` with a handler reporting `cannot open

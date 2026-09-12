@@ -484,6 +484,30 @@ function arrayNonIndexEntries(
 }
 
 /**
+ * `Array.isArray` inside the walk's fail-closed boundary.
+ *
+ * It is not a safe predicate on an arbitrary caller value: on a REVOKED proxy
+ * it throws `TypeError`, and it ran before the `try` that the rest of the
+ * branch is wrapped in. The throw escaped the walk, so a parameter object
+ * holding a revoked proxy turned `fetch()` into a rejection instead of an
+ * error envelope — and under an identity schema like `z.any()` a handler that
+ * never inspects the value used to complete normally.
+ *
+ * `false` means "cannot tell", which the callers treat as an incomplete walk
+ * and fail closed on, exactly as they do for an element read that throws. The
+ * narrowing `Array.isArray` stays where it was, so the branch below keeps its
+ * element type.
+ */
+function canInspect(v: unknown): boolean {
+  try {
+    Array.isArray(v);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * A canonical array index, the form `Reflect.ownKeys` returns for elements.
  *
  * The upper bound is load-bearing, not pedantry. A JavaScript array index
@@ -624,6 +648,7 @@ function collectInputStrings(input: unknown, out: Set<string>): boolean {
     // own non-configurable property of an array, so only element reads can
     // throw, and those are an incomplete walk — which the caller fails closed
     // on for exactly this reason.
+    if (!canInspect(cur)) return false;
     if (Array.isArray(cur)) {
       try {
         const len = cur.length;
@@ -858,6 +883,7 @@ function collectSensitiveInputStrings(input: unknown, out: Set<string>): boolean
     const priorSensitive = seen.get(v);
     if (priorSensitive === true || (priorSensitive === false && !cur.sensitive)) continue;
     seen.set(v, cur.sensitive);
+    if (!canInspect(v)) return false;
     if (Array.isArray(v)) {
       try {
         const len = v.length;

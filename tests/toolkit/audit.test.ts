@@ -316,7 +316,10 @@ describe("scrubSecrets", () => {
     expect(scrubSecrets(`{"password":hunter2}`)).toBe(
       `{"password":"[REDACTED]"}`,
     );
-    expect(scrubSecrets("password=hunter2")).toBe(`password="[REDACTED]"`);
+    // `=` keeps the shape it arrived in; only a `:` member gets quotes, and
+    // only because `{"token":[REDACTED]}` would not parse. See
+    // `unquotedMarker`. The input had no quotes, so neither does the marker.
+    expect(scrubSecrets("password=hunter2")).toBe("password=[REDACTED]");
     expect(scrubSecrets(`{"token":12345}`)).toBe(`{"token":"[REDACTED]"}`);
   });
 
@@ -334,7 +337,7 @@ describe("scrubSecrets", () => {
       `{"token":"[REDACTED]","user":"bob"}`,
     );
     expect(scrubSecrets("secret=abc; other=keep")).toBe(
-      `secret="[REDACTED]"; other=keep`,
+      "secret=[REDACTED]; other=keep",
     );
   });
 
@@ -554,6 +557,28 @@ describe("scrubSecrets", () => {
     expect(out).not.toContain("AKIA/foo");
   });
 
+  it("keeps a payload parseable when the credential is inside a JSON string", () => {
+    // Codex P2. A `key=value` literal embedded in a JSON string got a marker
+    // wrapped in quotes the input never had, so the containing string ended
+    // early and the document stopped parsing. No leak either way — this is the
+    // payload-integrity property, the same one the container scan protects.
+    for (const input of [
+      JSON.stringify({ message: "password=hunter2", tail: "K" }),
+      JSON.stringify({ message: "token=abc123", tail: "K" }),
+      JSON.stringify({ msg: "connect failed: api_key=zzz" }),
+    ]) {
+      const out = scrubSecrets(input);
+      expect(out).not.toContain("hunter2");
+      expect(() => JSON.parse(out), out).not.toThrow();
+      // The sibling after the string survives.
+      const parsed = JSON.parse(out) as Record<string, unknown>;
+      if ("tail" in parsed) expect(parsed["tail"]).toBe("K");
+    }
+    // The `:` member still gets its quotes, which is why they existed:
+    // `{"token":[REDACTED]}` does not parse.
+    expect(scrubSecrets(`{"token":12345}`)).toBe(`{"token":"[REDACTED]"}`);
+  });
+
   it("does not treat a run-on credentials word as a container key", () => {
     // The run-on exclusion documented above SENSITIVE_WORDS, checked against
     // the word this change added rather than assumed to carry over.
@@ -617,7 +642,7 @@ describe("scrubSecrets", () => {
       "secret_access_key='[REDACTED]'",
     );
     expect(scrubSecrets("refresh-token=abc123")).toBe(
-      `refresh-token="[REDACTED]"`,
+      "refresh-token=[REDACTED]",
     );
   });
 
