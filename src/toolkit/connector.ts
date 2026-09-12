@@ -352,7 +352,18 @@ function addCandidate(out: Set<string>, value: string): void {
   // Costs nothing on an ordinary token: a value with no quote, backslash or
   // control character re-encodes to itself and adds no entry. Over-matching on
   // a VALUE is safe in any case — it redacts a span that came from the caller.
-  for (const base of new Set([value, trimmed])) {
+  // Every spelling this function produces, not just the two it started from.
+  // The normalization variants above and the serialization below are the same
+  // question asked twice, and covering one pair and not the other left the
+  // combination open: a schema that lowercases `ABC"DEF` and a classify hook
+  // that JSON-stringifies it emits `abc\"def`, which matched neither the
+  // lowercased raw candidate nor the serialized original.
+  for (const base of new Set([
+    value,
+    trimmed,
+    trimmed.toLowerCase(),
+    trimmed.toUpperCase(),
+  ])) {
     if (base === "") continue;
     const json = JSON.stringify(base).slice(1, -1);
     if (json !== base) out.add(json);

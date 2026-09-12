@@ -470,6 +470,55 @@ describe("createConnector.fetch — validation errors", () => {
     ).resolves.toMatchObject({ status: "success" });
   });
 
+  it("a candidate survives normalization AND serialization together", async () => {
+    // Codex P1. `addCandidate` adds four spellings of every value — raw,
+    // trimmed, lowercased, uppercased — and serialized only the first two, so
+    // the COMBINATION was open: a schema that lowercases `ABC"DEF` and a hook
+    // that JSON-stringifies the result emits `abc\"def`, matching neither the
+    // lowercased raw candidate nor the serialized original. Cross-product
+    // rather than the reported example, because the gap was a missing pair and
+    // one example cannot show which pairs are covered.
+    const raw = 'ABC"DEF';
+    const transforms: Array<[string, (v: string) => string]> = [
+      ["identity", (v) => v],
+      ["lowercase", (v) => v.toLowerCase()],
+      ["uppercase", (v) => v.toUpperCase()],
+    ];
+    const renders: Array<[string, (v: string) => string]> = [
+      ["raw", (v) => `rejected ${v}`],
+      ["JSON", (v) => `payload ${JSON.stringify({ error: v })}`],
+      ["repr", (v) => `repr {'e': '${v.replace(/'/g, "\\'")}'}`],
+    ];
+    for (const [tName, transform] of transforms) {
+      for (const [rName, render] of renders) {
+        const label = `${tName}/${rName}`;
+        // Through the classify hook, which redacts from the PRE-caller
+        // snapshot — a different candidate set from the handler path.
+        const c = createConnector({
+          name: `norm-${tName}-${rName}`,
+          credentials: async () => ({ region: "us-east-1" }),
+          sdk: async () => ({}),
+          actions: {
+            go: {
+              params: z.object({
+                password: z.string().transform(transform),
+              }) as never,
+              classify: ((p: { password: string }) => {
+                throw new Error(render(p.password));
+              }) as never,
+            },
+          },
+        });
+        const env = await c.fetch("go", { password: raw });
+        expect(env.status).toBe("error");
+        if (env.status === "error") {
+          expect(env.message.toUpperCase(), label).not.toContain("ABC");
+          expect(env.message.toUpperCase(), label).not.toContain("DEF");
+        }
+      }
+    }
+  });
+
   it("a SCALAR credentials param keeps its path in the diagnostic", async () => {
     // Codex P2. `isCredentialContainerPath` alone marked a scalar sensitive,
     // so `{credentials: "./creds.json"}` with a handler reporting `cannot open
