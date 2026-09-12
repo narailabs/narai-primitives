@@ -200,14 +200,40 @@ const KEY_CAMEL = `${KQ}(?<![A-Za-z0-9])[A-Za-z0-9]*[a-z0-9](?:${SENSITIVE_KEY_W
  * in this grammar, and admitting it would end the fallback early on ordinary
  * prose.
  */
+/**
+ * `<prefix>_authorization` as a KEY, for the scalar patterns only.
+ *
+ * `authorization` is absent from {@link SENSITIVE_WORDS} on purpose — KEY_END
+ * rejects a following letter, which is what stops `auth` matching inside
+ * `authorization failed` — and the five `SENSITIVE_AUTH_*_RE` patterns carry
+ * their own literal instead. Every one of those anchors on the bare word: the
+ * quoted form needs a quote immediately before it, and the line and inline
+ * forms need `authorization` to touch its `:`. A service prefix breaks all
+ * three, and `\b` cannot rescue them because `_` is itself a word character.
+ * So `{"github_authorization":"hunter2"}` returned the credential unchanged
+ * while `isSensitiveFieldPath("github_authorization")` called it sensitive —
+ * the same vocabulary disagreement as the two fixed above, in a third place.
+ * Measured, the gap is every separator spelling: `github_authorization`,
+ * `gh-authorization` and `client_authorization` all leaked.
+ *
+ * Deliberately COMPOUND-only. A separator is required, so the bare
+ * `authorization` key still belongs to the AUTH family alone and this does not
+ * reshape a redaction those patterns already handle — they preserve the scheme
+ * (`Bearer`) and the `key=value` parameter structure, and a generic key match
+ * would blank it. The camel spelling needs nothing: `githubAuthorization`
+ * already matches through {@link KEY_CAMEL}.
+ */
+const COMPOUND_AUTH_KEY =
+  "(?<![A-Za-z0-9])[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*[_-]authorization";
+
 const UNTERMINATED_TAIL = `(?:(?!\\\\*"\\s*(?:[,\\]}]|$))[^\\r\\n])*`;
 
 const SENSITIVE_SQUOTE_RE = new RegExp(
-  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)'(?:[^'\\\\]*(?:\\\\.[^'\\\\]*)*(')|${UNTERMINATED_TAIL})`,
+  `(${KQ}(?:${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})|${COMPOUND_AUTH_KEY})${KEY_END}${KQ})(\\s*[:=]\\s*)'(?:[^'\\\\]*(?:\\\\.[^'\\\\]*)*(')|${UNTERMINATED_TAIL})`,
   "gi",
 );
 const SENSITIVE_DQUOTE_RE = new RegExp(
-  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)"(?:[^"\\\\]*(?:\\\\.[^"\\\\]*)*(")|${UNTERMINATED_TAIL})`,
+  `(${KQ}(?:${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})|${COMPOUND_AUTH_KEY})${KEY_END}${KQ})(\\s*[:=]\\s*)"(?:[^"\\\\]*(?:\\\\.[^"\\\\]*)*(")|${UNTERMINATED_TAIL})`,
   "gi",
 );
 /** {@link KEY_CAMEL} twins of the two above — same bodies, no `i` flag. */
@@ -505,11 +531,11 @@ const PEM_TRUNCATED_RE = new RegExp(
 );
 
 const SENSITIVE_ESCAPED_QUOTE_RE = new RegExp(
-  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)\\\\+(["'])(?:\\\\\\\\.|(?!\\\\+\\3)(?!\\\\*"\\s*(?:[,\\]}]|$))[^\\r\\n])*(\\\\+\\3)?`,
+  `(${KQ}(?:${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})|${COMPOUND_AUTH_KEY})${KEY_END}${KQ})(\\s*[:=]\\s*)\\\\+(["'])(?:\\\\\\\\.|(?!\\\\+\\3)(?!\\\\*"\\s*(?:[,\\]}]|$))[^\\r\\n])*(\\\\+\\3)?`,
   "gi",
 );
 const SENSITIVE_UNQUOTED_RE = new RegExp(
-  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)(?:[^\\s"'{\\[\\\\][^\\s,;)\\]}]*)`,
+  `(${KQ}(?:${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})|${COMPOUND_AUTH_KEY})${KEY_END}${KQ})(\\s*[:=]\\s*)(?:[^\\s"'{\\[\\\\][^\\s,;)\\]}]*)`,
   "gi",
 );
 /** {@link KEY_CAMEL} twins of the two above — same bodies, no `i` flag. */
@@ -1118,6 +1144,14 @@ const REDACTED_MARKER = "[REDACTED]";
  * to a file, and blanking it costs a diagnostic while hiding nothing. The
  * `(?=[{[])` lookahead on both matchers below is what holds that line — they
  * fire only when the value opens a container.
+ *
+ * Both matchers also take a trailing `s?`, which the SCALAR patterns must not.
+ * The plural is ambiguous by name — `github_tokens` is a bundle and
+ * `max_tokens` is a count — and on the scalar path there is nothing to break
+ * the tie, which is why `SENSITIVE_PATH_COMPOUND_RE` stays singular and why
+ * the collector in connector.ts has to ask about the value. Here the lookahead
+ * has already asked: a count is never spelled `{` or `[`, so the same `s?` that
+ * would blank `max_tokens: 4096` on the scalar path cannot fire on it at all.
  */
 const CONTAINER_KEY_WORDS = `${SENSITIVE_KEY_WORDS}|credentials?`;
 /**
@@ -1130,10 +1164,10 @@ const CONTAINER_KEY_WORDS = `${SENSITIVE_KEY_WORDS}|credentials?`;
 const CONTAINER_KEY_CAMEL = `${KQ}(?<![A-Za-z0-9])[A-Za-z0-9]*[a-z0-9](?:${CONTAINER_KEY_WORDS.replace(
   /[a-z]+/g,
   (w) => w.charAt(0).toUpperCase() + w.slice(1),
-)})(?![A-Za-z0-9])${KQ}`;
+)})s?(?![A-Za-z0-9])${KQ}`;
 
 const SENSITIVE_CONTAINER_KEY_RE = new RegExp(
-  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${CONTAINER_KEY_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)(?=[{[])`,
+  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${CONTAINER_KEY_WORDS})s?${KEY_END}${KQ})(\\s*[:=]\\s*)(?=[{[])`,
   "gi",
 );
 const SENSITIVE_CONTAINER_KEY_CAMEL_RE = new RegExp(
@@ -1180,7 +1214,19 @@ function containerEnd(text: string, open: number): ContainerScan {
       else if (c === quote) quote = null;
       continue;
     }
-    if (c === '"' || c === "'") quote = c;
+    // The backtick is a string delimiter here for the same reason the other
+    // two are: `util.inspect` switches to it whenever a string contains both
+    // a single and a double quote, which is exactly what a credential dumped
+    // through an SDK error looks like. Without it the first `}` INSIDE such a
+    // string closed the scan, so the marker landed mid-string, the tail of the
+    // secret survived, and the payload came back malformed as well.
+    // The backtick is a string delimiter here for the same reason the other
+    // two are: `util.inspect` switches to it whenever a string contains both
+    // a single and a double quote, which is exactly what a credential dumped
+    // through an SDK error looks like. Without it the first `}` INSIDE such a
+    // string closed the scan, so the marker landed mid-string, the tail of the
+    // secret survived, and the payload came back malformed as well.
+    if (c === '"' || c === "'" || c === "`") quote = c;
     else if (c === "{" || c === "[") stack.push(c);
     else if (c === "}" || c === "]") {
       const want = c === "}" ? "{" : "[";

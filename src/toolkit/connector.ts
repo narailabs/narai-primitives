@@ -342,6 +342,23 @@ function addCandidate(out: Set<string>, value: string): void {
   for (const variant of [trimmed.toLowerCase(), trimmed.toUpperCase()]) {
     if (variant !== "" && variant !== value) out.add(variant);
   }
+  // The SERIALIZED spellings, because a handler rarely interpolates a value
+  // raw. `JSON.stringify({error: pw})` on a password of `abc"def` emits
+  // `abc\"def`, which no candidate matched, and `scrubSecrets` leaves a
+  // generic key like `error` alone — so parsing the returned envelope handed
+  // the credential back whole. The single-quote form is the same bug in a
+  // Python repr, which these logs carry as readily as JSON.
+  //
+  // Costs nothing on an ordinary token: a value with no quote, backslash or
+  // control character re-encodes to itself and adds no entry. Over-matching on
+  // a VALUE is safe in any case — it redacts a span that came from the caller.
+  for (const base of new Set([value, trimmed])) {
+    if (base === "") continue;
+    const json = JSON.stringify(base).slice(1, -1);
+    if (json !== base) out.add(json);
+    const repr = base.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    if (repr !== base) out.add(repr);
+  }
 }
 
 /**
@@ -784,7 +801,20 @@ function makeEchoRedactor(candidates: Iterable<string>): {
  * Deliberately not folded into `isSensitiveFieldPath`. The other caller of
  * that predicate decides whether to DROP a validation message whole and holds
  * no value to ask about, so a value-aware rule cannot live there.
+ *
+ * {@link isCredentialContainer} above applies the same test to the singular
+ * `credentials` key, for consistency with the shape scrubber rather than for a
+ * leak: `isCredentialContainerPath` alone marked a SCALAR sensitive, so
+ * `{credentials: "./creds.json"}` with a handler reporting `cannot open
+ * ./creds.json` lost the filename, while `scrubSecrets` deliberately kept it.
+ * One of the two had to move, and the scrubber's rule is the documented one.
  */
+function isCredentialContainer(key: string, value: unknown): boolean {
+  return (
+    typeof value === "object" && value !== null && isCredentialContainerPath(key)
+  );
+}
+
 function isPluralCredentialContainer(key: string, value: unknown): boolean {
   return (
     typeof value === "object" &&
@@ -855,7 +885,7 @@ function collectSensitiveInputStrings(input: unknown, out: Set<string>): boolean
           sensitive:
             cur.sensitive ||
             isSensitiveFieldPath(k) ||
-            isCredentialContainerPath(k) ||
+            isCredentialContainer(k, child) ||
             isPluralCredentialContainer(k, child),
         });
       }
@@ -872,7 +902,7 @@ function collectSensitiveInputStrings(input: unknown, out: Set<string>): boolean
         sensitive:
           cur.sensitive ||
           isSensitiveFieldPath(k) ||
-          isCredentialContainerPath(k) ||
+          isCredentialContainer(k, child) ||
           isPluralCredentialContainer(k, child),
       });
     }

@@ -379,6 +379,89 @@ describe("createConnector.fetch — validation errors", () => {
     }
   });
 
+  it("a candidate matches its SERIALIZED spelling, not only the raw one", async () => {
+    // Codex P1. A handler rarely interpolates a value raw. With a password of
+    // `abc"def`, `JSON.stringify({error: pw})` emits `abc\"def`, which no
+    // candidate matched, and scrubSecrets leaves a generic `error` key alone —
+    // so parsing the returned envelope handed the credential straight back.
+    // The single-quote form is the same bug in a Python repr.
+    const secret = 'abc"def';
+    const renders: Array<[string, (v: string) => string]> = [
+      ["raw", (v) => `upstream rejected ${v}`],
+      ["JSON", (v) => `payload ${JSON.stringify({ error: v })}`],
+      ["escaped quote", (v) => `got ${v.replace(/"/g, '\\"')}`],
+    ];
+    for (const [label, render] of renders) {
+      const c = createConnector({
+        name: `esc-${label.replace(/\s/g, "-")}`,
+        credentials: async () => ({ region: "us-east-1" }),
+        sdk: async () => ({}),
+        actions: {
+          go: {
+            params: z.object({ password: z.string() }),
+            classify: { kind: "read" },
+            handler: async () => {
+              throw new Error(render(secret));
+            },
+          },
+        },
+      });
+      const env = await c.fetch("go", { password: secret });
+      expect(env.status).toBe("error");
+      if (env.status === "error") {
+        expect(env.message, label).not.toContain("abc");
+        expect(env.message, label).not.toContain("def");
+      }
+    }
+  });
+
+  it("a SCALAR credentials param keeps its path in the diagnostic", async () => {
+    // Codex P2. `isCredentialContainerPath` alone marked a scalar sensitive,
+    // so `{credentials: "./creds.json"}` with a handler reporting `cannot open
+    // ./creds.json` lost the filename — while scrubSecrets deliberately keeps
+    // it, because `credentials` pointing at a file is a path and not a secret.
+    // The two sides now ask the same question of the value.
+    const c = createConnector({
+      name: "creds-scalar",
+      credentials: async () => ({ region: "us-east-1" }),
+      sdk: async () => ({}),
+      actions: {
+        go: {
+          params: z.object({ credentials: z.string() }),
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error("cannot open ./creds.json");
+          },
+        },
+      },
+    });
+    const env = await c.fetch("go", { credentials: "./creds.json" });
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).toContain("./creds.json");
+    }
+    // A credentials CONTAINER is still collected — the half that is a secret.
+    const c2 = createConnector({
+      name: "creds-container",
+      credentials: async () => ({ region: "us-east-1" }),
+      sdk: async () => ({}),
+      actions: {
+        go: {
+          params: z.object({ credentials: z.any() }) as never,
+          classify: { kind: "read" },
+          handler: async () => {
+            throw new Error("upstream rejected hunter2");
+          },
+        },
+      },
+    });
+    const env2 = await c2.fetch("go", { credentials: { pat: "hunter2" } });
+    expect(env2.status).toBe("error");
+    if (env2.status === "error") {
+      expect(env2.message).not.toContain("hunter2");
+    }
+  });
+
   it("a plural service-prefixed credential CONTAINER is a redaction candidate", async () => {
     // Codex P1. `github_tokens` is the residue SENSITIVE_PATH_COMPOUND_RE
     // documents: the singular compound matches, the plural does not, so the

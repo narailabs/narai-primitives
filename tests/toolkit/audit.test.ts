@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { inspect } from "node:util";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -477,6 +478,80 @@ describe("scrubSecrets", () => {
     for (const k of ["credentials", "credential", "awsCredentials"]) {
       expect(scrubSecrets(`{"${k}":"./creds.json"}`)).toContain("./creds.json");
     }
+  });
+
+  it("redacts a container behind a PLURAL key, service-prefixed or bare", () => {
+    // Codex P1, the round after the plural fix landed in the connector walk.
+    // That fix only covered values arriving as action PARAMETERS; a classify
+    // hook or SDK error that serializes an environment-derived bundle reaches
+    // the envelope through scrubSecrets alone, with no candidate set behind
+    // it, and neither container matcher knew the plural. Measured, the gap was
+    // wider than reported: the bare `tokens` leaked too, not just the
+    // service-prefixed forms.
+    //
+    // The `s?` is safe HERE and not on the scalar path, which is the whole
+    // point: `max_tokens` is a count, and a count is never spelled `{` or `[`,
+    // so the `(?=[{[])` lookahead settles the ambiguity the name cannot.
+    for (const k of [
+      "tokens",
+      "github_tokens",
+      "githubTokens",
+      "db_passwords",
+      "dbPasswords",
+      "credentials",
+    ]) {
+      for (const v of [`{"p":"hunter2"}`, `["hunter2"]`]) {
+        const out = scrubSecrets(`{"${k}":${v}}`);
+        expect(out, `${k} -> ${v}`).not.toContain("hunter2");
+      }
+    }
+    // And the count the plural collides with is still a diagnostic, because it
+    // is a scalar and no container matcher can reach it.
+    expect(scrubSecrets(`{"max_tokens":4096}`)).toContain("4096");
+    expect(scrubSecrets(`{"maxTokens":4096}`)).toContain("4096");
+  });
+
+  it("treats a backtick as a container string delimiter", () => {
+    // Codex P1. `util.inspect` switches to backtick quoting when a string
+    // holds both a single and a double quote, so a `}` inside that string
+    // closed the container scan early: the marker landed mid-string, the tail
+    // of the secret survived, AND the payload came back malformed. Built with
+    // util.inspect rather than hand-written so the premise cannot drift.
+    const rendered = inspect({ password: { ordinary: "}'\"hunter2" }, tail: "K" });
+    expect(rendered).toContain("`");
+    const out = scrubSecrets(rendered);
+    expect(out).not.toContain("hunter2");
+    // The sibling after the container survives — this was corrupted before.
+    expect(out).toContain("tail: 'K'");
+  });
+
+  it("redacts authorization behind a service prefix, every separator", () => {
+    // Codex P1. `isSensitiveFieldPath("github_authorization")` was true while
+    // scrubSecrets returned the value whole: `authorization` is deliberately
+    // absent from SENSITIVE_WORDS, and each of the five AUTH patterns anchors
+    // on the BARE word — one needs a quote immediately before it, two need it
+    // to touch its `:`. `\b` cannot rescue them because `_` is itself a word
+    // character. Measured, every separator spelling leaked, not just the one
+    // reported.
+    for (const k of [
+      "github_authorization",
+      "gh-authorization",
+      "client_authorization",
+      "githubAuthorization",
+    ]) {
+      expect(scrubSecrets(`{"${k}":"hunter2"}`), k).not.toContain("hunter2");
+    }
+  });
+
+  it("leaves the bare authorization header to the AUTH patterns", () => {
+    // The reason the rule above is COMPOUND-only. The AUTH family preserves
+    // the scheme and consumes a whole multi-parameter list; a generic key
+    // match would blank the scheme instead, and stop at the first parameter.
+    const out = scrubSecrets(
+      'ctx "authorization": AWS4-HMAC-SHA256 Credential="AKIA/foo", Signature="hunter2"',
+    );
+    expect(out).not.toContain("hunter2");
+    expect(out).not.toContain("AKIA/foo");
   });
 
   it("does not treat a run-on credentials word as a container key", () => {
