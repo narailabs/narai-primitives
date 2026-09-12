@@ -237,6 +237,25 @@ const SENSITIVE_DQUOTE_RE = new RegExp(
   "gi",
 );
 /** {@link KEY_CAMEL} twins of the two above — same bodies, no `i` flag. */
+/**
+ * The BACKTICK-quoted value, which is not a JavaScript nicety but the shape
+ * `util.inspect` reaches for whenever a string holds both a single and a
+ * double quote — `{ password: `abc\'"}hunter2` }`. Without a branch of its
+ * own the value fell through to the UNQUOTED pattern, which stops at the first
+ * structural delimiter, so the marker landed after `abc` and the rest of the
+ * secret survived verbatim.
+ *
+ * The container scan learned the same delimiter one round earlier; this is its
+ * scalar sibling, and fixing one without the other is why it came back.
+ */
+const SENSITIVE_BTICK_RE = new RegExp(
+  `(${KQ}(?:${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})|${COMPOUND_AUTH_KEY})${KEY_END}${KQ})(\\s*[:=]\\s*)\`(?:[^\`\\\\]*(?:\\\\.[^\`\\\\]*)*(\`)|${UNTERMINATED_TAIL})`,
+  "gi",
+);
+const SENSITIVE_BTICK_CAMEL_RE = new RegExp(
+  `(${KEY_CAMEL})(\\s*[:=]\\s*)\`(?:[^\`\\\\]*(?:\\\\.[^\`\\\\]*)*(\`)|${UNTERMINATED_TAIL})`,
+  "g",
+);
 const SENSITIVE_SQUOTE_CAMEL_RE = new RegExp(
   `(${KEY_CAMEL})(\\s*[:=]\\s*)'(?:[^'\\\\]*(?:\\\\.[^'\\\\]*)*(')|${UNTERMINATED_TAIL})`,
   "g",
@@ -530,12 +549,39 @@ const PEM_TRUNCATED_RE = new RegExp(
   "g",
 );
 
+/**
+ * The unquoted value when it lives INSIDE a JSON string.
+ *
+ * The ordinary class stops at `,`, `;`, `)`, `]` or `}` because in plain text
+ * those are structural. Inside a serialized string they are not: the message
+ * `password=abc'\"}hunter2` is one value, and stopping at that `}` put the
+ * marker after `abc` and left the rest of the secret verbatim.
+ *
+ * The tell is an ESCAPED quote. A `\"` only appears where a JSON string is
+ * being quoted inside another, so when one is ahead of the next unescaped `"`
+ * the delimiters between here and that quote belong to the value. This branch
+ * is ordered FIRST for that reason, and the lookahead keeps it from claiming
+ * an ordinary unquoted value, which still stops where it always did.
+ *
+ * It consumes `\\.` as a unit so an escaped quote cannot end it early, and
+ * stops at the first UNESCAPED `"` — the one closing the containing string.
+ *
+ * The leading guard is not optional. Every other value class here excludes the
+ * quote characters a marker starts with, so none of them can re-claim one; this
+ * branch has no first-character restriction, and `\\"[REDACTED]\\"` — what the
+ * escaped-quote pattern emits one step earlier in the chain — matched it and
+ * was redacted a second time into a broken marker.
+ * Over-running a value is the safe direction here: it redacts a little extra
+ * from a span the caller supplied, where stopping short leaks.
+ */
+const IN_JSON_STRING_VALUE = `(?!\\\\*["']?\\[REDACTED\\])(?=[^"\\r\\n]*\\\\")(?:\\\\.|[^"\\r\\n])*`;
+
 const SENSITIVE_ESCAPED_QUOTE_RE = new RegExp(
   `(${KQ}(?:${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})|${COMPOUND_AUTH_KEY})${KEY_END}${KQ})(\\s*[:=]\\s*)\\\\+(["'])(?:\\\\\\\\.|(?!\\\\+\\3)(?!\\\\*"\\s*(?:[,\\]}]|$))[^\\r\\n])*(\\\\+\\3)?`,
   "gi",
 );
 const SENSITIVE_UNQUOTED_RE = new RegExp(
-  `(${KQ}(?:${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})|${COMPOUND_AUTH_KEY})${KEY_END}${KQ})(\\s*[:=]\\s*)(?:[^\\s"'{\\[\\\\][^\\s,;)\\]}]*)`,
+  `(${KQ}(?:${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_WORDS})|${COMPOUND_AUTH_KEY})${KEY_END}${KQ})(\\s*[:=]\\s*)(?:${IN_JSON_STRING_VALUE}|[^\\s"'\`{\\[\\\\][^\\s,;)\\]}]*)`,
   "gi",
 );
 /** {@link KEY_CAMEL} twins of the two above — same bodies, no `i` flag. */
@@ -544,7 +590,7 @@ const SENSITIVE_ESCAPED_QUOTE_CAMEL_RE = new RegExp(
   "g",
 );
 const SENSITIVE_UNQUOTED_CAMEL_RE = new RegExp(
-  `(${KEY_CAMEL})(\\s*[:=]\\s*)(?:[^\\s"'{\\[\\\\][^\\s,;)\\]}]*)`,
+  `(${KEY_CAMEL})(\\s*[:=]\\s*)(?:${IN_JSON_STRING_VALUE}|[^\\s"'\`{\\[\\\\][^\\s,;)\\]}]*)`,
   "g",
 );
 /**
@@ -1316,6 +1362,18 @@ function scrubOneLayer(text: string): string {
   )
     .replace(PEM_BLOCK_RE, "[REDACTED]")
     .replace(PEM_TRUNCATED_RE, "[REDACTED]")
+    // Backticks BEFORE the unquoted branch, which would otherwise claim the
+    // value and stop at the first delimiter inside it. See SENSITIVE_BTICK_RE.
+    .replace(
+      SENSITIVE_BTICK_RE,
+      (_m, key: string, sep: string, close: string | undefined) =>
+        `${key}${sep}\`[REDACTED]${close ?? ""}`,
+    )
+    .replace(
+      SENSITIVE_BTICK_CAMEL_RE,
+      (_m, key: string, sep: string, close: string | undefined) =>
+        `${key}${sep}\`[REDACTED]${close ?? ""}`,
+    )
     .replace(
       SENSITIVE_SQUOTE_RE,
       (_m, key: string, sep: string, close: string | undefined) =>

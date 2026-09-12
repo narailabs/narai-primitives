@@ -633,7 +633,16 @@ function collectInputStrings(input: unknown, out: Set<string>): boolean {
       addCandidate(out, String(cur));
       continue;
     }
-    if (cur === null || typeof cur !== "object") continue;
+    // `typeof v !== "object"` skipped a FUNCTION, and a function carries own
+    // data properties like any other object. `{token: Object.assign(() => {},
+    // {value: "hunter2"})}` reached a handler that read `params.token.value`
+    // and threw it back, with no candidate collected and the walk still
+    // reporting success — a silent miss, which is the worst shape here. It is
+    // walked like an object rather than failing closed, because failing closed
+    // on every callable would drop the diagnostic for any params object that
+    // legitimately carries one.
+    if (cur === null || (typeof cur !== "object" && typeof cur !== "function"))
+      continue;
     if (seen.has(cur)) continue;
     seen.add(cur);
     // Budget the ENQUEUE, not just the pop. Checking only on the way out let
@@ -879,7 +888,9 @@ function collectSensitiveInputStrings(input: unknown, out: Set<string>): boolean
       if (cur.sensitive) addCandidate(out, String(v));
       continue;
     }
-    if (v === null || typeof v !== "object") continue;
+    // Callables carry own data properties — see the twin walk above.
+    if (v === null || (typeof v !== "object" && typeof v !== "function"))
+      continue;
     const priorSensitive = seen.get(v);
     if (priorSensitive === true || (priorSensitive === false && !cur.sensitive)) continue;
     seen.set(v, cur.sensitive);

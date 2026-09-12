@@ -415,6 +415,34 @@ describe("createConnector.fetch — validation errors", () => {
     }
   });
 
+  it("a CALLABLE carrying own data properties is walked, not skipped", async () => {
+    // Codex P1. `typeof v !== "object"` skipped a function, and a function
+    // carries own data properties like anything else. The walk reported a
+    // complete pass while collecting nothing, which is the worst shape here:
+    // a silent miss reads exactly like "there was no credential."
+    const c = createConnector({
+      name: "callable-param",
+      credentials: async () => ({ region: "us-east-1" }),
+      sdk: async () => ({}),
+      actions: {
+        go: {
+          params: z.any() as never,
+          classify: { kind: "read" },
+          handler: async (p: { token: { value: string } }) => {
+            throw new Error(`upstream rejected ${p.token.value}`);
+          },
+        },
+      },
+    });
+    const env = await c.fetch("go", {
+      token: Object.assign(() => {}, { value: "hunter2" }),
+    } as never);
+    expect(env.status).toBe("error");
+    if (env.status === "error") {
+      expect(env.message).not.toContain("hunter2");
+    }
+  });
+
   it("a revoked proxy in params is an incomplete walk, not a rejection", async () => {
     // Codex P2. `Array.isArray` is not a safe predicate on an arbitrary caller
     // value: on a revoked proxy it throws, and it sat OUTSIDE the `try` the

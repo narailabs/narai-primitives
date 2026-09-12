@@ -557,6 +557,57 @@ describe("scrubSecrets", () => {
     expect(out).not.toContain("AKIA/foo");
   });
 
+  it("consumes escaped delimiters in a value inside a JSON string", () => {
+    // Codex P1, the round after the simple in-string case. A `}` is structural
+    // in plain text and NOT structural inside a serialized string, and the
+    // matcher took the first reading: the marker landed after `abc` and the
+    // rest of the secret survived verbatim. The tell is an escaped quote —
+    // `\"` only appears where a JSON string is quoted inside another — so the
+    // delimiters up to the next UNESCAPED quote belong to the value.
+    for (const secret of ["abc'\"}hunter2", "abc'\"}hunter2 tail", "plain"]) {
+      const input = JSON.stringify({ message: `password=${secret}`, tail: "K" });
+      const out = scrubSecrets(input);
+      expect(out, secret).not.toContain("hunter2");
+      expect(() => JSON.parse(out), out).not.toThrow();
+      expect((JSON.parse(out) as { tail: string }).tail).toBe("K");
+    }
+  });
+
+  it("redacts a backtick-quoted SCALAR value", () => {
+    // Codex P1, and the scalar sibling of the container fix one round earlier:
+    // `util.inspect` reaches for backticks whenever a string holds both quote
+    // kinds, and without a branch of its own the value fell through to the
+    // unquoted pattern, which stops at the first delimiter INSIDE it.
+    for (const obj of [
+      { password: "abc'\"}hunter2", tail: "K" },
+      { apiKey: "x'\"y-hunter2", tail: "K" },
+    ]) {
+      const raw = inspect(obj);
+      expect(raw).toContain("`");
+      const out = scrubSecrets(raw);
+      expect(out, raw).not.toContain("hunter2");
+      // The marker keeps the quoting it replaced, and the sibling survives.
+      expect(out).toContain("`[REDACTED]`");
+      expect(out).toContain("tail: 'K'");
+    }
+  });
+
+  it("does not redact an already-redacted value a second time", () => {
+    // The guard on the in-JSON-string branch. Every other value class excludes
+    // the quote a marker opens with, so none can re-claim one; that branch has
+    // no first-character restriction and re-redacted the escaped-quote
+    // pattern's own output into a broken marker. Idempotence is the assertion
+    // that catches this class generally.
+    for (const input of [
+      String.raw`password=\"hunter2\"`,
+      JSON.stringify({ message: "password=abc'\"}hunter2" }),
+      inspect({ password: "abc'\"}hunter2" }),
+    ]) {
+      const once = scrubSecrets(input);
+      expect(scrubSecrets(once), once).toBe(once);
+    }
+  });
+
   it("keeps a payload parseable when the credential is inside a JSON string", () => {
     // Codex P2. A `key=value` literal embedded in a JSON string got a marker
     // wrapped in quotes the input never had, so the containing string ended
