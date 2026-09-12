@@ -1271,6 +1271,22 @@ type ContainerScan =
  */
 const MEMBER_KEY_RE = /^\\*(["'])[\s\S]*\\*\1$/;
 
+/**
+ * The container pass's marker, deciding quoting by the same rule.
+ *
+ * {@link unquotedMarker} works this out from the key for the scalar patterns.
+ * The rule was written there and applied only there, and this is the site it
+ * was not swept to: the container pass quoted unconditionally, so prose inside
+ * a JSON string — `{"message":"token=[]","tail":"K"}` — came back with a
+ * marker carrying quotes that ended the containing string.
+ */
+function containerMarker(key: string): string {
+  const member = MEMBER_KEY_RE.exec(key);
+  return member !== null
+    ? `${member[1]}${REDACTED_MARKER}${member[1]}`
+    : REDACTED_MARKER;
+}
+
 function unquotedMarker(match: string, key: string, sep: string): string {
   // The value class is deliberately greedy — it excludes `,`, `;`, `)`, `]`
   // and `}` but not a quote — because under-matching a value LEAKS while
@@ -1299,12 +1315,6 @@ function containerEnd(text: string, open: number): ContainerScan {
       else if (c === quote) quote = null;
       continue;
     }
-    // The backtick is a string delimiter here for the same reason the other
-    // two are: `util.inspect` switches to it whenever a string contains both
-    // a single and a double quote, which is exactly what a credential dumped
-    // through an SDK error looks like. Without it the first `}` INSIDE such a
-    // string closed the scan, so the marker landed mid-string, the tail of the
-    // secret survived, and the payload came back malformed as well.
     // The backtick is a string delimiter here for the same reason the other
     // two are: `util.inspect` switches to it whenever a string contains both
     // a single and a double quote, which is exactly what a credential dumped
@@ -1343,8 +1353,17 @@ function scrubContainerValues(text: string, re: RegExp): string {
     if (scan.kind === "unsafe") {
       // Fail closed. The extent is unknown, so everything from the value on
       // is dropped rather than handed to patterns that will not claim it.
-      // Quoted, like the balanced case, so a JSON prefix stays parseable.
-      return out + text.slice(cursor, m.index) + m[1] + m[2] + '"[REDACTED]"';
+      // Quoted only for a MEMBER, exactly as the scalar replacements decide it
+      // — see `unquotedMarker`. Applying that rule to the scalar sites and not
+      // to this one left the same defect here: `{"message":"token=[]"}` is
+      // prose inside a string, and quoting its marker ended the string early.
+      return (
+        out +
+        text.slice(cursor, m.index) +
+        m[1] +
+        m[2] +
+        containerMarker(m[1] as string)
+      );
     }
     const end = scan.index;
     // The marker this function writes is itself bracket-delimited, so an
@@ -1354,10 +1373,11 @@ function scrubContainerValues(text: string, re: RegExp): string {
     // makes `scrubSecrets` non-idempotent, and this file is applied more than
     // once — the depth-unwrapping loop above re-enters it per layer.
     if (text.slice(open, end) === REDACTED_MARKER) continue;
-    // Quoted, like every other value this file replaces (`{"token":abc}` ->
-    // `{"token":"[REDACTED]"}`). A bare marker in a JSON value position is not
-    // valid JSON, which would trade the mangling this fix removes for another.
-    out += text.slice(cursor, m.index) + m[1] + m[2] + '"[REDACTED]"';
+    // Quoted for a MEMBER and bare for prose, the same rule and the same reason
+    // as the scalar sites: a bare marker in a JSON value position is not valid
+    // JSON, and a quoted one inside a JSON string is not either.
+    out +=
+      text.slice(cursor, m.index) + m[1] + m[2] + containerMarker(m[1] as string);
     cursor = end;
     re.lastIndex = end;
   }

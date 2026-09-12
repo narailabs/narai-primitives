@@ -46,6 +46,40 @@ function makeAws(options: {
   });
 }
 
+/**
+ * Best-of-N ratio measurement, INTERLEAVED — the async twin of the helper in
+ * audit.test.ts, and there for the same reason.
+ *
+ * These tests divide one timing by another, so contention only matters when it
+ * lands on one side of the division. Measuring every small sample and then
+ * every large one does exactly that: vitest runs files in parallel, and a
+ * window where the CPU is taken away inflates the ratio by however long it
+ * lasted. Interleaving puts it on both sides; each size keeps its own minimum,
+ * so what survives is the work and not the scheduler. The threshold is
+ * untouched — it is the part with teeth.
+ */
+async function ratioOf(
+  run: (size: number) => Promise<unknown>,
+  smallN: number,
+  largeN: number,
+  samples = 3,
+): Promise<{ small: number; large: number }> {
+  const once = async (n: number): Promise<number> => {
+    const t = process.hrtime.bigint();
+    await run(n);
+    return Number(process.hrtime.bigint() - t) / 1e6;
+  };
+  await once(smallN); // warm the JIT on both paths before either is timed
+  await once(largeN);
+  let small = Infinity;
+  let large = Infinity;
+  for (let i = 0; i < samples; i++) {
+    small = Math.min(small, await once(smallN));
+    large = Math.min(large, await once(largeN));
+  }
+  return { small: Math.max(small, 0.5), large };
+}
+
 describe("createConnector — basic properties", () => {
   it("throws if name is empty", () => {
     expect(() =>
@@ -2522,7 +2556,7 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
     }
   });
 
-  it("formats a large validation failure in linear time", async () => {
+  it("formats a large validation failure in linear time", { retry: 2 }, async () => {
     // One issue per rejected element against one candidate per element is a
     // cross-product, and the node bound did not reach it: 8k elements measured
     // 134ms against 35ms for 4k. Doubling the input must not quadruple the
@@ -2562,15 +2596,13 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
       }
       return best;
     };
-    await time(1000); // warm up the JIT so the ratio measures the algorithm
-    const small = await time(2000);
-    const large = await time(8000);
+    const { small, large } = await ratioOf(time, 2000, 8000);
     // 4x the input. Linear predicts ~4x, quadratic ~16x. A threshold of 8
     // separates them with room for noise; the pre-fix code measured ~13x.
-    expect(large).toBeLessThan(Math.max(small, 0.5) * 8);
+    expect(large).toBeLessThan(small * 8);
   }, 120_000);
 
-  it("walks a deeply nested object in linear time", async () => {
+  it("walks a deeply nested object in linear time", { retry: 2 }, async () => {
     // Regression (Codex P2). The walker rebuilt the full dotted path at every
     // level and rescanned that growing string with two sensitivity regexes, so
     // depth cost O(depth^2) — measured, a 20,000-deep chain of ordinary
@@ -2606,12 +2638,10 @@ describe("createConnector.fetch — secret redaction in error messages", () => {
       }
       return best;
     };
-    await time(2_000); // warm up the JIT so the ratio measures the algorithm
-    const small = await time(5_000);
-    const large = await time(20_000);
+    const { small, large } = await ratioOf(time, 5_000, 20_000);
     // 4x the depth. Linear predicts ~4x, quadratic ~16x. A threshold of 8
     // separates them with room for noise; measured 3.3x after the fix.
-    expect(large).toBeLessThan(Math.max(small, 0.5) * 8);
+    expect(large).toBeLessThan(small * 8);
   }, 240_000);
 
   it("redacts a one-character echoed credential", async () => {

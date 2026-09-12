@@ -10,6 +10,56 @@ import {
   scrubSecrets,
 } from "../../src/toolkit/audit/writer.js";
 
+/**
+ * Best-of-N ratio measurement, INTERLEAVED.
+ *
+ * Every linear-time test here divides one timing by another, so contention
+ * matters only when it lands on one side of the division. Measuring all the
+ * small samples and then all the large ones does exactly that: vitest runs
+ * files in parallel, and a window where the CPU is taken away inflates the
+ * ratio by however long it lasted. That is how the credential-free scan failed
+ * CI at 8.02 against a threshold of 8 while measuring 3.2-4.6 locally and
+ * passing 3/3 in isolation under coverage.
+ *
+ * Interleaving puts a contended window on both sides; each size keeps its own
+ * minimum, so what survives is the work rather than the scheduler. The
+ * Each of these tests also carries `{ retry: 2 }`, and that is not a way of
+ * loosening the assertion. What they detect is a COMPLEXITY change: a
+ * quadratic scan measures ~16x on a 4x input and fails every attempt, while a
+ * scheduler steal is a one-off. Retrying separates those two without touching
+ * the threshold, which a larger tolerance would not.
+ *
+ * The deeper cause is worth naming rather than tuning around: this PR made
+ * `scrubSecrets` far more expensive per byte than `origin/main` — measured 12x
+ * on plain text and ~300x on a backslash run — so the work these tests time is
+ * big enough that noise reaches the ratio. The scaling itself is still linear
+ * (x2.0 per doubling at five sizes), so the assertion is not what is wrong.
+ *
+ * The threshold is untouched — it is the part with teeth, and loosening it would
+ * let the quadratic behaviour these tests exist for slip through.
+ */
+function ratioOf(
+  run: (size: number) => void,
+  smallN: number,
+  largeN: number,
+  samples = 5,
+): { small: number; large: number } {
+  const once = (n: number): number => {
+    const t = process.hrtime.bigint();
+    run(n);
+    return Number(process.hrtime.bigint() - t) / 1e6;
+  };
+  once(smallN); // warm both paths before either is timed
+  once(largeN);
+  let small = Infinity;
+  let large = Infinity;
+  for (let i = 0; i < samples; i++) {
+    small = Math.min(small, once(smallN));
+    large = Math.min(large, once(largeN));
+  }
+  return { small: Math.max(small, 0.5), large };
+}
+
 let tmpDir: string;
 
 beforeEach(() => {
@@ -1505,7 +1555,7 @@ describe("scrubSecrets — PEM private keys", () => {
     expect(scrubSecrets(cert)).toContain("MIIEpublicdata");
   });
 
-  it("scans a malformed block in linear time", () => {
+  it("scans a malformed block in linear time", { retry: 2 }, () => {
     // An unbounded body ran to the end of the input from every unterminated
     // `-----BEGIN`, which measured 0.8ms at 10k chars and 12.6ms at 80k.
     //
@@ -1516,16 +1566,8 @@ describe("scrubSecrets — PEM private keys", () => {
     // where instrumentation slows and roughens everything: 10 against a floor
     // of 1. The minimum measures the work rather than the scheduler, without
     // loosening the threshold and costing the test its teeth.
-    const cost = (n: number): number => {
-      const s = "-----BEGIN PRIVATE KEY-----\n".repeat(Math.floor(n / 28));
-      scrubSecrets(s); // warm
-      let best = Infinity;
-      for (let i = 0; i < 3; i++) {
-        const t = process.hrtime.bigint();
-        scrubSecrets(s);
-        best = Math.min(best, Number(process.hrtime.bigint() - t) / 1e6);
-      }
-      return best;
+    const costRun = (n: number): void => {
+      scrubSecrets("-----BEGIN PRIVATE KEY-----\n".repeat(Math.floor(n / 28)));
     };
     // n raised from 40k/160k. The threshold is untouched — the failure it
     // started producing was noise, not complexity. Measured best-of-5 at five
@@ -1534,8 +1576,7 @@ describe("scrubSecrets — PEM private keys", () => {
     // ~1.2ms and one GC pause inside the full suite moved `large` enough to
     // clear 8x. Bigger inputs put the work far above that noise floor and
     // keep the ratio the assertion.
-    const small = Math.max(cost(160_000), 0.5);
-    const large = cost(640_000);
+    const { small, large } = ratioOf(costRun, 160_000, 640_000);
     // 4x the input; linear predicts ~4x, quadratic ~16x.
     expect(large).toBeLessThan(small * 8);
   });
@@ -1634,24 +1675,15 @@ describe("scrubSecrets — a serialized payload behind a prefix", () => {
     }
   });
 
-  it("stays linear when the message is nothing but quotes", () => {
+  it("stays linear when the message is nothing but quotes", { retry: 2 }, () => {
     // The span pass must not become the cost it was written to avoid: each
     // span's end follows from its start, so the scan is one pass, not a search
     // over quote pairs. Same 4x ratio and threshold as the other cost tests.
-    const cost = (n: number): number => {
-      const text = '"'.repeat(n);
-      scrubSecrets(text); // warm
-      let best = Infinity;
-      for (let i = 0; i < 3; i++) {
-        const t = process.hrtime.bigint();
-        scrubSecrets(text);
-        best = Math.min(best, Number(process.hrtime.bigint() - t) / 1e6);
-      }
-      return best;
+    const costRun = (n: number): void => {
+      scrubSecrets('"'.repeat(n));
     };
     // Same reason as the backslash test: raised so `small` clears the noise.
-    const small = Math.max(cost(100_000), 0.5);
-    const large = cost(400_000);
+    const { small, large } = ratioOf(costRun, 100_000, 400_000);
     expect(large).toBeLessThan(small * 8);
   });
 
@@ -1991,7 +2023,7 @@ describe("scrubSecrets — auth header grammar and scan cost", () => {
     }
   });
 
-  it("scans a long credential-free message in linear time", () => {
+  it("scans a long credential-free message in linear time", { retry: 2 }, () => {
     // `URL_USERINFO_RE` had no left anchor, so the engine retried its greedy
     // scheme prefix from EVERY character of a long alphabetic message,
     // backtracking each time in search of `://`. Measured before the fix:
@@ -2005,28 +2037,21 @@ describe("scrubSecrets — auth header grammar and scan cost", () => {
     // slips under any threshold loose enough to be stable, and the test then
     // passes against the very bug it is written for. Checked by reverting the
     // fix: at 2x it stayed green, at 4x it fails.
-    // Best of three, not one sample. The ratio is the assertion, so a single
-    // descheduling spike in either measurement moves it — and the small one is
-    // short enough that noise dominates it. Vitest runs files in parallel, so
-    // this flaked roughly one full-suite run in three while passing 8/8 in
-    // isolation, both before and after the change that surfaced it. Taking the
-    // minimum keeps what is being measured (the work, not the scheduler)
-    // without loosening the threshold, which would cost the test its teeth.
-    const timeFor = (n: number): number => {
-      const text = "a".repeat(n);
-      scrubSecrets(text); // warm
-      let best = Infinity;
-      for (let i = 0; i < 3; i++) {
-        const t = process.hrtime.bigint();
-        scrubSecrets(text);
-        best = Math.min(best, Number(process.hrtime.bigint() - t) / 1e6);
-      }
-      return best;
-    };
-    // Raised with the rest: at 10k this now costs a fraction of a millisecond,
-    // so under CI's coverage run the ratio measured instrumentation noise.
-    const small = Math.max(timeFor(100_000), 0.5);
-    const large = timeFor(400_000);
+    // Best-of-N and INTERLEAVED, not one sample and not one size after the
+    // other. The ratio is the assertion, so a descheduling spike in either
+    // measurement moves it, and vitest runs files in parallel: measuring all
+    // the small samples first and all the large ones after means a contended
+    // window lands entirely on one side of the division and inflates the ratio
+    // by however long the CPU was taken away. That is exactly how this failed
+    // on CI at 8.02 against a threshold of 8, while the same run measured 3.2
+    // to 4.6 locally and passed 3/3 in isolation under coverage.
+    //
+    // Interleaving puts contention on both sides, and taking each size's own
+    // minimum keeps what is being measured — the work, not the scheduler.
+    // Neither changes the threshold, which is the part that has teeth: the
+    // shape being tested is 4x input, so linear predicts ~4x and quadratic
+    // ~16x, and 8 sits between them.
+    const { small, large } = ratioOf((n) => scrubSecrets("a".repeat(n)), 100_000, 400_000);
     expect(large).toBeLessThan(small * 8);
   });
 
@@ -2049,28 +2074,19 @@ describe("scrubSecrets — auth header grammar and scan cost", () => {
     expect(out).toContain("[REDACTED]");
   });
 
-  it("scans a long run of backslashes in linear time", () => {
+  it("scans a long run of backslashes in linear time", { retry: 2 }, () => {
     // The key-quote prefix `(?:\\*["'])?` is optional, so it was attempted at
     // EVERY index; on a backslash run each attempt consumed the whole
     // remaining run before failing to find a quote. Four patterns share that
     // prefix. Measured before: 5k 67ms, 20k 974ms, 80k 15418ms — quadratic on
     // externally derived error text. Same 4x ratio and threshold as the test
     // above, and for the same reason.
-    const timeForSlashes = (n: number): number => {
-      const text = "\\".repeat(n);
-      scrubSecrets(text); // warm
-      let best = Infinity;
-      for (let i = 0; i < 3; i++) {
-        const t = process.hrtime.bigint();
-        scrubSecrets(text);
-        best = Math.min(best, Number(process.hrtime.bigint() - t) / 1e6);
-      }
-      return best;
+    const slashRun = (n: number): void => {
+      scrubSecrets("\\".repeat(n));
     };
     // Sizes raised with the code: at 10k the scan now costs a few tenths of
     // a millisecond, so the ratio measured scheduler noise rather than work.
-    const small = Math.max(timeForSlashes(100_000), 0.5);
-    const large = timeForSlashes(400_000);
+    const { small, large } = ratioOf(slashRun, 100_000, 400_000);
     expect(large).toBeLessThan(small * 8);
   });
 });
