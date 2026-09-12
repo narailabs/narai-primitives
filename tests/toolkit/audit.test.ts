@@ -448,6 +448,47 @@ describe("scrubSecrets", () => {
     }
   });
 
+  it("redacts a container named credentials, in both spellings", () => {
+    // Codex P1. `isCredentialContainerPath("credentials")` was already true
+    // and the connector walk marks everything beneath it sensitive; only the
+    // shape scrubber disagreed, so a hook that serializes an environment-derived
+    // bundle put it on stdout whole. Both matchers needed it: KEY_START anchors
+    // on the separator in `credentials`, and nothing anchors `awsCredentials`
+    // except the case-sensitive camel transition.
+    for (const k of [
+      "credentials",
+      "credential",
+      "awsCredentials",
+      "appCredential",
+    ]) {
+      for (const v of [`{"pat":"hunter2"}`, `["hunter2"]`]) {
+        const out = scrubSecrets(`{"${k}":${v}}`);
+        expect(out, `${k} -> ${v}`).not.toContain("hunter2");
+        expect(out, `${k} -> ${v}`).toContain("[REDACTED]");
+      }
+    }
+  });
+
+  it("keeps a SCALAR credentials value, which is a path and not a secret", () => {
+    // The other half of the rule above, and the reason `credentials?` is in the
+    // container-only vocabulary rather than the shared one: the container
+    // matchers carry a `(?=[{[])` lookahead, so a filename keeps the diagnostic
+    // that redact-rather-than-drop exists to preserve.
+    for (const k of ["credentials", "credential", "awsCredentials"]) {
+      expect(scrubSecrets(`{"${k}":"./creds.json"}`)).toContain("./creds.json");
+    }
+  });
+
+  it("does not treat a run-on credentials word as a container key", () => {
+    // The run-on exclusion documented above SENSITIVE_WORDS, checked against
+    // the word this change added rather than assumed to carry over.
+    for (const k of ["mycredentials", "credentialsx", "credentialing"]) {
+      expect(scrubSecrets(`{"${k}":{"ordinary":"safe"}}`)).toBe(
+        `{"${k}":{"ordinary":"safe"}}`,
+      );
+    }
+  });
+
   it("redacts an encrypted PEM including its RFC 1421 metadata", () => {
     // Codex P1: `Proc-Type:` and `DEK-Info:` carry `:`, `,` and `-`, which are
     // outside the base64 body class, so the complete-block match failed and

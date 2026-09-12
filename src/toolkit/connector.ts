@@ -21,6 +21,7 @@ import { parseAgentArgs } from "./agent_cli.js";
 import {
   createAuditWriter,
   isCredentialContainerPath,
+  isPluralCredentialContainerPath,
   isSensitiveFieldPath,
   mentionsSensitiveField,
   scrubSecrets,
@@ -764,6 +765,34 @@ function makeEchoRedactor(candidates: Iterable<string>): {
  * incomplete walk rather than an escaped exception. Returns whether the walk
  * COMPLETED, so the caller can fail closed on a partial set.
  */
+/**
+ * A plural service-prefixed key whose value is actually a credential CONTAINER.
+ *
+ * The name alone cannot answer this. `github_tokens` and `max_tokens` are the
+ * same shape, and {@link isPluralCredentialContainerPath} documents why the
+ * path vocabulary refuses to guess between them: treating every plural
+ * compound as sensitive redacts the token COUNTS an LLM toolkit reports
+ * everywhere, deleting the diagnostic that the redact-rather-than-drop design
+ * exists to keep.
+ *
+ * The value settles it, and only this collector has the value. A count is a
+ * number; a bundle is an array or an object. So `{github_tokens: ["hunter2"]}`
+ * contributes its entries as redaction candidates and `{max_tokens: 4096}`
+ * contributes nothing — including the string spelling `{max_tokens: "4096"}`,
+ * which is a scalar either way.
+ *
+ * Deliberately not folded into `isSensitiveFieldPath`. The other caller of
+ * that predicate decides whether to DROP a validation message whole and holds
+ * no value to ask about, so a value-aware rule cannot live there.
+ */
+function isPluralCredentialContainer(key: string, value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    isPluralCredentialContainerPath(key)
+  );
+}
+
 function collectSensitiveInputStrings(input: unknown, out: Set<string>): boolean {
   // Keyed on the object AND on whether it was reached sensitively, not on the
   // object alone. One object can be reachable by two paths — a passthrough
@@ -826,7 +855,8 @@ function collectSensitiveInputStrings(input: unknown, out: Set<string>): boolean
           sensitive:
             cur.sensitive ||
             isSensitiveFieldPath(k) ||
-            isCredentialContainerPath(k),
+            isCredentialContainerPath(k) ||
+            isPluralCredentialContainer(k, child),
         });
       }
       continue;
@@ -842,7 +872,8 @@ function collectSensitiveInputStrings(input: unknown, out: Set<string>): boolean
         sensitive:
           cur.sensitive ||
           isSensitiveFieldPath(k) ||
-          isCredentialContainerPath(k),
+          isCredentialContainerPath(k) ||
+          isPluralCredentialContainer(k, child),
       });
     }
   }

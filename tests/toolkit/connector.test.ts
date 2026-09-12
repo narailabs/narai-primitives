@@ -379,6 +379,84 @@ describe("createConnector.fetch — validation errors", () => {
     }
   });
 
+  it("a plural service-prefixed credential CONTAINER is a redaction candidate", async () => {
+    // Codex P1. `github_tokens` is the residue SENSITIVE_PATH_COMPOUND_RE
+    // documents: the singular compound matches, the plural does not, so the
+    // candidate set was empty and a handler echoing the token put it bare on
+    // stdout. The name alone cannot decide it — `max_tokens` is the same shape
+    // — so the collector pairs the name with the value, and a bundle is a
+    // container while a count is a scalar.
+    for (const key of [
+      "github_tokens",
+      "githubTokens",
+      "db_passwords",
+      "userApiKeys",
+    ]) {
+      for (const value of [["hunter2"], { primary: "hunter2" }]) {
+        const c = createConnector({
+          name: `plural-${key}`,
+          credentials: async () => ({ region: "us-east-1" }),
+          sdk: async () => ({}),
+          actions: {
+            go: {
+              params: z.object({ [key]: z.any() }) as never,
+              classify: { kind: "read" },
+              handler: async () => {
+                throw new Error("upstream rejected hunter2");
+              },
+            },
+          },
+        });
+        const env = await c.fetch("go", { [key]: value });
+        expect(env.status).toBe("error");
+        if (env.status === "error") {
+          expect(env.message, `${key} = ${JSON.stringify(value)}`).not.toContain(
+            "hunter2",
+          );
+        }
+      }
+    }
+  });
+
+  it("a plural COUNT param keeps its diagnostic, number or string", async () => {
+    // The counterpart, and the whole reason the plural rule is value-aware
+    // rather than a wider regex. These are the commonest benign parameters in
+    // an LLM toolkit — `src/toolkit/usage/` is built on them — and widening
+    // SENSITIVE_PATH_COMPOUND_RE with `s?` redacts every one of them. A count
+    // is a scalar in both spellings callers actually send.
+    for (const key of [
+      "max_tokens",
+      "maxTokens",
+      "prompt_tokens",
+      "completion_tokens",
+      "total_tokens",
+    ]) {
+      for (const value of [4096, "4096"]) {
+        const c = createConnector({
+          name: `count-${key}-${typeof value}`,
+          credentials: async () => ({ region: "us-east-1" }),
+          sdk: async () => ({}),
+          actions: {
+            go: {
+              params: z.object({ [key]: z.any() }) as never,
+              classify: { kind: "read" },
+              handler: async () => {
+                throw new Error("upstream said limit-exceeded-4096");
+              },
+            },
+          },
+        });
+        const env = await c.fetch("go", { [key]: value });
+        expect(env.status).toBe("error");
+        if (env.status === "error") {
+          expect(env.message, `${key} = ${JSON.stringify(value)}`).toContain(
+            "limit-exceeded-4096",
+          );
+        }
+      }
+    }
+  });
+
   it("a benign count param keeps its diagnostic", async () => {
     // The counterpart of the rule above: widening the field-name vocabulary
     // must not start blanking ordinary messages.

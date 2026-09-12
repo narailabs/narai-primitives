@@ -665,6 +665,53 @@ export function isSensitiveFieldPath(path: string): boolean {
 }
 
 /**
+ * A PLURAL credential word behind an arbitrary prefix: `github_tokens`,
+ * `githubTokens`, `db_passwords`.
+ *
+ * The residue {@link SENSITIVE_PATH_COMPOUND_RE} documents and declines to
+ * cover. Adding `s?` there is the obvious fix and it is the wrong one: with an
+ * arbitrary prefix the plural collides with counts, so `max_tokens`,
+ * `prompt_tokens` and `total_tokens` — among the commonest benign parameters
+ * in an LLM toolkit, and the whole subject of `src/toolkit/usage/` — start
+ * being treated as credentials. Measured, not assumed: that change redacts all
+ * five counting spellings and fails two tests whose names are the policy.
+ *
+ * So the plural is split out instead of widened in, and it answers a narrower
+ * question that the caller completes. A count is a NUMBER and a credential
+ * bundle is a CONTAINER, so the collector in connector.ts pairs this predicate
+ * with the value's shape and only treats `github_tokens` as sensitive when its
+ * value is an array or an object. `{max_tokens: 4096}` is a number and stays a
+ * diagnostic; `{github_tokens: ["hunter2"]}` is a container and its entries
+ * become redaction candidates.
+ *
+ * NOT part of {@link isSensitiveFieldPath}, and that is the point. That
+ * predicate also decides whether to drop a validation message whole, where no
+ * value is in hand to ask about — the exact call site where widening the rule
+ * would delete a benign count's diagnostic.
+ *
+ * The compound rule's other narrowing is inherited: the word is TERMINAL and a
+ * separator is required, so `token_counts`, `password_hints` and the run-on
+ * `mytokens` still do not match.
+ */
+const SENSITIVE_PATH_COMPOUND_PLURAL_RE = new RegExp(
+  `(?:^|[.\\[\\]])[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*[_-](?:${SENSITIVE_KEY_WORDS})s(?=$|[.\\[\\]])`,
+  "i",
+);
+/** The camel spelling, case-sensitive for the reason given above {@link SENSITIVE_PATH_CAMEL_RE}. */
+const SENSITIVE_PATH_CAMEL_PLURAL_RE = new RegExp(
+  `(?:^|[.\\[\\]])[A-Za-z0-9]*[a-z0-9](?:${SENSITIVE_KEY_WORDS.replace(
+    /[a-z]+/g,
+    (w) => w.charAt(0).toUpperCase() + w.slice(1),
+  )})s(?=$|[.\\[\\]])`,
+);
+export function isPluralCredentialContainerPath(path: string): boolean {
+  return (
+    SENSITIVE_PATH_COMPOUND_PLURAL_RE.test(path) ||
+    SENSITIVE_PATH_CAMEL_PLURAL_RE.test(path)
+  );
+}
+
+/**
  * Does free-text prose *name* a credential field?
  *
  * `isSensitiveFieldPath` above keys off a structured path (`auth.token`,
@@ -1055,12 +1102,42 @@ const REDACTED_MARKER = "[REDACTED]";
  * scalar patterns kept them. The same trap is documented above SENSITIVE_WORDS
  * for KEY_START, and this walked into it from the other side.
  */
+/**
+ * The container-only vocabulary: {@link SENSITIVE_KEY_WORDS} plus `credentials?`.
+ *
+ * `credential`/`credentials` names a CONTAINER of secrets, never a secret
+ * itself, so it belongs here rather than in the shared vocabulary. The rest of
+ * the codebase already treated it that way — {@link isCredentialContainerPath}
+ * is true for it and the walk in connector.ts marks everything beneath it
+ * sensitive — and only the shape scrubber disagreed, so
+ * `{"credentials":{"pat":"hunter2"}}` came back whole and a hook that
+ * serializes an environment-derived bundle put the secret on stdout.
+ *
+ * It must NOT reach the scalar patterns, for the reason documented above
+ * {@link isCredentialContainerPath}: `credentials: "./creds.json"` is a path
+ * to a file, and blanking it costs a diagnostic while hiding nothing. The
+ * `(?=[{[])` lookahead on both matchers below is what holds that line — they
+ * fire only when the value opens a container.
+ */
+const CONTAINER_KEY_WORDS = `${SENSITIVE_KEY_WORDS}|credentials?`;
+/**
+ * The camel spelling of the same vocabulary, and it is a separate constant for
+ * the reason stated above {@link KEY_CAMEL}: a case-SENSITIVE match is the only
+ * thing that can see the transition in `awsCredentials`. Fixing only the `gi`
+ * matcher above left that exact sibling leaking — `{"awsCredentials":{...}}`
+ * has no separator for KEY_START to anchor on.
+ */
+const CONTAINER_KEY_CAMEL = `${KQ}(?<![A-Za-z0-9])[A-Za-z0-9]*[a-z0-9](?:${CONTAINER_KEY_WORDS.replace(
+  /[a-z]+/g,
+  (w) => w.charAt(0).toUpperCase() + w.slice(1),
+)})(?![A-Za-z0-9])${KQ}`;
+
 const SENSITIVE_CONTAINER_KEY_RE = new RegExp(
-  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${SENSITIVE_KEY_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)(?=[{[])`,
+  `(${KQ}${KEY_START}${KEY_PREFIX}(?:${CONTAINER_KEY_WORDS})${KEY_END}${KQ})(\\s*[:=]\\s*)(?=[{[])`,
   "gi",
 );
 const SENSITIVE_CONTAINER_KEY_CAMEL_RE = new RegExp(
-  `(${KEY_CAMEL})(\\s*[:=]\\s*)(?=[{[])`,
+  `(${CONTAINER_KEY_CAMEL})(\\s*[:=]\\s*)(?=[{[])`,
   "g",
 );
 
