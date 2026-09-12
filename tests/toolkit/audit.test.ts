@@ -316,9 +316,9 @@ describe("scrubSecrets", () => {
     expect(scrubSecrets(`{"password":hunter2}`)).toBe(
       `{"password":"[REDACTED]"}`,
     );
-    // `=` keeps the shape it arrived in; only a `:` member gets quotes, and
-    // only because `{"token":[REDACTED]}` would not parse. See
-    // `unquotedMarker`. The input had no quotes, so neither does the marker.
+    // A bare phrase keeps the shape it arrived in; only a MEMBER gets quotes,
+    // and only because `{"token":[REDACTED]}` would not parse. The member test
+    // is the quoted key, not the separator — see `unquotedMarker`.
     expect(scrubSecrets("password=hunter2")).toBe("password=[REDACTED]");
     expect(scrubSecrets(`{"token":12345}`)).toBe(`{"token":"[REDACTED]"}`);
   });
@@ -555,6 +555,38 @@ describe("scrubSecrets", () => {
     );
     expect(out).not.toContain("hunter2");
     expect(out).not.toContain("AKIA/foo");
+  });
+
+  it("quotes the marker for a MEMBER and not for prose, whatever the separator", () => {
+    // Codex P2 against my own previous fix here, which keyed on the separator.
+    // `:` appears in prose as readily as in JSON, so `prefix token: abc` inside
+    // a string was treated as an object member and got quotes that ended the
+    // containing string: `{"message":"prefix token: "[REDACTED]"","tail":"K"}`.
+    // This shape is the one case in this file where origin/main was VALID and
+    // this branch was not — main leaves the secret alone entirely — so it is a
+    // regression this PR introduced rather than a gap it failed to close.
+    //
+    // The key answers it independently of the separator: a member has a quoted
+    // key, prose does not.
+    const prose = [
+      JSON.stringify({ message: "prefix token: abc", tail: "K" }),
+      JSON.stringify({ message: "prefix password: hunter2", tail: "K" }),
+    ];
+    for (const input of prose) {
+      const out = scrubSecrets(input);
+      expect(out).not.toContain("hunter2");
+      expect(out).not.toContain("abc");
+      expect(() => JSON.parse(out), out).not.toThrow();
+      expect((JSON.parse(out) as { tail: string }).tail).toBe("K");
+    }
+    // A real member still gets the quotes it needs, with either separator.
+    expect(scrubSecrets(`{"token":12345}`)).toBe(`{"token":"[REDACTED]"}`);
+    expect(scrubSecrets(`{"password": hunter2}`)).toBe(
+      `{"password": "[REDACTED]"}`,
+    );
+    // And the quote it gets is the quote its key carried: closing a repr
+    // member with `"` is as unparseable as not closing it.
+    expect(scrubSecrets(`{'token': 12345}`)).toBe(`{'token': '[REDACTED]'}`);
   });
 
   it("consumes escaped delimiters in a value inside a JSON string", () => {

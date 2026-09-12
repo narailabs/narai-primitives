@@ -1252,17 +1252,25 @@ type ContainerScan =
  * The two callers below used to quote unconditionally, and each spelling is
  * wrong in the other's context:
  *
- *   - `{"githubToken":123456}` — a real JSON key with a number. Emitting a
+ *   - `{"githubToken":123456}` — a real JSON member with a number. Emitting a
  *     bare marker gives `{"githubToken":[REDACTED]}`, which does not parse.
- *   - `{"message":"password=hunter2"}` — a `key=value` literal INSIDE a JSON
- *     string. Emitting a quoted marker gives `{"message":"password="[REDACTED]","
- *     which does not parse either, because the quotes were never in the input.
+ *   - `{"message":"password=hunter2"}` — a credential phrase INSIDE a JSON
+ *     string. Emitting a quoted marker ends the containing string early.
  *
- * The separator says which one this is: a JSON member is `key: value`, and a
- * `key=value` literal is what a message embeds. So `:` keeps the quotes it
- * needs and `=` keeps the shape it arrived in. Neither case is a leak — both
- * are the payload-integrity property the rest of this file is built around.
+ * The separator was the first answer to that and it was the wrong one: `:`
+ * appears in prose as readily as in JSON, so `{"message":"prefix token: abc"}`
+ * was treated as a member and got quotes it could not carry. The KEY says it
+ * instead, and says it independently of the separator — a JSON or repr member
+ * has a QUOTED key, and a phrase inside a string does not. The key group
+ * already captures its own surrounding quotes, so the test is just whether the
+ * capture kept them.
+ *
+ * The quote it kept is also the quote to emit. A Python repr member is
+ * `{'token': 123}`, and closing it with `"` would be as unparseable as not
+ * closing it at all.
  */
+const MEMBER_KEY_RE = /^\\*(["'])[\s\S]*\\*\1$/;
+
 function unquotedMarker(match: string, key: string, sep: string): string {
   // The value class is deliberately greedy — it excludes `,`, `;`, `)`, `]`
   // and `}` but not a quote — because under-matching a value LEAKS while
@@ -1271,8 +1279,9 @@ function unquotedMarker(match: string, key: string, sep: string): string {
   // match ended on instead of narrowing the class and trading a malformed
   // payload for an escaped secret.
   const tail = /["']$/.exec(match)?.[0] ?? "";
-  return sep.includes(":")
-    ? `${key}${sep}"[REDACTED]"${tail}`
+  const member = MEMBER_KEY_RE.exec(key);
+  return member !== null
+    ? `${key}${sep}${member[1]}[REDACTED]${member[1]}${tail}`
     : `${key}${sep}[REDACTED]${tail}`;
 }
 
