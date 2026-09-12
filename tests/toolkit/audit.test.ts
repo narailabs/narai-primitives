@@ -607,6 +607,40 @@ describe("scrubSecrets", () => {
     expect(out).not.toContain("AKIA/foo");
   });
 
+  it("keeps a container member quoted when the key matched at its SUFFIX", () => {
+    // Codex P2, against my own previous commit. The container matchers anchor
+    // on KEY_START, which `_` satisfies, so on `{"github_token":…}` the match
+    // begins at `token` and the capture is `token"` — no opening quote. A
+    // member test that reads the capture alone therefore called a real JSON
+    // member prose and emitted a bare marker into a value position.
+    //
+    // Worth pinning in both directions, because the previous commit fixed the
+    // prose half and broke this half in the same edit.
+    for (const k of [
+      "github_token",
+      "github_tokens",
+      "github_password",
+      "token",
+      "credentials",
+      "githubToken",
+    ]) {
+      const out = scrubSecrets(
+        JSON.stringify({ [k]: { value: "hunter2" }, tail: "K" }),
+      );
+      expect(out, k).not.toContain("hunter2");
+      expect(() => JSON.parse(out), `${k} -> ${out}`).not.toThrow();
+      expect((JSON.parse(out) as { tail: string }).tail, k).toBe("K");
+    }
+    // And the prose half still holds: a quote precedes that key run too — the
+    // containing string's own — but the capture has no trailing quote, so it
+    // is still read as prose and the marker stays bare.
+    const prose = scrubSecrets(
+      JSON.stringify({ message: "github_token=[]", tail: "K" }),
+    );
+    expect(() => JSON.parse(prose), prose).not.toThrow();
+    expect(prose).toContain("github_token=[REDACTED]");
+  });
+
   it("quotes the marker for a MEMBER and not for prose, whatever the separator", () => {
     // Codex P2 against my own previous fix here, which keyed on the separator.
     // `:` appears in prose as readily as in JSON, so `prefix token: abc` inside

@@ -1272,18 +1272,40 @@ type ContainerScan =
 const MEMBER_KEY_RE = /^\\*(["'])[\s\S]*\\*\1$/;
 
 /**
- * The container pass's marker, deciding quoting by the same rule.
+ * The quote a container key is a MEMBER of, or `null` for prose.
  *
- * {@link unquotedMarker} works this out from the key for the scalar patterns.
- * The rule was written there and applied only there, and this is the site it
- * was not swept to: the container pass quoted unconditionally, so prose inside
- * a JSON string — `{"message":"token=[]","tail":"K"}` — came back with a
- * marker carrying quotes that ended the containing string.
+ * {@link unquotedMarker} answers this from the capture alone, and the container
+ * matchers cannot: `KEY_START` is satisfied by `_`, so on `{"github_token":…}`
+ * the match begins at the SUFFIX and the capture is `token"` — no opening
+ * quote, so a capture-only test called a real JSON member prose and emitted a
+ * bare marker into a value position. That is not valid JSON, which is the same
+ * defect the member rule was introduced to remove, arriving from the other
+ * side one commit later.
+ *
+ * So when the capture is not self-evidently a member, walk back over the rest
+ * of the key and look at what precedes it. Both ends must agree: a phrase like
+ * `{"message":"github_token=[]"}` also has a quote before the key run — the
+ * containing string's own — but its capture has no trailing quote, so it is
+ * still correctly read as prose.
  */
-function containerMarker(key: string): string {
-  const member = MEMBER_KEY_RE.exec(key);
-  return member !== null
-    ? `${member[1]}${REDACTED_MARKER}${member[1]}`
+function memberQuote(text: string, matchStart: number, key: string): string | null {
+  const inCapture = MEMBER_KEY_RE.exec(key);
+  if (inCapture !== null) return inCapture[1] as string;
+  let i = matchStart;
+  while (i > 0 && /[A-Za-z0-9_.-]/.test(text[i - 1] as string)) i--;
+  const before = text[i - 1];
+  if (before !== '"' && before !== "'") return null;
+  return key.endsWith(before) ? before : null;
+}
+
+/**
+ * The container pass's marker, deciding quoting by the same rule as the scalar
+ * sites — see {@link unquotedMarker} — with the key resolved by
+ * {@link memberQuote} rather than read out of the capture.
+ */
+function containerMarker(quote: string | null): string {
+  return quote !== null
+    ? `${quote}${REDACTED_MARKER}${quote}`
     : REDACTED_MARKER;
 }
 
@@ -1362,7 +1384,7 @@ function scrubContainerValues(text: string, re: RegExp): string {
         text.slice(cursor, m.index) +
         m[1] +
         m[2] +
-        containerMarker(m[1] as string)
+        containerMarker(memberQuote(text, m.index, m[1] as string))
       );
     }
     const end = scan.index;
@@ -1377,7 +1399,10 @@ function scrubContainerValues(text: string, re: RegExp): string {
     // as the scalar sites: a bare marker in a JSON value position is not valid
     // JSON, and a quoted one inside a JSON string is not either.
     out +=
-      text.slice(cursor, m.index) + m[1] + m[2] + containerMarker(m[1] as string);
+      text.slice(cursor, m.index) +
+      m[1] +
+      m[2] +
+      containerMarker(memberQuote(text, m.index, m[1] as string));
     cursor = end;
     re.lastIndex = end;
   }
