@@ -561,15 +561,16 @@ export function createConnector<TSdk = unknown>(
     // hit the case where stdout is empty and the failure is text on stderr.
     // Exit code is 2 (CLI misuse), distinct from 1 (handled action-level error).
     const writeArgErrorEnvelope = (action: string, message: string): void => {
+      const scrubbedMessage = scrubSecrets(message);
       const env = {
         status: "error",
         action,
         error_code: "VALIDATION_ERROR",
-        message,
+        message: scrubbedMessage,
         retriable: false,
       };
       process.stdout.write(JSON.stringify(env) + "\n");
-      process.stderr.write(`argument error: ${message}\n`);
+      process.stderr.write(`argument error: ${scrubbedMessage}\n`);
     };
 
     let parsed;
@@ -694,7 +695,7 @@ function errorEnvelope(
     status: "error",
     action,
     error_code: code,
-    message,
+    message: scrubSecrets(message),
     retriable,
   };
 }
@@ -738,13 +739,15 @@ function mapAndBuildError<TSdk>(
     retriable = RETRIABLE_CODES.has(code);
   }
 
+  message = scrubSecrets(message);
+
   const scope = safeScope(cfg, { sdk, action, params });
 
   auditAction(audit, cfg.name, action, "error", start);
   recorder({
     action,
     kind: code.toLowerCase(),
-    context: scrubSecrets(message),
+    context: message,
     scope,
   });
 
@@ -754,7 +757,7 @@ function mapAndBuildError<TSdk>(
     facts: {
       kind: code.toLowerCase(),
       action,
-      context: scrubSecrets(message),
+      context: message,
     },
   };
   if (cfg.runtime?.cwd !== undefined) hitOpts.cwd = cfg.runtime.cwd;
