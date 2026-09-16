@@ -97,6 +97,36 @@ describe("fetchWithCaps", () => {
     ).rejects.toThrow();
   });
 
+  it("aborts when the response body trickles too slowly (Slowloris)", async () => {
+    // Mock a response that resolves headers immediately but hangs on body read
+    globalThis.fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      let isAborted = false;
+      if (init?.signal) {
+        if (init.signal.aborted) throw init.signal.reason ?? new Error("aborted");
+        init.signal.addEventListener("abort", () => {
+          isAborted = true;
+        });
+      }
+
+      const stream = new ReadableStream({
+        async pull(controller) {
+          // Wait longer than the timeout to simulate a slow body
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          if (isAborted) {
+            controller.error(init?.signal?.reason ?? new Error("aborted"));
+            return;
+          }
+          controller.enqueue(new Uint8Array([1, 2, 3]));
+        }
+      });
+      return new Response(stream, { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    await expect(
+      fetchWithCaps("https://example.com/slow-body", {}, { timeoutMs: 10 }),
+    ).rejects.toThrow(/aborted|timeout/i);
+  });
+
   it("composes an external AbortSignal with the internal timeout", async () => {
     mockFetchAwaitsAbort();
     const ctl = new AbortController();
