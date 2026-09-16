@@ -10,3 +10,6 @@
 ## 2024-06-25 - Avoid array sort for Top-K in hot paths
 **Learning:** V8 engine sorting (`[...arr].sort()`) is surprisingly slow and blocks the event loop for thousands of records when fetching Top-K elements (e.g. usage statistics). It scales at O(N log N) when O(N) is sufficient for a fixed K.
 **Action:** When gathering top elements from a large data array in this codebase, manually track the top items in a single O(N) pass rather than sorting a full copy.
+## $(date +%Y-%m-%d) - Array instead of Set for naturally sorted values
+**Learning:** In sequential parsing loops (like SQL statement boundary detection), tracking indices naturally produces a monotonically increasing array. Using a `Set` and subsequently converting it to an array and sorting it (`Array.from(set).sort(...)`) introduces entirely unnecessary memory allocation and O(N log N) time complexity.
+**Action:** When tracking index positions during string or array iteration, use standard arrays (`number[]`) and `push()` them sequentially. Avoid `Set` if uniqueness is already guaranteed by the loop logic, and avoid `sort()` if the values are naturally sorted upon insertion.
