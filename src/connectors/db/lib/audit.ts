@@ -276,6 +276,57 @@ const _SENSITIVE_LITERAL_DQUOTE_RE = new RegExp(
   `(${_KQ}${_KEY_START}${_KEY_PREFIX}(?:${_SENSITIVE_KEYS})${_KEY_END}${_KQ})(\\s*[:=]\\s*)"[^"\\\\]*(?:\\\\.[^"\\\\]*)*"`,
   "gi",
 );
+/**
+ * The camelCase spelling of a sensitive key, as its own case-SENSITIVE family.
+ *
+ * `_KEY_PREFIX` enumerates credential-side prefixes (`secret`, `session`, …),
+ * which is why `secretAccessKey` is covered above while `githubToken` and
+ * `dbPassword` still wrote their values to `events.jsonl` in the clear. The
+ * separator spellings need nothing extra — `_KEY_START` is `(?<![A-Za-z0-9])`
+ * and `_` is not alphanumeric, so `github_token` already matches at `token`.
+ * camelCase has no such boundary, and that is the whole of the gap.
+ *
+ * This cannot be folded into the patterns above. They carry `i`, which
+ * case-folds the lowercase-to-uppercase transition this rule needs to see, and
+ * without that transition it degrades to "letter followed by letter" and starts
+ * redacting the run-on words `_KEY_END` exists to protect (`mytoken`,
+ * `notpassword`). So it is a separate family with no `i` flag, exactly as
+ * `src/toolkit/audit/writer.ts` keeps `KEY_CAMEL` apart from its siblings —
+ * this is a port of that construction, not a new one.
+ *
+ * The vocabulary is capitalised from `_SENSITIVE_KEYS`, so the deliberate
+ * bare-`key` exclusion carries over intact: `Api[_-]?Key` and `Access[_-]?Key`
+ * match, a lone `Key` does not, and `primaryKey`, `sortKey` and `partitionKey`
+ * — ordinary SQL this audit log exists to record — are left alone.
+ *
+ * The credential word is TERMINAL and SINGULAR, inherited from the toolkit's
+ * rule: `maxTokenCount` is not a credential and `maxTokens` is a count.
+ *
+ * A leading `[a-z0-9]` is required, so a bare `Token = '…'` does not match
+ * here; the `i` family above already owns the unprefixed spelling.
+ */
+const _KEY_CAMEL_WORDS = _SENSITIVE_KEYS.replace(
+  /[a-z]+/g,
+  (w) => w.charAt(0).toUpperCase() + w.slice(1),
+);
+const _KEY_CAMEL_BODY = `[A-Za-z0-9]*[a-z0-9](?:${_KEY_CAMEL_WORDS})`;
+/** {@link _KEY_CAMEL_BODY} twins of the four literal patterns above — same value bodies, no `i` flag. */
+const _SENSITIVE_LITERAL_SQUOTE_DOUBLED_CAMEL_RE = new RegExp(
+  `(''${_KEY_START}${_KEY_CAMEL_BODY}${_KEY_END}'')(\\s*[:=]\\s*)''(?:(?:\\\\''|\\\\[^']|[^'\\\\])*''(?=\\s*[,}]|$)|(?:[^']|'')*?(?<!')''(?=\\s*[,}]|$))`,
+  "g",
+);
+const _SENSITIVE_LITERAL_DQUOTE_DOUBLED_KEY_CAMEL_RE = new RegExp(
+  `(''${_KEY_START}${_KEY_CAMEL_BODY}${_KEY_END}'')(\\s*[:=]\\s*)"[^"\\\\]*(?:\\\\.[^"\\\\]*)*"`,
+  "g",
+);
+const _SENSITIVE_LITERAL_SQUOTE_CAMEL_RE = new RegExp(
+  `(${_KQ}${_KEY_START}${_KEY_CAMEL_BODY}${_KEY_END}${_KQ})(\\s*[:=]\\s*)'[^'\\\\]*(?:\\\\.[^'\\\\]*)*'`,
+  "g",
+);
+const _SENSITIVE_LITERAL_DQUOTE_CAMEL_RE = new RegExp(
+  `(${_KQ}${_KEY_START}${_KEY_CAMEL_BODY}${_KEY_END}${_KQ})(\\s*[:=]\\s*)"[^"\\\\]*(?:\\\\.[^"\\\\]*)*"`,
+  "g",
+);
 const _SENSITIVE_AUTH_QUOTED_RE =
   /(?<=["'])(\bauthorization\b)("?)(\s*[:=]\s*)(?:(["'])((?:bearer|basic)\s+)?(?:\\.|[^\r\n\\])*?\4|((?:bearer|basic)\s+)?[^"'\r\n]+)/gi;
 const _SENSITIVE_AUTH_LINE_RE =
@@ -288,7 +339,15 @@ export function scrubSqlSecrets(sql: string): string {
       (_m, key: string, sep: string) => `${key}${sep}''[REDACTED]''`,
     )
     .replace(
+      _SENSITIVE_LITERAL_SQUOTE_DOUBLED_CAMEL_RE,
+      (_m, key: string, sep: string) => `${key}${sep}''[REDACTED]''`,
+    )
+    .replace(
       _SENSITIVE_LITERAL_DQUOTE_DOUBLED_KEY_RE,
+      (_m, key: string, sep: string) => `${key}${sep}"[REDACTED]"`,
+    )
+    .replace(
+      _SENSITIVE_LITERAL_DQUOTE_DOUBLED_KEY_CAMEL_RE,
       (_m, key: string, sep: string) => `${key}${sep}"[REDACTED]"`,
     )
     .replace(
@@ -296,7 +355,15 @@ export function scrubSqlSecrets(sql: string): string {
       (_m, key: string, sep: string) => `${key}${sep}'[REDACTED]'`,
     )
     .replace(
+      _SENSITIVE_LITERAL_SQUOTE_CAMEL_RE,
+      (_m, key: string, sep: string) => `${key}${sep}'[REDACTED]'`,
+    )
+    .replace(
       _SENSITIVE_LITERAL_DQUOTE_RE,
+      (_m, key: string, sep: string) => `${key}${sep}"[REDACTED]"`,
+    )
+    .replace(
+      _SENSITIVE_LITERAL_DQUOTE_CAMEL_RE,
       (_m, key: string, sep: string) => `${key}${sep}"[REDACTED]"`,
     )
     .replace(

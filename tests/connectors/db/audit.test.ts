@@ -855,6 +855,86 @@ describe("wiki_db.audit", () => {
     }
   });
 
+  it("scrubSqlSecrets redacts a camelCase key with an arbitrary prefix", () => {
+    // `_KEY_PREFIX` enumerates credential-side prefixes (`secret`, `session`,
+    // …), so `secretAccessKey` was covered and `githubToken` / `dbPassword`
+    // were not. The separator spellings never had this gap — `_KEY_START` is
+    // `(?<![A-Za-z0-9])` and `_` is not alphanumeric, so `github_token`
+    // already matched at `token`. camelCase has no such boundary.
+    //
+    // Measured rather than argued: across a 22-key x 7-wrapper cross-product
+    // these two keys leaked in five of the seven wrappers before this family
+    // existed, in every shape the `i` patterns otherwise cover.
+    const wrappers: Array<(k: string) => string> = [
+      (k) => `UPDATE t SET ${k} = 'hunter2'`,
+      (k) => `UPDATE t SET x = {"${k}": "hunter2"}`,
+      (k) => `INSERT INTO t VALUES ('{"${k}":"hunter2"}')`,
+      (k) => `INSERT INTO t VALUES ('{''${k}'': ''hunter2''}')`,
+      (k) => `x = {'${k}': 'hunter2'}`,
+    ];
+    for (const k of ["githubToken", "dbPassword", "myApiKey", "userAccessKey"]) {
+      for (const w of wrappers) {
+        expect(scrubSqlSecrets(w(k)), `leaked for ${k} in ${w(k)}`).not.toContain(
+          "hunter2",
+        );
+      }
+    }
+  });
+
+  it("scrubSqlSecrets keeps the camelCase family terminal and singular", () => {
+    // The two narrowings inherited from the toolkit's `KEY_CAMEL`, plus the
+    // run-on protection `_KEY_END` already gave the `i` patterns. A
+    // case-sensitive family must not buy `githubToken` at the price of these:
+    // `maxTokenCount` is not a credential, `maxTokens` is a count, and a
+    // column named `myTokenizer` or `userAuthority` is ordinary SQL.
+    for (const k of [
+      "maxTokenCount",
+      "maxTokens",
+      "myTokenizer",
+      "userAuthority",
+      "dbPasswords",
+      "myPasswordless",
+    ]) {
+      expect(scrubSqlSecrets(`${k}='hunter2'`), `over-redacted ${k}`).toContain(
+        "hunter2",
+      );
+    }
+  });
+
+  it("scrubSqlSecrets does not redact ordinary camelCase *Key columns", () => {
+    // The bare-`key` exclusion carries over to the camel vocabulary because it
+    // is derived from `_SENSITIVE_KEYS`: `Api[_-]?Key` and `Access[_-]?Key`
+    // match, a lone `Key` does not. These are everyday SQL identifiers and
+    // redacting them would destroy the query the audit log exists to record.
+    for (const k of ["primaryKey", "sortKey", "partitionKey", "foreignKey"]) {
+      expect(scrubSqlSecrets(`${k}='pk-1'`), `over-redacted ${k}`).toContain(
+        "pk-1",
+      );
+    }
+    expect(
+      scrubSqlSecrets(`UPDATE t SET primaryKey = 'pk-1' WHERE partitionKey = 'p-9'`),
+    ).toBe(`UPDATE t SET primaryKey = 'pk-1' WHERE partitionKey = 'p-9'`);
+  });
+
+  it("scrubSqlSecrets keeps the payload after a camelCase credential and is idempotent", () => {
+    // Same requirement the `i` family carries: the value class must stop at its
+    // own closing quote. A camel pattern that ran past it would mangle
+    // events.jsonl for every downstream reader, which is the failure mode that
+    // costs more than the leak it fixes.
+    const cases = [
+      `UPDATE t SET x = '{"dbPassword":"hunter2","user":"bob"}'`,
+      `UPDATE t SET x = {"githubToken": "hunter2", "user": "bob"}`,
+      `INSERT INTO t VALUES ('{''dbPassword'': ''hunter2'', ''user'': ''bob''}')`,
+      `UPDATE t SET dbPassword = 'hunter2', user = 'bob'`,
+    ];
+    for (const sql of cases) {
+      const out = scrubSqlSecrets(sql);
+      expect(out, `leaked: ${sql}`).not.toContain("hunter2");
+      expect(out, `dropped the trailing field: ${sql}`).toContain("bob");
+      expect(scrubSqlSecrets(out), `not idempotent: ${sql}`).toBe(out);
+    }
+  });
+
   it("scrubSqlSecrets masks single-quoted credential literals", () => {
     expect(
       scrubSqlSecrets("SELECT * FROM u WHERE password = 'p4ss' AND id = 1"),
