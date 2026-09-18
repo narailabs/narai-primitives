@@ -10,3 +10,6 @@
 ## 2024-06-25 - Avoid array sort for Top-K in hot paths
 **Learning:** V8 engine sorting (`[...arr].sort()`) is surprisingly slow and blocks the event loop for thousands of records when fetching Top-K elements (e.g. usage statistics). It scales at O(N log N) when O(N) is sufficient for a fixed K.
 **Action:** When gathering top elements from a large data array in this codebase, manually track the top items in a single O(N) pass rather than sorting a full copy.
+## 2024-05-24 - O(N log N) Set Sorting in String Iteration
+**Learning:** In `policy.ts`, boundary indices discovered during sequential string parsing were stored in a `Set` and then later converted to an array and sorted via `Array.from(set).sort(...)`. Since string indices are naturally discovered in ascending order, this sorting step is completely redundant and causes a significant O(N log N) performance hit on large queries.
+**Action:** When tracking index positions during sequential string or array iteration, always use a standard array (`number[]`) and populate it sequentially (`push`) instead of using `Set`s that require subsequent conversion and sorting.
