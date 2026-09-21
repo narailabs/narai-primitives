@@ -30,7 +30,10 @@ describe("fetchWithCaps", () => {
     globalThis.fetch = originalFetch;
   });
 
-  function mockFetchWithBody(body: Uint8Array, headers: Record<string, string> = {}): void {
+  function mockFetchWithBody(
+    body: Uint8Array,
+    headers: Record<string, string> = {},
+  ): void {
     globalThis.fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
       if (init?.signal?.aborted) {
         throw init.signal.reason ?? new Error("aborted");
@@ -57,7 +60,11 @@ describe("fetchWithCaps", () => {
   it("returns the response body when it fits under the cap", async () => {
     const body = new Uint8Array([1, 2, 3, 4]);
     mockFetchWithBody(body);
-    const res = await fetchWithCaps("https://example.com/tiny", {}, { maxBytes: 16 });
+    const res = await fetchWithCaps(
+      "https://example.com/tiny",
+      {},
+      { maxBytes: 16 },
+    );
     const buf = new Uint8Array(await res.arrayBuffer());
     expect([...buf]).toEqual([1, 2, 3, 4]);
   });
@@ -97,13 +104,40 @@ describe("fetchWithCaps", () => {
     ).rejects.toThrow();
   });
 
+  it("aborts when the stream trickles slower than the timeout (Slowloris)", async () => {
+    globalThis.fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const stream = new ReadableStream({
+        async start(controller) {
+          controller.enqueue(new Uint8Array([1]));
+          // Wait long enough for the timeout to fire
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          if (init?.signal?.aborted) {
+            controller.error(init.signal.reason ?? new Error("aborted"));
+          } else {
+            controller.enqueue(new Uint8Array([2]));
+            controller.close();
+          }
+        },
+      });
+      return new Response(stream, { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    await expect(
+      fetchWithCaps("https://example.com/trickle", {}, { timeoutMs: 10 }),
+    ).rejects.toThrow();
+  });
+
   it("composes an external AbortSignal with the internal timeout", async () => {
     mockFetchAwaitsAbort();
     const ctl = new AbortController();
-    const p = fetchWithCaps("https://example.com/slow", {}, {
-      timeoutMs: 60_000,
-      signal: ctl.signal,
-    });
+    const p = fetchWithCaps(
+      "https://example.com/slow",
+      {},
+      {
+        timeoutMs: 60_000,
+        signal: ctl.signal,
+      },
+    );
     ctl.abort(new Error("caller cancelled"));
     await expect(p).rejects.toThrow();
   });
@@ -126,10 +160,14 @@ describe("fetchWithCaps", () => {
       abortSignal.any = undefined;
       mockFetchAwaitsAbort();
       const ctl = new AbortController();
-      const p = fetchWithCaps("https://example.com/slow", {}, {
-        timeoutMs: 60_000,
-        signal: ctl.signal,
-      });
+      const p = fetchWithCaps(
+        "https://example.com/slow",
+        {},
+        {
+          timeoutMs: 60_000,
+          signal: ctl.signal,
+        },
+      );
       ctl.abort(new Error("caller cancelled via fallback"));
       await expect(p).rejects.toThrow();
     } finally {
@@ -138,8 +176,8 @@ describe("fetchWithCaps", () => {
   });
 
   it("works on responses with no body (HEAD-like)", async () => {
-    globalThis.fetch = vi.fn(async () =>
-      new Response(null, { status: 204 }),
+    globalThis.fetch = vi.fn(
+      async () => new Response(null, { status: 204 }),
     ) as unknown as typeof globalThis.fetch;
     const res = await fetchWithCaps("https://example.com/nobody");
     expect(res.status).toBe(204);
