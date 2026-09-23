@@ -24,7 +24,7 @@ export interface FetchCapsOptions {
   timeoutMs?: number;
   /** Optional external signal composed with the internal timeout. */
   signal?: AbortSignal;
-  fetchImpl?: typeof fetch;
+  fetchImpl?: typeof fetch | undefined;
 }
 
 /** Thrown when the response body grows past `maxBytes`. */
