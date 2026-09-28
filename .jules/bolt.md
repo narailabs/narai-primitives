@@ -10,3 +10,6 @@
 ## 2024-06-25 - Avoid array sort for Top-K in hot paths
 **Learning:** V8 engine sorting (`[...arr].sort()`) is surprisingly slow and blocks the event loop for thousands of records when fetching Top-K elements (e.g. usage statistics). It scales at O(N log N) when O(N) is sufficient for a fixed K.
 **Action:** When gathering top elements from a large data array in this codebase, manually track the top items in a single O(N) pass rather than sorting a full copy.
+## 2024-05-18 - Replacing O(N log N) Sort with Ordered Appends
+**Learning:** Extracting indices iteratively (like parsing boundaries) naturally creates a monotonically increasing sequence. Adding those elements to a `Set` and then calling `Array.from(...).sort(...)` introduces unnecessary overhead and intermediate objects.
+**Action:** Always prefer pushing sequentially to a `number[]` array when scanning strings linearly, eliminating the need to sort later.
