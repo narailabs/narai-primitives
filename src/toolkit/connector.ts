@@ -227,31 +227,30 @@ function defaultErrorMap(err: unknown): { error_code: ErrorCode; message: string
     const msg = err.issues
       .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
       .join("; ");
-    return { error_code: "VALIDATION_ERROR", message: scrubSecrets(msg) };
+    return { error_code: "VALIDATION_ERROR", message: msg };
   }
   const message = err instanceof Error ? err.message : String(err);
-  const scrubbedMessage = scrubSecrets(message);
   // Heuristic mapping — connectors override via mapError for service-specific codes.
-  const lower = scrubbedMessage.toLowerCase();
+  const lower = message.toLowerCase();
   if (lower.includes("enotfound") || lower.includes("econnrefused") || lower.includes("network")) {
-    return { error_code: "CONNECTION_ERROR", message: scrubbedMessage };
+    return { error_code: "CONNECTION_ERROR", message };
   }
   if (lower.includes("timeout") || lower.includes("etimedout")) {
-    return { error_code: "TIMEOUT", message: scrubbedMessage };
+    return { error_code: "TIMEOUT", message };
   }
   if (lower.includes("401") || lower.includes("unauthor") || lower.includes("forbidden")) {
-    return { error_code: "AUTH_ERROR", message: scrubbedMessage };
+    return { error_code: "AUTH_ERROR", message };
   }
   if (lower.includes("404") || lower.includes("not found")) {
-    return { error_code: "NOT_FOUND", message: scrubbedMessage };
+    return { error_code: "NOT_FOUND", message };
   }
   if (lower.includes("429") || lower.includes("rate limit")) {
-    return { error_code: "RATE_LIMITED", message: scrubbedMessage };
+    return { error_code: "RATE_LIMITED", message };
   }
   if (lower.includes("sdk") && lower.includes("not installed")) {
-    return { error_code: "CONFIG_ERROR", message: scrubbedMessage };
+    return { error_code: "CONFIG_ERROR", message };
   }
-  return { error_code: "CONNECTION_ERROR", message: scrubbedMessage };
+  return { error_code: "CONNECTION_ERROR", message };
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -562,16 +561,15 @@ export function createConnector<TSdk = unknown>(
     // hit the case where stdout is empty and the failure is text on stderr.
     // Exit code is 2 (CLI misuse), distinct from 1 (handled action-level error).
     const writeArgErrorEnvelope = (action: string, message: string): void => {
-      const scrubbed = scrubSecrets(message);
       const env = {
         status: "error",
         action,
         error_code: "VALIDATION_ERROR",
-        message: scrubbed,
+        message,
         retriable: false,
       };
       process.stdout.write(JSON.stringify(env) + "\n");
-      process.stderr.write(`argument error: ${scrubbed}\n`);
+      process.stderr.write(`argument error: ${message}\n`);
     };
 
     let parsed;
@@ -696,7 +694,7 @@ function errorEnvelope(
     status: "error",
     action,
     error_code: code,
-    message: scrubSecrets(message),
+    message,
     retriable,
   };
 }
@@ -740,14 +738,13 @@ function mapAndBuildError<TSdk>(
     retriable = RETRIABLE_CODES.has(code);
   }
 
-  const scrubbedMessage = scrubSecrets(message);
   const scope = safeScope(cfg, { sdk, action, params });
 
   auditAction(audit, cfg.name, action, "error", start);
   recorder({
     action,
     kind: code.toLowerCase(),
-    context: scrubbedMessage,
+    context: scrubSecrets(message),
     scope,
   });
 
@@ -757,7 +754,7 @@ function mapAndBuildError<TSdk>(
     facts: {
       kind: code.toLowerCase(),
       action,
-      context: scrubbedMessage,
+      context: scrubSecrets(message),
     },
   };
   if (cfg.runtime?.cwd !== undefined) hitOpts.cwd = cfg.runtime.cwd;
@@ -768,7 +765,7 @@ function mapAndBuildError<TSdk>(
     status: "error",
     action,
     error_code: code,
-    message: scrubbedMessage,
+    message,
     retriable,
     ...(hit
       ? {
