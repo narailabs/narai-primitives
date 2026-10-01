@@ -10,3 +10,6 @@
 ## 2024-06-25 - Avoid array sort for Top-K in hot paths
 **Learning:** V8 engine sorting (`[...arr].sort()`) is surprisingly slow and blocks the event loop for thousands of records when fetching Top-K elements (e.g. usage statistics). It scales at O(N log N) when O(N) is sufficient for a fixed K.
 **Action:** When gathering top elements from a large data array in this codebase, manually track the top items in a single O(N) pass rather than sorting a full copy.
+## 2024-05-18 - Avoid Set and sorting for sequential string iteration
+**Learning:** In `_boundarySemicolons` / `_splitStatements`, using a `Set<number>` for boundary indices and subsequently calling `Array.from(...).sort(...)` added unnecessary O(N log N) overhead, because linear string iteration naturally generates monotonically increasing numbers.
+**Action:** When tracking index positions sequentially via iteration, just push into a standard `number[]`. It is naturally sorted.
