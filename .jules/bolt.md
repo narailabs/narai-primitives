@@ -10,3 +10,6 @@
 ## 2024-06-25 - Avoid array sort for Top-K in hot paths
 **Learning:** V8 engine sorting (`[...arr].sort()`) is surprisingly slow and blocks the event loop for thousands of records when fetching Top-K elements (e.g. usage statistics). It scales at O(N log N) when O(N) is sufficient for a fixed K.
 **Action:** When gathering top elements from a large data array in this codebase, manually track the top items in a single O(N) pass rather than sorting a full copy.
+## 2026-10-08 - Array Parsing over Set for Sequences
+**Learning:** For strictly sequential loop iterations (e.g. iterating over character indices in a string to find delimiters), collecting indices into a `Set<number>` is less efficient than an array if sorting is required later. Sequential `push()` automatically results in a sorted list.
+**Action:** Replace `Set` and subsequent `Array.from().sort()` with a simple `number[]` array when the generation sequence naturally ensures uniqueness and order, reducing O(N log N) operations to O(N).
