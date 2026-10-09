@@ -251,10 +251,8 @@ function _boundarySemicolons(
   sql: string,
   treatBackslashAsEscape: boolean,
   dialect: SqlDialect = "generic",
-): number[] {
-  // ⚡ Bolt: Use a sequential array rather than a Set since we iterate in order.
-  // This avoids the O(N log N) array sort conversion later in the hot path.
-  const boundaries: number[] = [];
+): Set<number> {
+  const boundaries = new Set<number>();
   let inString: string | null = null; // Either null, "'", '"', or '`'
 
   for (let i = 0; i < sql.length; i++) {
@@ -282,7 +280,7 @@ function _boundarySemicolons(
           i = dEnd - 1; // Advance loop to end of dollar quote
         }
       } else if (c === ";") {
-        boundaries.push(i);
+        boundaries.add(i);
       }
     }
   }
@@ -305,12 +303,14 @@ function _boundarySemicolons(
 function _splitStatements(sql: string, dialect: SqlDialect = "generic"): string[] {
   const cleaned = Policy._stripComments(sql, dialect);
 
-  const b1Array = _boundarySemicolons(cleaned, false, dialect);
-  const b2Array = _boundarySemicolons(cleaned, true, dialect);
+  const b1 = _boundarySemicolons(cleaned, false, dialect);
+  const b2 = _boundarySemicolons(cleaned, true, dialect);
 
-  if (b1Array.length !== b2Array.length) {
+  if (b1.size !== b2.size) {
     throw new Error("Ambiguous SQL statement boundaries");
   }
+  const b1Array = Array.from(b1).sort((a, b) => a - b);
+  const b2Array = Array.from(b2).sort((a, b) => a - b);
   for (let i = 0; i < b1Array.length; i++) {
     if (b1Array[i] !== b2Array[i]) {
       throw new Error("Ambiguous SQL statement boundaries");
