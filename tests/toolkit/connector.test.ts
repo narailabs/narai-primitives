@@ -20,6 +20,49 @@ afterEach(() => {
   fs.rmSync(tmpCwd, { recursive: true, force: true });
 });
 
+describe("createConnector - argument parsing error redaction", () => {
+  it("scrubs secrets from validation error messages", async () => {
+    const c = createConnector({
+      name: "test",
+      credentials: async () => ({}),
+      actions: {
+        a: {
+          params: z.object({}),
+          classify: { kind: "read" },
+          handler: async () => ({ ok: true }),
+        },
+      },
+    });
+
+    // Test that the error message scrubs "password='test'"
+    const stdoutWrite = process.stdout.write;
+    let stdoutOutput = "";
+    process.stdout.write = ((chunk: string) => {
+      stdoutOutput += chunk;
+      return true;
+    }) as any;
+
+    const stderrWrite = process.stderr.write;
+    let stderrOutput = "";
+    process.stderr.write = ((chunk: string) => {
+      stderrOutput += chunk;
+      return true;
+    }) as any;
+
+    try {
+      await c.main(["password='my-secret-password'"]);
+    } finally {
+      process.stdout.write = stdoutWrite;
+      process.stderr.write = stderrWrite;
+    }
+
+    expect(stdoutOutput).not.toContain("my-secret-password");
+    expect(stdoutOutput).toContain("[REDACTED]");
+    expect(stderrOutput).not.toContain("my-secret-password");
+    expect(stderrOutput).toContain("[REDACTED]");
+  });
+});
+
 // Minimal useful connector for happy-path tests.
 function makeAws(options: {
   listFunctionsHandler?: (p: unknown) => Promise<unknown>;
