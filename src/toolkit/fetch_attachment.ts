@@ -26,7 +26,6 @@ import { validateUrl, sanitizeLabel } from "./security_check.js";
 import {
   FETCH_MAX_BYTES_DEFAULT,
   FETCH_TIMEOUT_MS_DEFAULT,
-  FetchCapExceeded,
   fetchWithCaps,
 } from "./fetch_helper.js";
 import {
