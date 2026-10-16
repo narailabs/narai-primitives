@@ -10,3 +10,7 @@
 ## 2024-06-25 - Avoid array sort for Top-K in hot paths
 **Learning:** V8 engine sorting (`[...arr].sort()`) is surprisingly slow and blocks the event loop for thousands of records when fetching Top-K elements (e.g. usage statistics). It scales at O(N log N) when O(N) is sufficient for a fixed K.
 **Action:** When gathering top elements from a large data array in this codebase, manually track the top items in a single O(N) pass rather than sorting a full copy.
+
+## 2024-05-19 - Replacing Set with Arrays for sequential tracking
+**Learning:** In string parsing or index tracking where indices monotonically increase (e.g. from a loop over a string like `for (let i = 0; i < sql.length; i++)`), using a `Set<number>` followed by `Array.from().sort()` adds unnecessary overhead. The `O(N log N)` sort is redundant.
+**Action:** Use an array directly (e.g. `const boundaries: number[] = []; boundaries.push(i);`) instead of a `Set` if uniqueness is guaranteed by the loop structure and elements are naturally ordered.
