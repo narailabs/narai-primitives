@@ -565,10 +565,12 @@ export class Policy {
     }
 
     scan(isString, false);
+    const isStringBackslash = new Array<boolean>(sql.length).fill(false);
+    scan(isStringBackslash, true);
 
     let out = "";
     for (let i = 0; i < sql.length; i++) {
-      if (isString[i]) {
+      if (isString[i] || isStringBackslash[i]) {
         out += " ";
       } else {
         out += sql[i];

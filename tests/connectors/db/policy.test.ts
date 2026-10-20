@@ -248,6 +248,16 @@ describe("TestDecisionLogic", () => {
     expect(result.decision).toBe(Decision.ALLOW);
   });
 
+  it("test_bounded_keyword_in_dialect_escaped_string_escalates", () => {
+    // Tests that keywords hidden via dialect-specific escaping (either doubling
+    // '' or backslash \') do not bypass the bounding heuristic.
+    const result1 = policyAuto().checkQuery("SELECT * FROM users 'x\\' LIMIT \\'y'");
+    expect(result1.decision).toBe(Decision.ESCALATE);
+
+    const result2 = policyAuto().checkQuery("SELECT * FROM users 'x'' LIMIT ''y'");
+    expect(result2.decision).toBe(Decision.ESCALATE);
+  });
+
   // G-POLICY-CROSSJOIN: bare JOIN used to count as a bounding clause,
   // but CROSS JOIN has no predicate and explodes rows. The bounding
   // regex now requires JOIN ... ON.
