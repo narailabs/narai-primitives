@@ -227,9 +227,9 @@ function defaultErrorMap(err: unknown): { error_code: ErrorCode; message: string
     const msg = err.issues
       .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
       .join("; ");
-    return { error_code: "VALIDATION_ERROR", message: msg };
+    return { error_code: "VALIDATION_ERROR", message: scrubSecrets(msg) };
   }
-  const message = err instanceof Error ? err.message : String(err);
+  const message = scrubSecrets(err instanceof Error ? err.message : String(err));
   // Heuristic mapping — connectors override via mapError for service-specific codes.
   const lower = message.toLowerCase();
   if (lower.includes("enotfound") || lower.includes("econnrefused") || lower.includes("network")) {
@@ -561,15 +561,16 @@ export function createConnector<TSdk = unknown>(
     // hit the case where stdout is empty and the failure is text on stderr.
     // Exit code is 2 (CLI misuse), distinct from 1 (handled action-level error).
     const writeArgErrorEnvelope = (action: string, message: string): void => {
+      const scrubbed = scrubSecrets(message);
       const env = {
         status: "error",
         action,
         error_code: "VALIDATION_ERROR",
-        message,
+        message: scrubbed,
         retriable: false,
       };
       process.stdout.write(JSON.stringify(env) + "\n");
-      process.stderr.write(`argument error: ${message}\n`);
+      process.stderr.write(`argument error: ${scrubbed}\n`);
     };
 
     let parsed;
@@ -694,7 +695,7 @@ function errorEnvelope(
     status: "error",
     action,
     error_code: code,
-    message,
+    message: scrubSecrets(message),
     retriable,
   };
 }
@@ -729,7 +730,7 @@ function mapAndBuildError<TSdk>(
   const override = cfg.mapError?.(err, action);
   if (override?.error_code !== undefined && override?.message !== undefined) {
     code = override.error_code;
-    message = override.message;
+    message = scrubSecrets(override.message);
     retriable = override.retriable ?? RETRIABLE_CODES.has(code);
   } else {
     const def = defaultErrorMap(err);
