@@ -33,3 +33,10 @@
 ## 2024-05-18 - Audit Redaction Defense-in-Depth
 **Learning:** The pattern `(?:\\.|[^"\\\\])*` was flagged as a potential Regular Expression Denial of Service (ReDoS) vulnerability. However, because the two alternatives `\\.` and `[^"\\\\]` are disjoint on their first character, matching (including the unterminated-quote failure path) is actually already linear. The ReDoS label was overstated. That said, swapping the alternatives to `(?:[^"\\\\]|\\\\.)*` is a harmless improvement that makes the linear-time guarantee more structural rather than incidental.
 **Prevention:** When dealing with potential ReDoS in quoted string parsing, structural loop unrolling (like `[^'\\]*(?:\\.[^'\\]*)*` or simply prioritizing the non-escaped character class `(?:[^"\\\\]|\\\\.)*`) can provide stronger structural guarantees of linearity, even if the original pattern is practically linear due to disjoint alternatives. Always verify the actual execution time of failure paths (like unterminated quotes) before declaring a catastrophic ReDoS.
+## 2025-02-14 - Fix Slowloris DoS vulnerability in fetch_helper
+
+**Vulnerability:** `fetchWithCaps` cleared its timeout timer immediately after the initial response headers were received, before streaming the response body. This allowed a malicious server to keep the connection open indefinitely by sending the response body byte-by-byte (a Slowloris-style attack), exhausting memory and connections over time. Additionally, `fetchAttachment` manually implemented its own vulnerable fetch limits instead of delegating to `fetchWithCaps`.
+
+**Learning:** When using `AbortController` to enforce timeouts on streamed fetch requests, clearing the timer prematurely breaks the timeout mechanism for the remainder of the network operation.
+
+**Prevention:** Ensure the `clearTimeout()` call for network operations always executes *after* the entire body stream is completely read, typically by wrapping the entire fetch and read loop in a `try...finally` block. Consolidate custom network constraints into single primitives (like `fetchWithCaps`) instead of duplicating manual fetch limits.
