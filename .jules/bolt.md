@@ -10,3 +10,6 @@
 ## 2024-06-25 - Avoid array sort for Top-K in hot paths
 **Learning:** V8 engine sorting (`[...arr].sort()`) is surprisingly slow and blocks the event loop for thousands of records when fetching Top-K elements (e.g. usage statistics). It scales at O(N log N) when O(N) is sufficient for a fixed K.
 **Action:** When gathering top elements from a large data array in this codebase, manually track the top items in a single O(N) pass rather than sorting a full copy.
+## 2024-05-24 - Array vs Set sequential index sorting
+**Learning:** Using `new Set<number>()` to track monotonically increasing boundary indices (like statement semicolons) requires `.add()`, `Array.from()`, and `.sort((a,b) => a - b)` to use them. The V8 sort brings unnecessary $O(N \log N)$ overhead when a simple `number[]` populated with `.push()` automatically guarantees order for sequential scans.
+**Action:** Always use standard `number[]` arrays for sequential index tracking during string/array iteration instead of intermediate Sets that must be explicitly sorted later.
