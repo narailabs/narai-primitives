@@ -144,4 +144,31 @@ describe("fetchWithCaps", () => {
     const res = await fetchWithCaps("https://example.com/nobody");
     expect(res.status).toBe(204);
   });
+
+  it("aborts when the response body streams too slowly (Slowloris)", async () => {
+    globalThis.fetch = vi.fn((_url: unknown, init?: RequestInit) => {
+      const stream = new ReadableStream({
+        pull(controller) {
+          return new Promise((resolve) => {
+            // Trickle one byte but hang indefinitely on subsequent ones
+            // or wait for the internal AbortSignal to trigger.
+            if (init?.signal?.aborted) {
+              controller.error(init.signal.reason ?? new Error("aborted"));
+              resolve();
+              return;
+            }
+            init?.signal?.addEventListener("abort", () => {
+              controller.error(init.signal?.reason ?? new Error("aborted"));
+              resolve();
+            });
+          });
+        },
+      });
+      return Promise.resolve(new Response(stream, { status: 200 }));
+    }) as unknown as typeof globalThis.fetch;
+
+    await expect(
+      fetchWithCaps("https://example.com/slowloris", {}, { timeoutMs: 10 }),
+    ).rejects.toThrow();
+  });
 });
