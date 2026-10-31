@@ -154,7 +154,8 @@ export class HttpClient {
     this._allowedMethods = opts.allowedMethods ?? DEFAULT_ALLOWED_METHODS;
     this._defaultHeaders = opts.defaultHeaders ?? {};
     this._rateLimitPerMin = opts.rateLimitPerMin ?? DEFAULT_RATE_LIMIT_PER_MIN;
-    this._connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+    this._connectTimeoutMs =
+      opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
     this._readTimeoutMs = opts.readTimeoutMs ?? DEFAULT_READ_TIMEOUT_MS;
     this._maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
     this._fetch = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
@@ -224,95 +225,100 @@ export class HttpClient {
             }
           : { method, headers, signal: ctrl.signal };
 
-        const response = await this._fetch(url, init);
-        const status = response.status;
-        const customRetry = this._shouldRetryResponse?.(response) ?? false;
+        let response: Response;
+        try {
+          response = await this._fetch(url, init);
 
-        if (status === 429 || customRetry) {
-          const retryAfter = parseRetryAfter(
-            response.headers.get("retry-after"),
-          );
-          lastError = {
-            ok: false,
-            code: "RATE_LIMITED",
-            message: `${this._serviceName} rate limit hit`,
-            retriable: true,
-            status,
-          };
-          if (attempt < this._maxAttempts - 1) {
-            await this._sleep(
-              retryAfter ?? Math.min(30_000, 500 * 2 ** attempt),
+          const status = response.status;
+          const customRetry = this._shouldRetryResponse?.(response) ?? false;
+
+          if (status === 429 || customRetry) {
+            const retryAfter = parseRetryAfter(
+              response.headers.get("retry-after"),
             );
-            continue;
+            lastError = {
+              ok: false,
+              code: "RATE_LIMITED",
+              message: `${this._serviceName} rate limit hit`,
+              retriable: true,
+              status,
+            };
+            if (attempt < this._maxAttempts - 1) {
+              await this._sleep(
+                retryAfter ?? Math.min(30_000, 500 * 2 ** attempt),
+              );
+              continue;
+            }
+            return lastError;
           }
-          return lastError;
-        }
 
-        if (status >= 500) {
-          const retryAfter = parseRetryAfter(
-            response.headers.get("retry-after"),
-          );
-          lastError = {
-            ok: false,
-            code: "SERVER_ERROR",
-            message: `${this._serviceName} returned HTTP ${status}`,
-            retriable: true,
-            status,
-          };
-          if (attempt < this._maxAttempts - 1) {
-            await this._sleep(
-              retryAfter ?? Math.min(30_000, 500 * 2 ** attempt),
+          if (status >= 500) {
+            const retryAfter = parseRetryAfter(
+              response.headers.get("retry-after"),
             );
-            continue;
+            lastError = {
+              ok: false,
+              code: "SERVER_ERROR",
+              message: `${this._serviceName} returned HTTP ${status}`,
+              retriable: true,
+              status,
+            };
+            if (attempt < this._maxAttempts - 1) {
+              await this._sleep(
+                retryAfter ?? Math.min(30_000, 500 * 2 ** attempt),
+              );
+              continue;
+            }
+            return lastError;
           }
-          return lastError;
-        }
 
-        if (!response.ok) {
-          let bodyText = "";
-          try {
-            bodyText = await response.text();
-          } catch {
-            /* ignore */
+          if (!response.ok) {
+            let bodyText = "";
+            try {
+              bodyText = await response.text();
+            } catch {
+              /* ignore */
+            }
+            return {
+              ok: false,
+              code: classifyHttpStatus(status),
+              message: `${this._serviceName} HTTP ${status}: ${truncate(bodyText, 200)}`,
+              retriable: false,
+              status,
+            };
           }
-          return {
-            ok: false,
-            code: classifyHttpStatus(status),
-            message: `${this._serviceName} HTTP ${status}: ${truncate(bodyText, 200)}`,
-            retriable: false,
-            status,
-          };
-        }
 
-        if (status === 204) {
-          return { ok: true, data: {} as T, status };
-        }
+          if (status === 204) {
+            return { ok: true, data: {} as T, status };
+          }
 
-        if (responseType === "binary") {
-          const buf = await response.arrayBuffer();
-          const cdName = parseContentDispositionFilename(
-            response.headers.get("content-disposition"),
-          );
-          const data: BinaryResponse = {
-            bytes: new Uint8Array(buf),
-            contentType:
-              response.headers.get("content-type") ??
-              "application/octet-stream",
-            filename:
-              cdName ?? opts.filenameFallback ?? filenameFromPath(path),
-          };
-          return { ok: true, data: data as unknown as T, status };
-        }
-        if (responseType === "text") {
-          const data = (await response.text()) as unknown as T;
+          if (responseType === "binary") {
+            const buf = await response.arrayBuffer();
+            const cdName = parseContentDispositionFilename(
+              response.headers.get("content-disposition"),
+            );
+            const data: BinaryResponse = {
+              bytes: new Uint8Array(buf),
+              contentType:
+                response.headers.get("content-type") ??
+                "application/octet-stream",
+              filename:
+                cdName ?? opts.filenameFallback ?? filenameFromPath(path),
+            };
+            return { ok: true, data: data as unknown as T, status };
+          }
+          if (responseType === "text") {
+            const data = (await response.text()) as unknown as T;
+            return { ok: true, data, status };
+          }
+          const data = (await response.json()) as T;
           return { ok: true, data, status };
+        } finally {
+          clearTimeout(timer);
         }
-        const data = (await response.json()) as T;
-        return { ok: true, data, status };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        const aborted =
-          err instanceof DOMException || /abort/i.test(message);
+        const aborted = err instanceof DOMException || /abort/i.test(message);
         lastError = {
           ok: false,
           code: aborted ? "TIMEOUT" : "NETWORK_ERROR",
@@ -324,8 +330,6 @@ export class HttpClient {
           continue;
         }
         return lastError;
-      } finally {
-        clearTimeout(timer);
       }
     }
     return (
@@ -358,10 +362,7 @@ export class HttpClient {
     this._requestTimestamps.push(Date.now());
   }
 
-  private _buildUrl(
-    path: string,
-    query?: HttpRequestOptions["query"],
-  ): string {
+  private _buildUrl(path: string, query?: HttpRequestOptions["query"]): string {
     const isAbsolute = /^[a-z][a-z0-9+.\-]*:\/\//i.test(path);
     const url = isAbsolute
       ? path
@@ -393,8 +394,7 @@ export class HttpClient {
       ...(opts.headers ?? {}),
     };
     const hasBody = opts.body !== undefined && opts.body !== null;
-    const headerHasCT =
-      "Content-Type" in headers || "content-type" in headers;
+    const headerHasCT = "Content-Type" in headers || "content-type" in headers;
     // Only inject Content-Type for serialized JSON bodies. FormData/Blob/
     // ArrayBuffer / typed-array bodies need fetch to set their own
     // Content-Type (multipart boundary, binary mime, etc.).
