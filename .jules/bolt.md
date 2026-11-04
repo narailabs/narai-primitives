@@ -10,3 +10,6 @@
 ## 2024-06-25 - Avoid array sort for Top-K in hot paths
 **Learning:** V8 engine sorting (`[...arr].sort()`) is surprisingly slow and blocks the event loop for thousands of records when fetching Top-K elements (e.g. usage statistics). It scales at O(N log N) when O(N) is sufficient for a fixed K.
 **Action:** When gathering top elements from a large data array in this codebase, manually track the top items in a single O(N) pass rather than sorting a full copy.
+## 2026-05-27 - Array sort optimization in _splitStatements
+**Learning:** During string parsing (e.g. parsing statement boundaries in SQL policy check), accumulating index values monotonically into an array via `push()` yields an inherently sorted result. Collecting them into a `Set` first, then converting to an array and running V8's `.sort((a,b) => a - b)` introduces totally unnecessary `O(N log N)` overhead.
+**Action:** When gathering strictly increasing values from a sequential loop, use a `number[]` array directly rather than a Set or applying sorting logic.
