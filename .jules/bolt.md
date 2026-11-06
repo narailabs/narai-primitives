@@ -10,3 +10,6 @@
 ## 2024-06-25 - Avoid array sort for Top-K in hot paths
 **Learning:** V8 engine sorting (`[...arr].sort()`) is surprisingly slow and blocks the event loop for thousands of records when fetching Top-K elements (e.g. usage statistics). It scales at O(N log N) when O(N) is sufficient for a fixed K.
 **Action:** When gathering top elements from a large data array in this codebase, manually track the top items in a single O(N) pass rather than sorting a full copy.
+## 2026-05-26 - Sequential parsing yields sorted indices naturally
+**Learning:** During string parsing loops that search for tokens (like semicolons in SQL), indices are naturally discovered in strictly ascending order. Pushing these indices to an Array is inherently sorted.
+**Action:** When capturing boundary indices in an iterative loop across strings or arrays, strictly prefer using a standard array with `.push()` over a `Set`. Doing so avoids `Set` allocation overhead, uniqueness checking, and most importantly, redundant `O(N log N)` array conversion and sorting later, especially in critical parsing paths.
