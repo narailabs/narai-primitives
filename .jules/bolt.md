@@ -10,3 +10,6 @@
 ## 2024-06-25 - Avoid array sort for Top-K in hot paths
 **Learning:** V8 engine sorting (`[...arr].sort()`) is surprisingly slow and blocks the event loop for thousands of records when fetching Top-K elements (e.g. usage statistics). It scales at O(N log N) when O(N) is sufficient for a fixed K.
 **Action:** When gathering top elements from a large data array in this codebase, manually track the top items in a single O(N) pass rather than sorting a full copy.
+## 2026-05-26 - SQL Parse Boundary Tracking Optimization
+**Learning:** During database policy parsing (`_boundarySemicolons`), tracking semicolon indices using a `Set` naturally sorts the indices sequentially because the loop progresses left-to-right. Using `Array.from(set).sort()` afterward introduces completely unnecessary O(N log N) overhead that can block the event loop on huge query strings.
+**Action:** When tracking index positions sequentially in strings or arrays in a single-pass loop, always collect them directly into an array using `.push()` instead of using a `Set` that is later converted and sorted.

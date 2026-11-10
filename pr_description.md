@@ -1,0 +1,4 @@
+💡 What: Optimized the `_boundarySemicolons` function in `src/connectors/db/lib/policy.ts` by replacing `Set<number>` with a standard `number[]` array, thereby eliminating the subsequent O(N log N) `Array.from(set).sort()` overhead in `_splitStatements`.
+🎯 Why: Because the string is parsed strictly left-to-right, the discovered semicolon boundary indices are naturally populated in ascending order. Converting and sorting these indices redundantly is unnecessary and slows down the parsing of large or complex SQL strings by blocking the main thread.
+📊 Impact: Removes an O(N log N) step for statement boundary array processing, changing it to O(N) where N is the number of semicolons in the SQL string, reducing event loop blockage during compound SQL parsing.
+🔬 Measurement: Verify via `pnpm test tests/connectors/db/policy.test.ts` to ensure boundaries are still correctly verified and SQL statement execution guardrails function as expected.
